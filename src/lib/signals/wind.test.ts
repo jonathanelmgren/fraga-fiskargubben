@@ -69,4 +69,13 @@ describe("windwardShore", () => {
   it("normalization: 720° (equivalent to 0°) → S shore", () => {
     expect(windwardShore(720)).toBe("S");
   });
+
+  // M6: non-finite input must throw rather than silently returning "N"
+  it("throws on NaN input (no confident-wrong fallback)", () => {
+    expect(() => windwardShore(Number.NaN)).toThrow();
+  });
+
+  it("throws on Infinity input", () => {
+    expect(() => windwardShore(Number.POSITIVE_INFINITY)).toThrow();
+  });
 });

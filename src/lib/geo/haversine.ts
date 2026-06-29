@@ -9,12 +9,13 @@
  * the error vs. the WGS84 ellipsoid is well under 0.5% — negligible for our
  * use case.
  */
+import { toRad } from "./angle";
+
 export function haversine(
   a: { lat: number; lon: number },
   b: { lat: number; lon: number },
 ): number {
   const R = 6371; // Earth radius in km
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
 
   const dLat = toRad(b.lat - a.lat);
   const dLon = toRad(b.lon - a.lon);

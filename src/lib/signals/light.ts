@@ -14,17 +14,23 @@
  *   No exception is thrown; the function always returns an object.
  *
  * Dawn/dusk window constant:
- *   WINDOW_MIN = 45 minutes either side of sunrise/sunset.
+ *   WINDOW_MINUTES = 45 minutes either side of sunrise/sunset.
  *   This matches the "prime windows" described in CONTEXT: Light window.
  */
 
-/** Duration (ms) of the dawn/dusk window on each side of sunrise/sunset. */
-const WINDOW_MIN = 45;
-const WINDOW_MS = WINDOW_MIN * 60 * 1000;
+import { toDeg, toRad } from "@/lib/geo/angle";
 
-/** Degrees ↔ radians helpers */
-const toRad = (deg: number) => (deg * Math.PI) / 180;
-const toDeg = (rad: number) => (rad * 180) / Math.PI;
+/** Minutes of the dawn/dusk window on each side of sunrise/sunset (L9). */
+const WINDOW_MINUTES = 45;
+const WINDOW_MS = WINDOW_MINUTES * 60 * 1000;
+
+/** Earth's axial obliquity (degrees), J2000 epoch — used for declination. */
+const OBLIQUITY_DEG = 23.4397;
+/**
+ * Sunrise/sunset zenith angle (degrees below horizon): -0.833° accounts for
+ * atmospheric refraction (~34′) plus the solar disk's semidiameter (~16′).
+ */
+const SUNRISE_ZENITH_DEG = -0.833;
 
 export type SunTimes =
   | { sunrise: Date; sunset: Date; polarDay?: undefined }
@@ -67,11 +73,11 @@ export function sunTimes(lat: number, lon: number, date: Date): SunTimes {
     0.0069 * Math.sin(toRad(2 * lambda));
 
   // Solar declination
-  const sinDec = Math.sin(toRad(lambda)) * Math.sin(toRad(23.4397));
+  const sinDec = Math.sin(toRad(lambda)) * Math.sin(toRad(OBLIQUITY_DEG));
   const dec = Math.asin(sinDec); // radians
 
-  // Hour angle for −0.833° zenith (accounts for atmospheric refraction + solar disk)
-  const zenith = -0.833;
+  // Hour angle for the sunrise zenith (atmospheric refraction + solar disk)
+  const zenith = SUNRISE_ZENITH_DEG;
   const cosH =
     (Math.sin(toRad(zenith)) - Math.sin(toRad(lat)) * sinDec) /
     (Math.cos(toRad(lat)) * Math.cos(dec));
@@ -106,7 +112,7 @@ export type SunTimesInput =
 /**
  * Classify a target instant relative to the given sun times.
  *
- * Window constant: WINDOW_MIN = 45 min either side of sunrise/sunset.
+ * Window constant: WINDOW_MINUTES = 45 min either side of sunrise/sunset.
  *
  * Classification priority (checked in order):
  *   1. within [sunrise − 45 min, sunrise + 45 min] → "dawn"

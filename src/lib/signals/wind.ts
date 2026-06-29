@@ -20,10 +20,22 @@
  * - W:  [247.5°, 292.5°)   (blows from E)
  * - NW: [292.5°, 337.5°)   (blows from SE)
  *
+/** 8-point compass label of the windward shore. */
+export type CompassPoint = "N" | "NE" | "E" | "SE" | "S" | "SW" | "W" | "NW";
+
+/**
  * @param windFromDirectionDeg - Wind bearing in degrees (0–360, where 0=N, 90=E, 180=S, 270=W).
  * @returns Compass label of the windward shore (N, NE, E, SE, S, SW, W, NW).
+ * @throws if the input is not a finite number — `(NaN + 180) % 360` stays NaN
+ *   and would silently fall through to a confident-wrong "N" (M6).  Callers
+ *   guard with Number.isFinite and treat a throw as the signal being absent.
  */
-export function windwardShore(windFromDirectionDeg: number): string {
+export function windwardShore(windFromDirectionDeg: number): CompassPoint {
+  if (!Number.isFinite(windFromDirectionDeg)) {
+    throw new Error(
+      `windwardShore: windFromDirectionDeg must be finite, got ${windFromDirectionDeg}`,
+    );
+  }
   // Normalize to [0, 360)
   let windTowardDeg = (windFromDirectionDeg + 180) % 360;
   if (windTowardDeg < 0) {

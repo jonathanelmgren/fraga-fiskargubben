@@ -67,21 +67,35 @@ function wp<T>(
 }
 
 /**
- * Derive calendar season from UTC month (0-indexed).
+ * Derive calendar season from the LOCAL month (0-indexed).
  * Northern hemisphere: Dec-Feb=winter, Mar-May=spring, Jun-Aug=summer, Sep-Nov=autumn.
+ *
+ * L4: uses getMonth() (local) rather than getUTCMonth() so it stays consistent
+ * with the rest of the file's local-time handling — at UTC+1/+2 a month-
+ * boundary near midnight would otherwise land in the wrong season.
  */
 function seasonFromDate(date: Date): Season {
-  const month = date.getUTCMonth(); // 0-11
+  const month = date.getMonth(); // 0-11, local
   if (month >= 2 && month <= 4) return "spring";
   if (month >= 5 && month <= 7) return "summer";
   if (month >= 8 && month <= 10) return "autumn";
   return "winter";
 }
 
-/** Emit a source_miss event (fire-and-forget — never throws). */
-function missFire(lakeId: string, source: string): void {
+/**
+ * Emit a source_miss event (fire-and-forget — never throws).
+ *
+ * M5: `reason` distinguishes a thrown failure ("error", the default from
+ * safe()) from the common graceful-absence cases ("empty" / "no_row") so
+ * observability no longer under-reports missing signals.
+ */
+function missFire(
+  lakeId: string,
+  source: string,
+  reason: "error" | "empty" | "no_row" = "error",
+): void {
   void Promise.resolve(
-    emit({ type: "source_miss", lakeId, payload: { source } }),
+    emit({ type: "source_miss", lakeId, payload: { source, reason } }),
   ).catch(() => {
     // analytics failures are always swallowed
   });
@@ -131,7 +145,15 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
     source = "forecast";
   }
 
-  const conditions = await safe<ConditionsResult>(
+  // H5: run the independent fetch groups concurrently instead of serially.
+  //   Group A: conditions  +  the two metobs trends (each via its station).
+  //   Group B: the water DB lookups depth / colour / species.
+  //   waterTemp depends on the air-temp trend, so it stays ordered AFTER the
+  //   trend group (see Step 2b below).
+  // Each branch keeps its own safe() wrapper so the never-throws contract
+  // (ADR-0002) holds.
+
+  const conditionsPromise = safe<ConditionsResult>(
     async () => {
       if (source === "forecast") {
         const doc = await getForecast(lake.id, lake.lat, lake.lon);
@@ -149,52 +171,80 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
     () => missFire(lake.id, "conditions"),
   );
 
-  // ── Step 2: Trends ────────────────────────────────────────────────────────
-
-  const [pressureStationResult, tempStationResult] = await Promise.all([
-    safe(
+  // Trend chain (station → trend) for pressure and temp, run concurrently with
+  // conditions and with the water-DB group below.
+  const pressureTrendPromise = (async () => {
+    const station = await safe(
       () => nearestStation(lake, "pressure"),
       () => missFire(lake.id, "nearestStation.pressure"),
-    ),
-    safe(
+    );
+    if (!station) return undefined;
+    return safe(
+      () => pressureTrend24h(station.station.id),
+      () => missFire(lake.id, "pressureTrend"),
+    );
+  })();
+
+  const airTempTrendPromise = (async () => {
+    const station = await safe(
       () => nearestStation(lake, "temp"),
       () => missFire(lake.id, "nearestStation.temp"),
-    ),
+    );
+    if (!station) return undefined;
+    return safe(
+      () => airTempTrend5d(station.station.id, station.distanceKm),
+      () => missFire(lake.id, "airTempTrend"),
+    );
+  })();
+
+  // ── Step: water DB lookups (independent — run concurrently) ────────────────
+  const depthPromise = safe(
+    () => depthFor(lake.id),
+    () => missFire(lake.id, "depth"),
+  );
+  const colourPromise = safe(
+    () => colourFor(lake.id),
+    () => missFire(lake.id, "colour"),
+  );
+  const speciesPromise = safe(
+    () => speciesFor(lake.id),
+    () => missFire(lake.id, "species"),
+  );
+
+  // Await the concurrent groups.
+  const [
+    conditions,
+    pressureTrend,
+    airTempTrend,
+    depthResult,
+    colourResult,
+    speciesResult,
+  ] = await Promise.all([
+    conditionsPromise,
+    pressureTrendPromise,
+    airTempTrendPromise,
+    depthPromise,
+    colourPromise,
+    speciesPromise,
   ]);
 
   let pressureTrendSignal: Signals["pressureTrend"];
-  if (pressureStationResult) {
-    const trend = await safe(
-      () => pressureTrend24h(pressureStationResult.station.id),
-      () => missFire(lake.id, "pressureTrend"),
-    );
-    if (trend !== undefined) {
-      pressureTrendSignal = wp(trend, "observed", "high");
-    }
+  if (pressureTrend !== undefined) {
+    pressureTrendSignal = wp(pressureTrend, "observed", "high");
   }
 
   let airTempTrendSignal: Signals["airTempTrend5d"];
   let airTempTrendValue: AirTempTrend | undefined;
-  if (tempStationResult) {
-    const trendResult = await safe(
-      () =>
-        airTempTrend5d(
-          tempStationResult.station.id,
-          tempStationResult.distanceKm,
-        ),
-      () => missFire(lake.id, "airTempTrend"),
+  if (airTempTrend !== undefined) {
+    airTempTrendValue = airTempTrend.trend;
+    airTempTrendSignal = wp(
+      airTempTrend.trend,
+      "observed",
+      airTempTrend.confidence,
     );
-    if (trendResult !== undefined) {
-      airTempTrendValue = trendResult.trend;
-      airTempTrendSignal = wp(
-        trendResult.trend,
-        "observed",
-        trendResult.confidence,
-      );
-    }
   }
 
-  // ── Step 3: Water temp ────────────────────────────────────────────────────
+  // ── Step 2b: Water temp (depends on the air-temp trend — kept ordered) ─────
 
   const season = seasonFromDate(safeTargetTime);
   const waterTemp = await safe(
@@ -205,27 +255,6 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
         areaHa: lake.areaHa,
       }),
     () => missFire(lake.id, "waterTemp"),
-  );
-
-  // ── Step 4: Depth ─────────────────────────────────────────────────────────
-
-  const depthResult = await safe(
-    () => depthFor(lake.id),
-    () => missFire(lake.id, "depth"),
-  );
-
-  // ── Step 5: Colour / sight depth ──────────────────────────────────────────
-
-  const colourResult = await safe(
-    () => colourFor(lake.id),
-    () => missFire(lake.id, "colour"),
-  );
-
-  // ── Step 6: Species ───────────────────────────────────────────────────────
-
-  const speciesResult = await safe(
-    () => speciesFor(lake.id),
-    () => missFire(lake.id, "species"),
   );
 
   // ── Step 7: Derived signals ───────────────────────────────────────────────
@@ -240,14 +269,23 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
     // light remains undefined → lightWindow signal is omitted below
   }
 
-  // Windward shore — only if wind direction is available
+  // Windward shore — only if wind direction is available.
+  // M4: wrapped in try/catch like light_window — windwardShore now throws on
+  // non-finite input (M6), and a throw here must not abort the whole build
+  // after the sources succeeded (ADR-0002 never-throws contract).
   let windwardShoreSignal: Signals["windwardShore"];
   const windDir = conditions?.wind_from_direction;
   if (windDir !== undefined && Number.isFinite(windDir)) {
-    windwardShoreSignal = wp(windwardShore(windDir), source, "high");
+    try {
+      windwardShoreSignal = wp(windwardShore(windDir), source, "high");
+    } catch {
+      missFire(lake.id, "windward_shore");
+    }
   }
 
-  // Species comfort — only when BOTH waterTemp AND species are present
+  // Species comfort — only when BOTH waterTemp AND species are present.
+  // M4: wrapped in try/catch so a throw in speciesComfort cannot abort the
+  // build after sources succeeded.
   let speciesComfortSignal: Signals["speciesComfort"];
   if (
     waterTemp !== undefined &&
@@ -255,9 +293,13 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
     speciesResult !== undefined &&
     speciesResult.length > 0
   ) {
-    const comfortResult = speciesComfort(speciesResult, waterTemp.value);
-    if (Object.keys(comfortResult).length > 0) {
-      speciesComfortSignal = comfortResult;
+    try {
+      const comfortResult = speciesComfort(speciesResult, waterTemp.value);
+      if (Object.keys(comfortResult).length > 0) {
+        speciesComfortSignal = comfortResult;
+      }
+    } catch {
+      missFire(lake.id, "species_comfort");
     }
   }
 
@@ -310,16 +352,19 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
   // Water temp
   if (waterTemp !== undefined) signals.waterTempC = waterTemp;
 
-  // Depth
+  // Depth.  M5: depthFor returning null (no row) is the common graceful-absence
+  // case and previously emitted nothing — emit source_miss(reason:"no_row").
   if (
     depthResult !== undefined &&
     depthResult !== null &&
     depthResult.maxDepthM !== null
   ) {
     signals.maxDepthM = wp(depthResult.maxDepthM, "modeled", "high");
+  } else if (depthResult === null) {
+    missFire(lake.id, "depth", "no_row");
   }
 
-  // Colour
+  // Colour.  M5: null result (no MVM row) now emits source_miss(no_row).
   if (colourResult !== undefined && colourResult !== null) {
     signals.waterColour = wp(
       colourResult.colour,
@@ -336,11 +381,21 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
         colourResult.confidence,
       );
     }
+  } else if (colourResult === null) {
+    missFire(lake.id, "colour", "no_row");
   }
 
-  // Species
-  if (speciesResult !== undefined && speciesResult !== null) {
+  // Species.  M5: null (no survey row) or empty array now emits source_miss.
+  if (
+    speciesResult !== undefined &&
+    speciesResult !== null &&
+    speciesResult.length > 0
+  ) {
     signals.speciesPresent = speciesResult;
+  } else if (speciesResult === null) {
+    missFire(lake.id, "species", "no_row");
+  } else if (Array.isArray(speciesResult) && speciesResult.length === 0) {
+    missFire(lake.id, "species", "empty");
   }
 
   // Derived
