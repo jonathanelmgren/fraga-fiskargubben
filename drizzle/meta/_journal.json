@@ -64,6 +64,13 @@
       "when": 1782751345992,
       "tag": "0008_motionless_kree",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1782752107105,
+      "tag": "0009_talented_bug",
+      "breakpoints": true
     }
   ]
 }

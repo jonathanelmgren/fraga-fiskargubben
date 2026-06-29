@@ -180,3 +180,28 @@ export const metobsStations = pgTable(
   },
   (t) => [primaryKey({ columns: [t.id, t.parameter] })],
 );
+
+/**
+ * Fish species per surveyed lake (SLU Aqua / Sötebasen test-fishing data).
+ *
+ * Rows are populated by `scripts/etl/import-aqua.ts` from SLU Aqua /
+ * Sötebasen provfiske surveys.  The ETL joins survey stations to lakes at
+ * import time using `stationMatchesLake` (ADR-0002); the runtime lookup
+ * `speciesFor()` in `src/lib/water/species.ts` is a pure table read with no
+ * live SLU Aqua call.
+ *
+ * Coverage is limited to lakes that have been surveyed — most lakes will NOT
+ * have a row.  `speciesFor()` returns `null` for those (graceful absence).
+ *
+ * `confidence` reflects the quality of the import-time join:
+ *   'high' — station was ≤ 200 m from the lake centroid.
+ *   'low'  — station was within the equal-area circle but > 200 m.
+ */
+export const lakeSpecies = pgTable("lake_species", {
+  /** Lake id matching `lakes.id` (EU WFD water-body code). */
+  lakeId: text("lake_id").primaryKey(),
+  /** Distinct fish species recorded for this lake (Swedish common names). */
+  species: text("species").array().notNull(),
+  /** Quality of the import-time station→lake join: 'high' | 'low'. */
+  confidence: text("confidence"),
+});

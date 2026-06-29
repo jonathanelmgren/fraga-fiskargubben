@@ -321,3 +321,80 @@ guidelines for Swedish national lake monitoring (NV rapport 6555, appendix).
 Per ADR-0002: ETL runs once (or on-demand by an operator), never at request
 time.  The script creates its own `postgres` + `drizzle` connection using only
 `DATABASE_URL` (does not use `@/shared/db/client`).
+
+---
+
+# Aqua ETL — seed fish species per lake from SLU Aqua / Sötebasen (STUB)
+
+One-time (re-runnable) script that seeds the `lake_species` table from SLU Aqua /
+Sötebasen test-fishing (provfiske) survey data.  Records which fish species are
+present in each surveyed lake.
+
+## Status
+
+**STUB** — the SLU Aqua / Sötebasen API base URL and endpoint paths have not
+yet been confirmed.  The script exits with a clear error if `AQUA_BASE_URL` is
+not set.  The system degrades gracefully: `speciesFor()` in
+`src/lib/water/species.ts` returns `null` when no `lake_species` row exists for
+a lake.
+
+## Prerequisites
+
+- `DATABASE_URL` environment variable pointing to the target Postgres database.
+- `AQUA_BASE_URL` set to the verified SLU Aqua / Sötebasen API base URL.
+
+No authentication ticket is required per spec §6 (publicly available data).  If
+the real endpoint requires authentication, add an `AQUA_TOKEN` env var and
+update the script accordingly.
+
+## Running
+
+```bash
+AQUA_BASE_URL="https://sotebasen.slu.se/api/v1" \
+  DATABASE_URL="postgres://..." \
+  pnpm etl:aqua
+```
+
+The script is **idempotent** — upserts on `lake_id` PK (`ON CONFLICT DO
+UPDATE`) so re-runs are safe.  Species are merged across all matching stations
+for the same lake; duplicates are removed by `normalizeSpecies`.
+
+## Obtaining the dataset
+
+SLU Aqua / Sötebasen (Swedish freshwater fish monitoring) provides test-fishing
+(provfiske) data at <https://www.slu.se/aqua/> and the Sötebasen database at
+<https://www.slu.se/institutioner/akvatiska-resurser/databaser/sotebasen/>.
+
+The script assumes two endpoints (to be verified against current API docs):
+
+| Endpoint             | Returns                             |
+| -------------------- | ----------------------------------- |
+| `GET /stations`      | Array of `AquaStation` (id/lat/lon) |
+| `GET /catches`       | Array of `AquaCatch` (stationId, species) |
+
+Update `AquaStation`, `AquaCatch` interfaces and endpoint paths in
+`import-aqua.ts` once the real field names are confirmed.
+
+## Import-time join (ADR-0002)
+
+The Sötebasen data returns survey stations identified by coordinates, not by
+EU WFD lake id.  The script joins each station to a lake **at import time**
+using `stationMatchesLake` (`src/lib/water/station-match.ts`):
+
+| Distance from lake centroid      | Confidence |
+| -------------------------------- | ---------- |
+| ≤ 200 m                          | `high`     |
+| > 200 m and ≤ equal-area radius  | `low`      |
+| > equal-area radius              | no match   |
+
+Species from multiple matching stations for the same lake are merged and
+deduplicated by `normalizeSpecies` (trim, lower-case, dedupe).
+
+The runtime lookup `speciesFor()` is a pure table read with **no live SLU Aqua
+call**.
+
+## Architecture
+
+Per ADR-0002: ETL runs once (or on-demand by an operator), never at request
+time.  The script creates its own `postgres` + `drizzle` connection using only
+`DATABASE_URL` (does not use `@/shared/db/client`).
