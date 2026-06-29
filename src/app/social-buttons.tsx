@@ -47,7 +47,17 @@ export function GoogleButton({ label }: { label: string }) {
   );
 }
 
+// Microsoft sign-in is gated until publisher verification (MPN) clears the
+// "unauthorized_client / not enabled for consumers" consent block. Flip
+// NEXT_PUBLIC_MICROSOFT_ENABLED=true once the Entra app's publisher is verified.
+const MICROSOFT_ENABLED = process.env.NEXT_PUBLIC_MICROSOFT_ENABLED === "true";
+
 export function MicrosoftButton({ label }: { label: string }) {
+  if (!MICROSOFT_ENABLED) return null;
+  return <MicrosoftButtonInner label={label} />;
+}
+
+function MicrosoftButtonInner({ label }: { label: string }) {
   const { pending, start } = useSocial("microsoft");
   return (
     <button
