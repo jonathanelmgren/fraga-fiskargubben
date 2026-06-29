@@ -23,7 +23,12 @@ import type { Extraction, HistoryMessage } from "@/lib/chat/extractor";
 import type { Lake } from "@/lib/lakes/resolve";
 import { formatLabel } from "@/lib/lakes/resolve-helpers";
 import type { Signals } from "@/lib/signals/types";
-import { CHAT_LIMIT_MESSAGE } from "./quota";
+import {
+  ANON_REGISTER_MESSAGE,
+  CHAT_LIMIT_MESSAGE,
+  LAKE_UNRESOLVED_MESSAGE,
+  OUT_OF_CREDITS_MESSAGE,
+} from "./gate-messages";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -32,6 +37,12 @@ import { CHAT_LIMIT_MESSAGE } from "./quota";
 export type AskInput = {
   message: string;
   conversationId?: string;
+  /**
+   * The anon claim token pre-read from the request cookie (H6: passed in
+   * explicitly instead of mutating a built deps object). Null for logged-in
+   * callers or anon callers without a token yet.
+   */
+  claimToken?: string | null;
 };
 
 /** Shape of a conversation row from the DB (only fields we need). */
@@ -64,8 +75,9 @@ export type AdviceStream = {
 
 export type AskHandlerDeps = {
   // Identity
-  getSession(): Promise<{ user: { id: string } } | null>;
-  getClaimToken(): string | null;
+  getSession(): Promise<{
+    user: { id: string; gender?: string | null };
+  } | null>;
 
   // DB reads
   getConversation(id: string): Promise<ConversationRow | null>;
@@ -85,12 +97,16 @@ export type AskHandlerDeps = {
     signals: Signals;
     message: string;
     history: HistoryMessage[];
+    /** H2: IdP-supplied gender for gendered tilltal; undefined → neutral. */
+    gender?: string;
   }): AdviceStream;
   adviseFollowup(params: {
     snapshot: Signals;
     message: string;
     history: HistoryMessage[];
     turnIndex: number;
+    /** H2: IdP-supplied gender for gendered tilltal; undefined → neutral. */
+    gender?: string;
   }): AdviceStream;
   isLakeLockViolation(extraction: Extraction, lakeName: string): boolean;
   getLakeLockRedirect(lakeName: string): string;
@@ -140,18 +156,7 @@ export type AskResult =
       claimToken?: string;
     };
 
-// ---------------------------------------------------------------------------
-// In-persona gate messages (Swedish, Fiskargubben voice)
-// ---------------------------------------------------------------------------
-
-const ANON_REGISTER_MESSAGE =
-  "Registrera dig för att fortsätta — anon-fisket är ett gratisprova, grabben.";
-
-const LAKE_UNRESOLVED_MESSAGE =
-  "kände inte igen sjön du nämnde — kan du skriva sjönamnet tydligare, eventuellt med kommunen?";
-
-const OUT_OF_CREDITS_MESSAGE =
-  "du har förbrukat dina gratiskrediter — uppgradera för att fiska vidare.";
+// L8: gate strings consolidated in ./gate-messages (imported above).
 
 // ---------------------------------------------------------------------------
 // handleAsk — the orchestrator
@@ -167,7 +172,12 @@ export async function handleAsk(
 
   const session = await deps.getSession();
   const userId = session?.user?.id ?? null;
-  const claimToken = deps.getClaimToken();
+  // H6: claimToken arrives explicitly on the input (route pre-reads the cookie)
+  // rather than via a mutated getClaimToken dep.
+  const claimToken = input.claimToken ?? null;
+  // H2: gendered tilltal only when the IdP supplied a gender at sign-in
+  // (CONTEXT.md / ADR-0003); undefined → neutral address (the common case).
+  const gender = session?.user?.gender ?? undefined;
   const isAnon = userId === null;
 
   // ── Step 2: Anon quota gate ─────────────────────────────────────────────
@@ -176,7 +186,9 @@ export async function handleAsk(
   // continue or start another conversation, block before any Claude call.
 
   if (isAnon && claimToken !== null) {
-    // Anon with a token means they've already used their free slot
+    // Anon with a token means they've already used their free slot.
+    // H7: emit the register-gate event so the anon→register funnel is visible.
+    await deps.emit({ type: "register_gate" });
     return {
       type: "register_to_continue",
       text: ANON_REGISTER_MESSAGE,
@@ -190,8 +202,29 @@ export async function handleAsk(
   if (conversationId) {
     conversation = await deps.getConversation(conversationId);
 
+    // C1 (IDOR): bind the conversation to the caller before any further
+    // processing.  Without this, any caller could pass another tenant's
+    // conversationId (surfaced via the X-Conversation-Id header) and
+    // read/write/poison their conversation + consume their turn quota.
+    //   - logged-in caller: conversation.userId must equal userId
+    //   - anon caller: conversation must be unclaimed AND its claimToken must
+    //     match the caller's cookie token
+    // On mismatch return a not-found-style gate (reuse lake_unresolved so the
+    // conversation's existence is not revealed) — never a 500.
+    if (conversation) {
+      const ownsConversation = userId
+        ? conversation.userId === userId
+        : conversation.userId === null &&
+          claimToken !== null &&
+          conversation.claimToken === claimToken;
+      if (!ownsConversation) {
+        return { type: "lake_unresolved", text: LAKE_UNRESOLVED_MESSAGE };
+      }
+    }
+
     // Frozen check — return immediately, no Claude call
     if (conversation?.frozen) {
+      await deps.emit({ type: "chat_limit_hit", conversationId });
       return { type: "chat_limit", text: CHAT_LIMIT_MESSAGE };
     }
 
@@ -243,6 +276,8 @@ export async function handleAsk(
 
     const creditUser = userRow ?? { isPaid: false, creditsUsed: 0 };
     if (!deps.canSpendCredit(creditUser)) {
+      // H7: emit so credit-exhaustion is visible in analytics.
+      await deps.emit({ type: "out_of_credits" });
       return { type: "out_of_credits", text: OUT_OF_CREDITS_MESSAGE };
     }
 
@@ -292,7 +327,17 @@ export async function handleAsk(
       signalsSnapshot: signals,
     });
 
-    // Spend credit and emit lake_resolved
+    // Spend credit and emit lake_resolved.
+    // M2: the credit is committed here, BEFORE adviseFirst/the stream succeeds
+    // (ADR-0004: Credit = fresh fetch + Sonnet).  A failed Sonnet call after
+    // this point burns the credit.  A clean refund needs a stream-result
+    // callback back into the handler (the stream resolves in route.ts, after
+    // this function returns) — [~] deferred: refund needs stream-result
+    // callback into handler.  Observability is covered: route.ts emits a
+    // `persistence_failure` analytics event if the post-stream path fails, so
+    // the credit/stream discrepancy is at least visible.
+    // TODO(refund): thread a finalMessage()-failure callback into handleAsk so
+    // a failed first-turn stream can refund the spent credit.
     if (userId) {
       await deps.spendCredit(userId);
     }
@@ -303,6 +348,7 @@ export async function handleAsk(
       signals,
       message,
       history,
+      gender,
     });
 
     return {
@@ -326,15 +372,25 @@ export async function handleAsk(
     return { type: "lake_unresolved", text: LAKE_UNRESOLVED_MESSAGE };
   }
 
-  // Lake-lock check
-  const lockedLakeName = conversation.lakeName ?? snapshot.lake ?? "";
-  if (deps.isLakeLockViolation(extraction, lockedLakeName)) {
-    const redirect = deps.getLakeLockRedirect(lockedLakeName);
+  // Lake-lock check.
+  // M1: only apply the lock when a BARE lake name is available.  When only a
+  // formatted label is present (legacy row without bareLakeName), comparing
+  // the user's bare lake name against the full label would never match → a
+  // false lock that blocks legitimate follow-ups.  Skip the lock in that case.
+  const lockKey = conversation.lakeName ?? null;
+  if (lockKey !== null && deps.isLakeLockViolation(extraction, lockKey)) {
+    const redirect = deps.getLakeLockRedirect(lockKey);
+    // H7: emit so lake-lock redirects are visible in analytics.
+    await deps.emit({ type: "lake_lock", conversationId: followConvId });
     return { type: "lake_lock", text: redirect };
   }
 
-  // Count turns for windingDown
-  const turnIndex = await deps.countUserMessages(followConvId);
+  // Count turns for windingDown.  M3: countUserMessages returns only the
+  // already-persisted user rows (the in-flight turn is persisted post-stream),
+  // so add 1 to make turnIndex INCLUSIVE of the current turn.  This makes
+  // windingDown (turnIndex >= 15 in advise.ts) flip exactly at turn 15 per
+  // CONTEXT, rather than one turn late.
+  const turnIndex = (await deps.countUserMessages(followConvId)) + 1;
 
   // Stream follow-up advice (Haiku)
   const followStream = deps.adviseFollowup({
@@ -342,6 +398,7 @@ export async function handleAsk(
     message,
     history,
     turnIndex,
+    gender,
   });
 
   return {

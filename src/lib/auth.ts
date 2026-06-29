@@ -69,7 +69,18 @@ export const auth = betterAuth({
           if (!token) return;
 
           try {
-            await claimConversation(user.id, token);
+            const { claimed } = await claimConversation(user.id, token);
+            // M7: expire the claim cookie after a successful claim so a stale
+            // token can't be replayed and the anon-quota gate doesn't keep
+            // tripping for the now-registered user.
+            if (claimed) {
+              try {
+                const { cookies } = await import("next/headers");
+                (await cookies()).delete(CLAIM_TOKEN_COOKIE);
+              } catch {
+                // Cookie store unavailable outside a request context — ignore.
+              }
+            }
           } catch {
             // Claim failures are swallowed: the user account was created
             // successfully; the unclaimed conversation will be GC'd by TTL.

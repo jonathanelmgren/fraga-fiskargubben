@@ -26,8 +26,9 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import { and, count, eq } from "drizzle-orm";
+import { and, asc, count, eq } from "drizzle-orm";
 import { cookies } from "next/headers";
+import { after } from "next/server";
 import { emit } from "@/lib/analytics/events";
 import {
   adviseFirst,
@@ -35,7 +36,7 @@ import {
   getLakeLockRedirect,
   isLakeLockViolation,
 } from "@/lib/chat/advise";
-import type { AskHandlerDeps } from "@/lib/chat/ask-handler";
+import type { AskHandlerDeps, AskResult } from "@/lib/chat/ask-handler";
 import { handleAsk } from "@/lib/chat/ask-handler";
 import { extract } from "@/lib/chat/extractor";
 import {
@@ -52,20 +53,57 @@ import { conversations, messages, users } from "@/shared/db/schema";
 
 const CLAIM_TOKEN_COOKIE = "fiska_claim";
 
+/** L1: max accepted user message length (bytes ≈ chars for typical input). */
+const MAX_MESSAGE_LENGTH = 4096;
+
+/** L1: UUID v4-ish shape for conversationId boundary validation. */
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** H1: in-persona Swedish fallback the chat UI renders as a generic error. */
+const GENERIC_ERROR_MESSAGE =
+  "något krånglar i tacklingen just nu, grabben — kasta igen om en stund.";
+
+/**
+ * H1: classify an unexpected error from handleAsk into a stable in-persona
+ * gate JSON the chat UI already handles, instead of leaking a raw 500.
+ *
+ * Without @mysterylane/errors available (not in the registry — see findings
+ * H1), we classify on the error shape we can observe: an Anthropic 429 →
+ * rate-limited (503), everything else → generic upstream/internal error (500).
+ * The body shape `{ type, text }` matches the gate contract chat.tsx renders.
+ */
+function classifyError(err: unknown): Response {
+  const status = (err as { status?: number } | null)?.status;
+  if (status === 429) {
+    return Response.json(
+      {
+        type: "lake_unresolved",
+        text: "det är fullt på sjön just nu — vänta en stund och kasta igen.",
+      },
+      { status: 503 },
+    );
+  }
+  return Response.json(
+    { type: "lake_unresolved", text: GENERIC_ERROR_MESSAGE },
+    { status: 500 },
+  );
+}
+
 function buildDeps(): AskHandlerDeps {
   return {
     // ── Identity ──────────────────────────────────────────────────────────
-    getSession: () => getSession(),
-    getClaimToken: () => {
-      // TODO (DONE_WITH_CONCERNS: cookie signing): read signed cookie;
-      // currently reads unsigned HttpOnly cookie value directly.
-      // This is evaluated synchronously — cookies() is called during
-      // the route handler execution context.
-      // Note: cookies() returns a promise in Next.js 16; we use a lazy
-      // async wrapper to defer this to call-time.
-      // We cannot await here since getClaimToken is sync in the deps type.
-      // The route pre-reads the cookie before calling handleAsk — see POST().
-      return null; // overridden per-request in POST()
+    // H2: surface an IdP-supplied gender to the handler when present.  Better
+    // Auth's user row currently has no gender column, so this is undefined in
+    // practice → neutral tilltal (the common case per CONTEXT.md).  The param
+    // is threaded end-to-end here so the gendered-tilltal path is reachable the
+    // moment a gender field is added to the session/account.
+    // [~] deferred: IdP gender field not yet on the Better Auth session.
+    getSession: async () => {
+      const session = await getSession();
+      if (!session) return null;
+      const gender = (session.user as { gender?: string | null }).gender;
+      return { user: { id: session.user.id, gender } };
     },
 
     // ── DB reads ──────────────────────────────────────────────────────────
@@ -84,15 +122,13 @@ function buildDeps(): AskHandlerDeps {
         frozen: row.frozen,
         signalsSnapshot: row.signalsSnapshot ?? null,
         lakeId: row.lakeId,
-        // I1: use bareLakeName (bare "Tolken") for the lake-lock comparison,
-        // not lake (formatted label "Tolken (Borås, Västra Götaland)").
-        // Old snapshots without bareLakeName fall back to the label — the lock
-        // may fail to match on those legacy rows, which is acceptable (degraded
-        // gracefully to no-lock rather than a false block).
-        lakeName:
-          row.signalsSnapshot?.bareLakeName ??
-          row.signalsSnapshot?.lake ??
-          null,
+        // I1 + M1: use ONLY the bare lake name ("Tolken") as the lake-lock key.
+        // Never fall back to the formatted label ("Tolken (Borås, …)"): a bare
+        // user lake name can never equal the label, so a label fallback yields
+        // a false lock that blocks legitimate follow-ups (M1).  Legacy rows
+        // without bareLakeName → null → the handler skips the lock entirely
+        // (degrades to no-lock rather than a false block).
+        lakeName: row.signalsSnapshot?.bareLakeName ?? null,
       };
     },
 
@@ -110,10 +146,16 @@ function buildDeps(): AskHandlerDeps {
     },
 
     getHistoryMessages: async (conversationId) => {
+      // H3: order by createdAt so history reaches the extractor / adviseFollowup
+      // in sequence.  Without ORDER BY, Postgres returns rows in arbitrary
+      // order → shuffled history → degraded advice.  createdAt is the stable
+      // ordering minimum the schema supports (no separate sequence column;
+      // timestamps are sub-second so true ties are unlikely on inserts).
       const rows = await db
         .select({ role: messages.role, content: messages.content })
         .from(messages)
-        .where(eq(messages.conversationId, conversationId));
+        .where(eq(messages.conversationId, conversationId))
+        .orderBy(asc(messages.createdAt));
       return rows.map((r) => ({
         role: r.role as "user" | "assistant",
         content: r.content,
@@ -138,10 +180,16 @@ function buildDeps(): AskHandlerDeps {
         targetTime,
         now,
       }),
-    adviseFirst: ({ signals, message, history }) =>
-      adviseFirst({ signals, message, history: history ?? [] }),
-    adviseFollowup: ({ snapshot, message, history, turnIndex }) =>
-      adviseFollowup({ snapshot, message, history: history ?? [], turnIndex }),
+    adviseFirst: ({ signals, message, history, gender }) =>
+      adviseFirst({ signals, message, history: history ?? [], gender }),
+    adviseFollowup: ({ snapshot, message, history, turnIndex, gender }) =>
+      adviseFollowup({
+        snapshot,
+        message,
+        history: history ?? [],
+        turnIndex,
+        gender,
+      }),
     isLakeLockViolation,
     getLakeLockRedirect,
     canSpendCredit,
@@ -206,20 +254,40 @@ export async function POST(request: Request): Promise<Response> {
   if (!message) {
     return Response.json({ error: "message is required" }, { status: 400 });
   }
+  // L1: cap message length (cost amplification — every char is billed to the
+  // extractor + advisor). ~4 KB is generous for a fishing question.
+  if (message.length > MAX_MESSAGE_LENGTH) {
+    return Response.json({ error: "message too long" }, { status: 413 });
+  }
 
-  const conversationId =
+  // L1: validate conversationId is a UUID at the boundary before any Claude
+  // call (it is surfaced to clients via X-Conversation-Id, so it is attacker-
+  // controlled). A malformed id can never own a conversation anyway.
+  const rawConversationId =
     typeof body.conversationId === "string" ? body.conversationId : undefined;
+  if (rawConversationId !== undefined && !UUID_RE.test(rawConversationId)) {
+    return Response.json({ error: "invalid conversationId" }, { status: 400 });
+  }
+  const conversationId = rawConversationId;
 
   // Pre-read the claim token cookie (cookies() is async in Next.js 16)
   const cookieStore = await cookies();
   const claimToken = cookieStore.get(CLAIM_TOKEN_COOKIE)?.value ?? null;
 
-  // Build deps, override getClaimToken with the pre-read value
+  // H6: pass the pre-read claimToken into handleAsk on the input rather than
+  // mutating a built deps object (the old `deps.getClaimToken = …` hack).
   const deps = buildDeps();
-  deps.getClaimToken = () => claimToken;
 
-  // Run the orchestrator
-  const result = await handleAsk({ message, conversationId }, deps);
+  // H1: wrap the orchestrator in a try/catch error boundary.  Any Haiku/DB/
+  // buildSignals rejection would otherwise become a raw Next 500 (stack leak
+  // in dev, no in-persona body the chat UI can render).  Classify and return a
+  // stable in-persona Swedish gate the existing chat UI already handles.
+  let result: AskResult;
+  try {
+    result = await handleAsk({ message, conversationId, claimToken }, deps);
+  } catch (err) {
+    return classifyError(err);
+  }
 
   // ── Map result to Response ──────────────────────────────────────────────
 
@@ -227,33 +295,43 @@ export async function POST(request: Request): Promise<Response> {
     // Stream Anthropic text deltas to the client
     // Using Anthropic SDK's .toReadableStream() → standard Web ReadableStream
     const readable = result.stream.toReadableStream();
+    const { conversationId: streamConvId, stream } = result;
 
-    // Persist messages after streaming completes (fire-and-forget)
-    // We persist the user message immediately; assistant message after finalMessage
-    void (async () => {
+    // H4: persist turns with Next 16's after() so the work survives the
+    // response close on serverless (uses waitUntil under the hood) instead of
+    // a detached IIFE that can be reclaimed.  See
+    // node_modules/next/dist/docs/.../after.md — valid in Route Handlers, runs
+    // after the response is finished.  A persistence failure now emits a
+    // `persistence_failure` analytics event instead of being silently
+    // swallowed by `catch {}` (zero observability before).
+    after(async () => {
       try {
         await deps.persistMessage({
-          conversationId: result.conversationId,
+          conversationId: streamConvId,
           role: "user",
           content: message,
         });
-        const final = await result.stream.finalMessage();
+        const final = await stream.finalMessage();
         const assistantText = final.content
           .filter((c) => c.type === "text")
           .map((c) => ("text" in c ? c.text : ""))
           .join("");
         if (assistantText) {
           await deps.persistMessage({
-            conversationId: result.conversationId,
+            conversationId: streamConvId,
             role: "assistant",
             content: assistantText,
           });
         }
-        await deps.updateLastActive(result.conversationId);
-      } catch {
-        // Persistence failures are non-fatal (analytics already captured)
+        await deps.updateLastActive(streamConvId);
+      } catch (err) {
+        await deps.emit({
+          type: "persistence_failure",
+          conversationId: streamConvId,
+          payload: { error: err instanceof Error ? err.message : String(err) },
+        });
       }
-    })();
+    });
 
     // Set claim token cookie for new anon conversations.
     // handleAsk returns claimToken on the stream result when it created a new
@@ -263,7 +341,9 @@ export async function POST(request: Request): Promise<Response> {
       cookieStore.set(CLAIM_TOKEN_COOKIE, result.claimToken, {
         httpOnly: true,
         sameSite: "lax",
-        secure: true,
+        // L3: only require Secure in production so the anon-gate cookie works
+        // over http://localhost during local development.
+        secure: process.env.NODE_ENV === "production",
         path: "/",
       });
     }

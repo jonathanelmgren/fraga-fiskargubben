@@ -81,7 +81,6 @@ function makeStream() {
 function makeDeps(overrides: Partial<AskHandlerDeps> = {}): AskHandlerDeps {
   return {
     getSession: vi.fn().mockResolvedValue(null),
-    getClaimToken: vi.fn().mockReturnValue(null),
     getConversation: vi.fn().mockResolvedValue(null),
     countUserMessages: vi.fn().mockResolvedValue(0),
     getHistoryMessages: vi.fn().mockResolvedValue([]),
@@ -89,7 +88,6 @@ function makeDeps(overrides: Partial<AskHandlerDeps> = {}): AskHandlerDeps {
     extract: vi.fn().mockResolvedValue({
       onTopic: true,
       lakeName: "Tolken",
-      contextChanged: false,
     }),
     resolveLake: vi.fn().mockResolvedValue(BASE_LAKE),
     buildSignals: vi.fn().mockResolvedValue(BASE_SIGNALS),
@@ -119,7 +117,6 @@ describe("case 1: anon 2nd prompt", () => {
     const deps = makeDeps({
       // anon: no session, but they have a claimToken + existing conversation
       getSession: vi.fn().mockResolvedValue(null),
-      getClaimToken: vi.fn().mockReturnValue("token-abc"),
       getConversation: vi.fn().mockResolvedValue({
         id: "anon-conv-1",
         userId: null,
@@ -133,6 +130,7 @@ describe("case 1: anon 2nd prompt", () => {
     const input: AskInput = {
       message: "Vad biter ikväll?",
       conversationId: "anon-conv-1",
+      claimToken: "token-abc",
     };
 
     const result = await handleAsk(input, deps);
@@ -146,13 +144,12 @@ describe("case 1: anon 2nd prompt", () => {
   it("returns register-to-continue even for a NEW conversation if anon has used their slot", async () => {
     const deps = makeDeps({
       getSession: vi.fn().mockResolvedValue(null),
-      // claimToken present means they've started a convo before
-      getClaimToken: vi.fn().mockReturnValue("token-xyz"),
       // no conversationId → first thing: check anon quota
       getConversation: vi.fn().mockResolvedValue(null),
     });
 
-    const input: AskInput = { message: "Vad biter?" }; // no conversationId
+    // claimToken present means they've started a convo before
+    const input: AskInput = { message: "Vad biter?", claimToken: "token-xyz" }; // no conversationId
 
     const result = await handleAsk(input, deps);
 
@@ -233,7 +230,6 @@ describe("case 3: off-topic message", () => {
       getConversation: vi.fn().mockResolvedValue(null),
       extract: vi.fn().mockResolvedValue({
         onTopic: false,
-        contextChanged: false,
         refusal:
           "Jag snackar bara fiske, grabben. Fråga mig om sjöar istället.",
       }),
@@ -266,7 +262,6 @@ describe("case 4: new conversation, lake not resolved", () => {
       extract: vi.fn().mockResolvedValue({
         onTopic: true,
         lakeName: "Fantasisjön",
-        contextChanged: false,
       }),
       resolveLake: vi.fn().mockResolvedValue(null),
     });
@@ -359,7 +354,6 @@ describe("case 6: new conversation, happy path", () => {
     // Anon: no session, no prior claimToken
     const deps = makeDeps({
       getSession: vi.fn().mockResolvedValue(null),
-      getClaimToken: vi.fn().mockReturnValue(null),
       getConversation: vi.fn().mockResolvedValue(null),
     });
 
@@ -411,7 +405,6 @@ describe("case 7: follow-up, lake-lock violation", () => {
       extract: vi.fn().mockResolvedValue({
         onTopic: true,
         lakeName: "Vättern",
-        contextChanged: true,
       }),
       isLakeLockViolation: vi.fn().mockReturnValue(true),
       getLakeLockRedirect: vi
@@ -458,7 +451,6 @@ describe("case 8: follow-up, happy path", () => {
       extract: vi.fn().mockResolvedValue({
         onTopic: true,
         lakeName: "Tolken",
-        contextChanged: false,
       }),
       isLakeLockViolation: vi.fn().mockReturnValue(false),
       adviseFollowup: vi.fn().mockReturnValue(mockStream),
@@ -483,7 +475,7 @@ describe("case 8: follow-up, happy path", () => {
     expect(args.snapshot).toEqual(BASE_SIGNALS);
   });
 
-  it("passes turnIndex = current user message count to adviseFollowup", async () => {
+  it("passes turnIndex = persisted user count + 1 (inclusive of current turn) to adviseFollowup", async () => {
     const deps = makeDeps({
       getSession: vi.fn().mockResolvedValue({ user: { id: "user-1" } }),
       getConversation: vi.fn().mockResolvedValue({
@@ -500,9 +492,96 @@ describe("case 8: follow-up, happy path", () => {
 
     await handleAsk({ message: "Djupare?", conversationId: "conv-1" }, deps);
 
+    // M3: countUserMessages=5 persisted rows + the in-flight turn = 6.
     // biome-ignore lint/suspicious/noExplicitAny: accessing vi.Mock internals
     const [args] = (deps.adviseFollowup as any).mock.calls[0];
-    expect(args.turnIndex).toBe(5);
+    expect(args.turnIndex).toBe(6);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C1: IDOR — follow-up with another caller's conversationId is rejected
+// ---------------------------------------------------------------------------
+
+describe("C1: conversation-ownership enforcement", () => {
+  it("rejects a logged-in caller following up on another user's conversation", async () => {
+    const deps = makeDeps({
+      getSession: vi.fn().mockResolvedValue({ user: { id: "attacker" } }),
+      getConversation: vi.fn().mockResolvedValue({
+        id: "victim-conv",
+        userId: "victim", // owned by someone else
+        frozen: false,
+        signalsSnapshot: BASE_SIGNALS,
+        lakeId: "tolken-1",
+        lakeName: "Tolken",
+      }),
+    });
+
+    const result = await handleAsk(
+      { message: "Vad biter?", conversationId: "victim-conv" },
+      deps,
+    );
+
+    // Not-found-style gate (reuses lake_unresolved) — existence not revealed,
+    // never a 500, and no Claude/credit/turn consumption on the victim's convo.
+    expect(result.type).toBe("lake_unresolved");
+    expect(deps.adviseFollowup).not.toHaveBeenCalled();
+    expect(deps.countUserMessages).not.toHaveBeenCalled();
+    expect(deps.extract).not.toHaveBeenCalled();
+  });
+
+  it("rejects a tokenless anon caller supplying another anon's conversationId", async () => {
+    // No claimToken on the caller (so the anon-quota gate does NOT fire), but
+    // they pass someone else's anon conversationId.  Ownership requires a
+    // matching non-null claimToken → rejected (no existence leak, no 500).
+    const deps = makeDeps({
+      getSession: vi.fn().mockResolvedValue(null),
+      getConversation: vi.fn().mockResolvedValue({
+        id: "anon-conv",
+        userId: null,
+        claimToken: "real-token",
+        frozen: false,
+        signalsSnapshot: BASE_SIGNALS,
+        lakeId: "tolken-1",
+        lakeName: "Tolken",
+      }),
+    });
+
+    const result = await handleAsk(
+      {
+        message: "Vad biter?",
+        conversationId: "anon-conv",
+        // no claimToken
+      },
+      deps,
+    );
+
+    expect(result.type).toBe("lake_unresolved");
+    expect(deps.adviseFollowup).not.toHaveBeenCalled();
+  });
+
+  it("allows a logged-in caller to follow up on their OWN conversation", async () => {
+    const deps = makeDeps({
+      getSession: vi.fn().mockResolvedValue({ user: { id: "owner" } }),
+      getConversation: vi.fn().mockResolvedValue({
+        id: "own-conv",
+        userId: "owner",
+        frozen: false,
+        signalsSnapshot: BASE_SIGNALS,
+        lakeId: "tolken-1",
+        lakeName: "Tolken",
+      }),
+      countUserMessages: vi.fn().mockResolvedValue(2),
+      isLakeLockViolation: vi.fn().mockReturnValue(false),
+    });
+
+    const result = await handleAsk(
+      { message: "Vilket djup?", conversationId: "own-conv" },
+      deps,
+    );
+
+    expect(result.type).toBe("stream");
+    expect(deps.adviseFollowup).toHaveBeenCalledOnce();
   });
 });
 
@@ -520,7 +599,6 @@ describe("C1: unparseable extraction.time falls back to deps.now (never throws)"
         lakeName: "Tolken",
         // Swedish free-text time — new Date("ikväll") → Invalid Date
         time: "ikväll",
-        contextChanged: false,
       }),
     });
 
@@ -539,7 +617,6 @@ describe("C1: unparseable extraction.time falls back to deps.now (never throws)"
         onTopic: true,
         lakeName: "Tolken",
         time: "på lördag", // another typical unparseable Swedish time
-        contextChanged: false,
       }),
       now,
     });
@@ -561,7 +638,6 @@ describe("C1: unparseable extraction.time falls back to deps.now (never throws)"
         onTopic: true,
         lakeName: "Tolken",
         time: "2026-07-04T18:00:00Z", // parseable ISO string
-        contextChanged: false,
       }),
     });
 
@@ -618,7 +694,6 @@ describe("I1: Signals.lake uses formatted label; lake-lock compares bare name", 
       extract: vi.fn().mockResolvedValue({
         onTopic: true,
         lakeName: "Vättern", // different lake → should trigger lock
-        contextChanged: true,
       }),
       isLakeLockViolation: vi
         .fn()
@@ -663,7 +738,6 @@ describe("I1: Signals.lake uses formatted label; lake-lock compares bare name", 
       extract: vi.fn().mockResolvedValue({
         onTopic: true,
         lakeName: "Tolken", // same lake → no lock
-        contextChanged: false,
       }),
       isLakeLockViolation: vi.fn().mockReturnValue(false),
       adviseFollowup: vi.fn().mockReturnValue(mockStream),

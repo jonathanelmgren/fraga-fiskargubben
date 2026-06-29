@@ -25,13 +25,15 @@ type MockDb = Pick<
 
 describe("createAnonConversation", () => {
   it("inserts a conversations row with userId=null and a non-empty claimToken", async () => {
-    const mockValues = vi.fn().mockResolvedValue([{ id: "conv-new" }]);
+    const mockValues = vi.fn().mockResolvedValue(undefined);
     const mockInsert = vi.fn().mockReturnValue({ values: mockValues });
     const mockDb = { insert: mockInsert } as unknown as MockDb;
 
     const result = await createAnonConversation({}, { db: mockDb });
 
-    expect(result.conversationId).toBe("conv-new");
+    // L5: id is generated in-function (insert has no .returning()) and returned
+    // as conversationId; it must match the id passed into the insert.
+    expect(result.conversationId).toBeTruthy();
     expect(result.claimToken).toBeTruthy();
     expect(result.claimToken.length).toBeGreaterThan(10);
 
@@ -43,6 +45,7 @@ describe("createAnonConversation", () => {
     >;
     expect(insertedValues.userId).toBeNull();
     expect(insertedValues.claimToken).toBe(result.claimToken);
+    expect(insertedValues.id).toBe(result.conversationId);
   });
 
   it("generates different tokens on each call (unguessable)", async () => {
@@ -101,8 +104,11 @@ describe("claimConversation", () => {
     const mockFrom = vi.fn().mockReturnValue({ where: mockWhere2 });
     const mockSelect = vi.fn().mockReturnValue({ from: mockFrom });
 
-    // Track two update calls: first for conversation, second for user
-    const convWhere = vi.fn().mockResolvedValue(undefined);
+    // Track two update calls: first for conversation, second for user.
+    // M7: the conversation UPDATE is self-guarding and ends in .returning();
+    // a non-empty array means the row was claimed (race won).
+    const convReturning = vi.fn().mockResolvedValue([{ id: "conv-abc" }]);
+    const convWhere = vi.fn().mockReturnValue({ returning: convReturning });
     const convSet = vi.fn().mockReturnValue({ where: convWhere });
     const userWhere = vi.fn().mockResolvedValue(undefined);
     const userSet = vi.fn().mockReturnValue({ where: userWhere });
@@ -169,6 +175,52 @@ describe("claimConversation", () => {
     expect(result).toEqual({ claimed: false });
     expect(mockUpdateFn).not.toHaveBeenCalled();
     expect(mockTransaction).not.toHaveBeenCalled();
+  });
+
+  it("M7: treats a lost race (self-guarded UPDATE affects 0 rows) as not-claimed and skips the credit carry-over", async () => {
+    // SELECT finds an unclaimed row...
+    const mockLimit = vi
+      .fn()
+      .mockResolvedValue([
+        { id: "conv-race", userId: null, claimToken: "tok-race" },
+      ]);
+    const mockWhere2 = vi.fn().mockReturnValue({ limit: mockLimit });
+    const mockFrom = vi.fn().mockReturnValue({ where: mockWhere2 });
+    const mockSelect = vi.fn().mockReturnValue({ from: mockFrom });
+
+    // ...but the self-guarded UPDATE (AND userId IS NULL) affects 0 rows
+    // because a concurrent claim won the race → returning() yields [].
+    const convReturning = vi.fn().mockResolvedValue([]);
+    const convWhere = vi.fn().mockReturnValue({ returning: convReturning });
+    const convSet = vi.fn().mockReturnValue({ where: convWhere });
+    const userSet = vi.fn(); // must NOT be called
+
+    let callCount = 0;
+    const mockUpdateFn = vi.fn().mockImplementation(() => {
+      callCount++;
+      return { set: callCount === 1 ? convSet : userSet };
+    });
+
+    const mockTransaction = vi
+      .fn()
+      .mockImplementation(async (cb: (tx: unknown) => Promise<void>) => {
+        await cb({ update: mockUpdateFn });
+      });
+
+    const mockDb = {
+      select: mockSelect,
+      update: mockUpdateFn,
+      transaction: mockTransaction,
+    } as unknown as MockDb;
+
+    const result = await claimConversation("user-late", "tok-race", {
+      db: mockDb,
+    });
+
+    // Race-safe: not claimed, and the credit carry-over update never ran.
+    expect(result).toEqual({ claimed: false });
+    expect(convSet).toHaveBeenCalledTimes(1);
+    expect(userSet).not.toHaveBeenCalled();
   });
 
   it("does not throw when given an already-claimed token: returns {claimed:false}", async () => {

@@ -109,15 +109,12 @@ export async function createAnonConversation(
     targetTime: opts.targetTime ?? null,
   };
 
-  const inserted = await deps.db.insert(conversations).values(row);
+  // L5: the insert has no .returning(), so the previous Array.isArray branch
+  // was dead — drizzle's insert resolves to a result object, not a row array.
+  // The id is generated here, so return it directly.
+  await deps.db.insert(conversations).values(row);
 
-  // Drizzle returning() gives the row; if not used, fall back to the generated id.
-  const conversationId =
-    Array.isArray(inserted) && inserted.length > 0
-      ? (inserted[0] as { id: string }).id
-      : id;
-
-  return { conversationId, claimToken };
+  return { conversationId: id, claimToken };
 }
 
 // ---------------------------------------------------------------------------
@@ -169,12 +166,25 @@ export async function claimConversation(
   // 2. Atomically: claim the conversation + apply carry-over credit.
   //    Both updates run inside a transaction so a crash between them cannot
   //    leave a partial state (conversation claimed but credit un-spent).
+  let claimed = false;
   await deps.db.transaction(async (tx) => {
-    // 2a. Claim the conversation: set userId, clear token
-    await tx
+    // 2a. Claim the conversation: set userId, clear token.
+    //     M7: the UPDATE is SELF-GUARDING — it includes `AND userId IS NULL`
+    //     so a concurrent claim that already set userId between our SELECT and
+    //     this UPDATE cannot be clobbered (last-writer-wins reassigning the
+    //     conversation between users).  `.returning()` lets us treat zero
+    //     affected rows as "already claimed" → idempotent, race-safe no-op.
+    const updated = await tx
       .update(conversations)
       .set({ userId, claimToken: null })
-      .where(eq(conversations.id, conv.id));
+      .where(and(eq(conversations.id, conv.id), isNull(conversations.userId)))
+      .returning({ id: conversations.id });
+
+    if (!Array.isArray(updated) || updated.length === 0) {
+      // Lost the race — another claim already took this conversation.  Do NOT
+      // apply the credit carry-over; leave the transaction with no net change.
+      return;
+    }
 
     // 2b. Carry-over: creditsUsed = max(creditsUsed, 1)
     //     Only set to 1 if currently 0 — prevents clobbering a higher count.
@@ -184,9 +194,11 @@ export async function claimConversation(
       .update(users)
       .set({ creditsUsed: 1 })
       .where(and(eq(users.id, userId), eq(users.creditsUsed, 0)));
+
+    claimed = true;
   });
 
-  return { claimed: true };
+  return { claimed };
 }
 
 // ---------------------------------------------------------------------------
