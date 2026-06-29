@@ -95,6 +95,10 @@ export function pickEntry(
   doc: SmhiForecastDoc,
   targetTimeUtc: string,
 ): PickResult {
+  if (doc.timeSeries.length === 0) {
+    throw new Error("SMHI returned an empty timeSeries");
+  }
+
   const targetMs = new Date(targetTimeUtc).getTime();
 
   let best = doc.timeSeries[0];

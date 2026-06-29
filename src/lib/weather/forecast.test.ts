@@ -92,6 +92,16 @@ describe("pickEntry", () => {
     expect(result.entry.time).toBe("2024-06-15T10:00:00Z");
     expect(result.snapDeltaMinutes).toBe(0);
   });
+
+  it("throws a clear error when timeSeries is empty", () => {
+    const emptyDoc: SmhiForecastDoc = {
+      ...fixture,
+      timeSeries: [],
+    };
+    expect(() => pickEntry(emptyDoc, "2024-06-15T12:00:00Z")).toThrow(
+      /empty timeSeries/i,
+    );
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
