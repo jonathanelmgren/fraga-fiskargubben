@@ -1,5 +1,6 @@
 import "server-only";
 import { eq } from "drizzle-orm";
+import { ExternalServiceError, TimeoutError } from "@/lib/errors";
 import { db } from "@/shared/db/client";
 import { forecastCache } from "@/shared/db/schema";
 
@@ -45,6 +46,8 @@ const SMHI_BASE =
 
 const SENTINEL = 9999;
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+/** M13: hard ceiling on a single SMHI forecast round-trip. */
+const FETCH_TIMEOUT_MS = 8000;
 
 const PARAM_KEYS: (keyof SmhiDataParams)[] = [
   "air_temperature",
@@ -173,14 +176,44 @@ export async function fetchForecast(
   const latStr = lat.toFixed(4);
   const url = `${SMHI_BASE}/lon/${lonStr}/lat/${latStr}/data.json`;
 
-  const res = await fetch(url);
+  // M13: bound the round-trip so a hung connection can't block buildSignals
+  // (and the whole first turn) indefinitely — safe() catches rejections, not
+  // hangs. The abort surfaces as a TimeoutError that propagates into safe().
+  let res: Response;
+  try {
+    res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "TimeoutError") {
+      throw new TimeoutError(`SMHI forecast timed out for ${url}`, {
+        service: "smhi-forecast",
+        cause: err,
+      });
+    }
+    throw new ExternalServiceError(`SMHI forecast request failed for ${url}`, {
+      service: "smhi-forecast",
+      cause: err,
+    });
+  }
   if (!res.ok) {
-    throw new Error(
+    // H1: throw a typed ExternalServiceError so safe()/logging can classify it
+    // (and the request boundary can map e.g. 429 → rate-limited).
+    throw new ExternalServiceError(
       `SMHI forecast fetch failed: ${res.status} ${res.statusText} for ${url}`,
+      { status: res.status, service: "smhi-forecast" },
     );
   }
 
-  return res.json() as Promise<SmhiForecastDoc>;
+  // L14: light shape guard on unvalidated network JSON — a malformed SMHI
+  // response surfaces as a clear ExternalServiceError rather than a downstream
+  // undefined-access crash.
+  const doc = (await res.json()) as SmhiForecastDoc;
+  if (!doc || !Array.isArray(doc.timeSeries)) {
+    throw new ExternalServiceError(
+      `SMHI forecast returned an unexpected shape for ${url}`,
+      { service: "smhi-forecast" },
+    );
+  }
+  return doc;
 }
 
 /**

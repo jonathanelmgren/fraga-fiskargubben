@@ -1,8 +1,12 @@
 import "server-only";
 import { eq } from "drizzle-orm";
+import { ExternalServiceError, TimeoutError } from "@/lib/errors";
 import { haversine } from "@/lib/geo/haversine";
 import { db } from "@/shared/db/client";
 import { metobsStations } from "@/shared/db/schema";
+
+/** M13: hard ceiling on a single metobs observation round-trip. */
+const METOBS_FETCH_TIMEOUT_MS = 8000;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -182,14 +186,39 @@ export function mapObsToConditions(
 // ─────────────────────────────────────────────────────────────────────────────
 // Nearest-station cache
 //
-// A simple in-process Map keyed by "${lat}:${lon}:${parameter}".
-// Caveat: this cache is per-process and not shared across containers/restarts.
-// For a multi-instance deployment the cache should be moved to Postgres (or
-// Redis). For now, the station list is small (~hundreds of rows) and the
-// lookup is fast, so this is acceptable.
+// A bounded in-process LRU keyed by "${lat}:${lon}:${parameter}".
+// M11: previously an unbounded Map that cached null permanently and grew
+// without limit.  Now capped at NEAREST_CACHE_MAX entries with LRU eviction
+// (re-insert on hit moves the key to the most-recently-used position) so
+// memory growth is bounded.  Still per-process (not shared across serverless
+// instances) — a Postgres/Redis-backed cache is out of scope here.
+// [~] deferred: cross-instance (Postgres/Redis) cache.
 // ─────────────────────────────────────────────────────────────────────────────
 
+const NEAREST_CACHE_MAX = 500;
 const nearestCache = new Map<string, NearestStationResult | null>();
+
+function nearestCacheGet(key: string): NearestStationResult | null | undefined {
+  if (!nearestCache.has(key)) return undefined;
+  const value = nearestCache.get(key) ?? null;
+  // LRU touch: delete + re-insert moves the key to the most-recent position.
+  nearestCache.delete(key);
+  nearestCache.set(key, value);
+  return value;
+}
+
+function nearestCacheSet(
+  key: string,
+  value: NearestStationResult | null,
+): void {
+  if (nearestCache.has(key)) nearestCache.delete(key);
+  nearestCache.set(key, value);
+  // Evict the least-recently-used entry (first key in insertion order).
+  if (nearestCache.size > NEAREST_CACHE_MAX) {
+    const oldest = nearestCache.keys().next().value;
+    if (oldest !== undefined) nearestCache.delete(oldest);
+  }
+}
 
 /**
  * Return the nearest metobs station (for the given parameter) to a lake
@@ -205,8 +234,9 @@ export async function nearestStation(
   parameter: MetobsParameter,
 ): Promise<NearestStationResult | null> {
   const key = `${lake.lat}:${lake.lon}:${parameter}`;
-  if (nearestCache.has(key)) {
-    return nearestCache.get(key) ?? null;
+  const cached = nearestCacheGet(key);
+  if (cached !== undefined) {
+    return cached;
   }
 
   const rows = await db
@@ -215,7 +245,7 @@ export async function nearestStation(
     .where(eq(metobsStations.parameter, parameter));
 
   if (rows.length === 0) {
-    nearestCache.set(key, null);
+    nearestCacheSet(key, null);
     return null;
   }
 
@@ -234,7 +264,7 @@ export async function nearestStation(
     station: best,
     distanceKm: bestDist,
   };
-  nearestCache.set(key, result);
+  nearestCacheSet(key, result);
   return result;
 }
 
@@ -251,45 +281,31 @@ export async function nearestStation(
 
 type ObsValue = { date: string; value: number };
 
+/**
+ * H12: map raw obs entries (date epoch ms, value string) → parsed ObsValue
+ * (date ISO string, value number), dropping non-numeric entries.  Used by the
+ * trend fetchers which previously had a duplicated ~40-line fetcher.
+ */
+function mapRawToObsValues(raw: RawObsEntry[]): ObsValue[] {
+  return raw.flatMap((entry) => {
+    const num = Number.parseFloat(entry.value);
+    if (Number.isNaN(num)) return [];
+    return [{ date: new Date(entry.date).toISOString(), value: num }];
+  });
+}
+
+/**
+ * H12: the single raw observation fetcher.  `fetchObservations` is now just a
+ * thin mapper over this (was a near-identical duplicate differing only in the
+ * final mapping).
+ */
 async function fetchObservations(
   stationId: string,
   parameterId: number,
   period: "latest-day" | "latest-months",
 ): Promise<ObsValue[]> {
-  const base =
-    process.env.METOBS_BASE ?? "https://opendata-download-metobs.smhi.se";
-  // PLACEHOLDER: path pattern is unverified — operator must confirm against
-  // https://opendata.smhi.se/apidocs/metobs/ before relying on this.
-  const pathTemplate =
-    process.env.METOBS_OBS_URL ??
-    "/api/version/1.0/parameter/{p}/station/{s}/period/{period}/data.json";
-
-  const url = `${base}${pathTemplate
-    .replace("{p}", String(parameterId))
-    .replace("{s}", stationId)
-    .replace("{period}", period)}`;
-
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(
-      `metobs observation fetch failed: ${res.status} ${res.statusText} for ${url}`,
-    );
-  }
-
-  // SMHI returns a JSON structure; extract the numeric values.
-  // The exact shape depends on the endpoint — adapt this parser once the real
-  // endpoint is confirmed.
-  type SmhiObsDoc = {
-    value?: Array<{ date: number; value: string }>;
-  };
-  const doc: SmhiObsDoc = (await res.json()) as SmhiObsDoc;
-  if (!Array.isArray(doc.value)) return [];
-
-  return doc.value.flatMap((entry) => {
-    const num = Number.parseFloat(entry.value);
-    if (Number.isNaN(num)) return [];
-    return [{ date: new Date(entry.date).toISOString(), value: num }];
-  });
+  const raw = await fetchRawObs(stationId, parameterId, period);
+  return mapRawToObsValues(raw);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -391,10 +407,30 @@ async function fetchRawObs(
     .replace("{s}", stationId)
     .replace("{period}", period)}`;
 
-  const res = await fetch(url);
+  // M13: bound the round-trip so a hung metobs connection can't block the first
+  // turn indefinitely. The abort surfaces as a TimeoutError into safe().
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      signal: AbortSignal.timeout(METOBS_FETCH_TIMEOUT_MS),
+    });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "TimeoutError") {
+      throw new TimeoutError(`metobs observation timed out for ${url}`, {
+        service: "smhi-metobs",
+        cause: err,
+      });
+    }
+    throw new ExternalServiceError(`metobs request failed for ${url}`, {
+      service: "smhi-metobs",
+      cause: err,
+    });
+  }
   if (!res.ok) {
-    throw new Error(
+    // H1: typed error so safe()/logging can classify upstream failures.
+    throw new ExternalServiceError(
       `metobs raw observation fetch failed: ${res.status} ${res.statusText} for ${url}`,
+      { status: res.status, service: "smhi-metobs" },
     );
   }
 
