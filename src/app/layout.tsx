@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "fiskargubben",
-  description: "fiskargubben",
+  title: "Fråga Fiskargubben",
+  description: "Fråga Fiskargubben",
 };
 
 export default function RootLayout({
