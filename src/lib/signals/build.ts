@@ -106,7 +106,12 @@ async function safe<T>(
 
 export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
   const { lake, targetTime, now } = input;
-  const targetUtc = targetTime.toISOString();
+  // C1 (defense in depth): guard against Invalid Date.  ask-handler already
+  // validates the date before calling us, but we must never throw here
+  // (ADR-0002 never-throws contract).  If targetTime is Invalid Date,
+  // fall back to `now` so toISOString() cannot throw a RangeError.
+  const safeTargetTime = !Number.isNaN(targetTime.getTime()) ? targetTime : now;
+  const targetUtc = safeTargetTime.toISOString();
 
   // ── Step 1: Conditions (forecast OR observed) ─────────────────────────────
 
@@ -191,7 +196,7 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
 
   // ── Step 3: Water temp ────────────────────────────────────────────────────
 
-  const season = seasonFromDate(targetTime);
+  const season = seasonFromDate(safeTargetTime);
   const waterTemp = await safe(
     () =>
       waterTempFor(lake.id, {
@@ -228,8 +233,8 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
   // Light window (pure — guarded because sunTimes/lightWindow can throw on edge inputs)
   let light: Signals["lightWindow"];
   try {
-    const sun = sunTimes(lake.lat, lake.lon, targetTime);
-    light = lightWindow(targetTime, sun);
+    const sun = sunTimes(lake.lat, lake.lon, safeTargetTime);
+    light = lightWindow(safeTargetTime, sun);
   } catch {
     missFire(lake.id, "light_window");
     // light remains undefined → lightWindow signal is omitted below
@@ -261,7 +266,11 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
   const signals: Signals = {
     lake: lake.label,
     lakeId: lake.id,
-    timeLocal: targetTime.toISOString(),
+    // I1: store the bare lake name alongside the formatted label so the
+    // lake-lock comparison in follow-ups can compare against the bare name
+    // rather than the full "name (municipality, county)" label.
+    bareLakeName: lake.name,
+    timeLocal: safeTargetTime.toISOString(),
   };
 
   // Conditions fields

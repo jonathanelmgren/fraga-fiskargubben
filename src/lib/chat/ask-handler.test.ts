@@ -505,3 +505,176 @@ describe("case 8: follow-up, happy path", () => {
     expect(args.turnIndex).toBe(5);
   });
 });
+
+// ---------------------------------------------------------------------------
+// C1: Swedish free-text time ("ikväll") must not throw a 500
+// ---------------------------------------------------------------------------
+
+describe("C1: unparseable extraction.time falls back to deps.now (never throws)", () => {
+  it("does NOT throw when extraction.time is a Swedish free-text string like 'ikväll'", async () => {
+    const deps = makeDeps({
+      getSession: vi.fn().mockResolvedValue({ user: { id: "user-1" } }),
+      getConversation: vi.fn().mockResolvedValue(null),
+      extract: vi.fn().mockResolvedValue({
+        onTopic: true,
+        lakeName: "Tolken",
+        // Swedish free-text time — new Date("ikväll") → Invalid Date
+        time: "ikväll",
+        contextChanged: false,
+      }),
+    });
+
+    // Must resolve, never reject
+    await expect(
+      handleAsk({ message: "Vad biter ikväll?" }, deps),
+    ).resolves.toBeDefined();
+  });
+
+  it("calls buildSignals with deps.now when extraction.time is unparseable", async () => {
+    const now = new Date("2026-06-29T10:00:00Z");
+    const deps = makeDeps({
+      getSession: vi.fn().mockResolvedValue({ user: { id: "user-1" } }),
+      getConversation: vi.fn().mockResolvedValue(null),
+      extract: vi.fn().mockResolvedValue({
+        onTopic: true,
+        lakeName: "Tolken",
+        time: "på lördag", // another typical unparseable Swedish time
+        contextChanged: false,
+      }),
+      now,
+    });
+
+    await handleAsk({ message: "Vad biter på lördag?" }, deps);
+
+    // biome-ignore lint/suspicious/noExplicitAny: accessing vi.Mock internals
+    const [signalsInput] = (deps.buildSignals as any).mock.calls[0];
+    // targetTime must be exactly deps.now (the fallback), not an Invalid Date
+    expect(signalsInput.targetTime).toEqual(now);
+    expect(Number.isNaN(signalsInput.targetTime.getTime())).toBe(false);
+  });
+
+  it("uses the parsed date when extraction.time is a valid ISO string", async () => {
+    const deps = makeDeps({
+      getSession: vi.fn().mockResolvedValue({ user: { id: "user-1" } }),
+      getConversation: vi.fn().mockResolvedValue(null),
+      extract: vi.fn().mockResolvedValue({
+        onTopic: true,
+        lakeName: "Tolken",
+        time: "2026-07-04T18:00:00Z", // parseable ISO string
+        contextChanged: false,
+      }),
+    });
+
+    await handleAsk({ message: "Vad biter den 4 juli?" }, deps);
+
+    // biome-ignore lint/suspicious/noExplicitAny: accessing vi.Mock internals
+    const [signalsInput] = (deps.buildSignals as any).mock.calls[0];
+    expect(signalsInput.targetTime).toEqual(new Date("2026-07-04T18:00:00Z"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// I1: Signals.lake is the full formatted label; lake-lock still works
+// ---------------------------------------------------------------------------
+
+describe("I1: Signals.lake uses formatted label; lake-lock compares bare name", () => {
+  it("calls buildSignals with a formatted label (name + municipality + county)", async () => {
+    const deps = makeDeps({
+      getSession: vi.fn().mockResolvedValue({ user: { id: "user-1" } }),
+      getConversation: vi.fn().mockResolvedValue(null),
+      resolveLake: vi.fn().mockResolvedValue(BASE_LAKE),
+    });
+
+    await handleAsk({ message: "Vad biter i Tolken?" }, deps);
+
+    // biome-ignore lint/suspicious/noExplicitAny: accessing vi.Mock internals
+    const [signalsInput] = (deps.buildSignals as any).mock.calls[0];
+    // label must be the canonical "name (municipality, county)" format
+    expect(signalsInput.lake.label).toBe("Tolken (Borås, Västra Götaland)");
+    // NOT the bare name
+    expect(signalsInput.lake.label).not.toBe("Tolken");
+  });
+
+  it("lake-lock fires correctly when extraction.lakeName differs from the bare stored name", async () => {
+    // The conversation snapshot stores lake label (formatted), but lakeName
+    // passed to isLakeLockViolation should be the BARE name, not the label.
+    const deps = makeDeps({
+      getSession: vi.fn().mockResolvedValue({ user: { id: "user-1" } }),
+      getConversation: vi.fn().mockResolvedValue({
+        id: "conv-1",
+        userId: "user-1",
+        frozen: false,
+        signalsSnapshot: {
+          ...BASE_SIGNALS,
+          // Simulate a new snapshot with formatted label and bareLakeName
+          lake: "Tolken (Borås, Västra Götaland)",
+          bareLakeName: "Tolken",
+        },
+        lakeId: "tolken-1",
+        // lakeName is the bare name (as route.ts would derive from bareLakeName)
+        lakeName: "Tolken",
+      }),
+      countUserMessages: vi.fn().mockResolvedValue(2),
+      extract: vi.fn().mockResolvedValue({
+        onTopic: true,
+        lakeName: "Vättern", // different lake → should trigger lock
+        contextChanged: true,
+      }),
+      isLakeLockViolation: vi
+        .fn()
+        .mockImplementation(
+          (extraction, locked) =>
+            extraction.lakeName?.toLowerCase() !== locked.toLowerCase(),
+        ),
+      getLakeLockRedirect: vi.fn().mockReturnValue("lock-redirect"),
+    });
+
+    const result = await handleAsk(
+      { message: "Vad biter i Vättern?", conversationId: "conv-1" },
+      deps,
+    );
+
+    // Lock should fire
+    expect(result.type).toBe("lake_lock");
+    // isLakeLockViolation must be called with the BARE lake name, not the formatted label
+    // biome-ignore lint/suspicious/noExplicitAny: accessing vi.Mock internals
+    const [, lockedNameArg] = (deps.isLakeLockViolation as any).mock.calls[0];
+    expect(lockedNameArg).toBe("Tolken");
+    expect(lockedNameArg).not.toContain("(");
+  });
+
+  it("lake-lock passes when extraction.lakeName matches the bare stored name", async () => {
+    const mockStream = makeStream();
+    const deps = makeDeps({
+      getSession: vi.fn().mockResolvedValue({ user: { id: "user-1" } }),
+      getConversation: vi.fn().mockResolvedValue({
+        id: "conv-1",
+        userId: "user-1",
+        frozen: false,
+        signalsSnapshot: {
+          ...BASE_SIGNALS,
+          lake: "Tolken (Borås, Västra Götaland)",
+          bareLakeName: "Tolken",
+        },
+        lakeId: "tolken-1",
+        lakeName: "Tolken",
+      }),
+      countUserMessages: vi.fn().mockResolvedValue(2),
+      extract: vi.fn().mockResolvedValue({
+        onTopic: true,
+        lakeName: "Tolken", // same lake → no lock
+        contextChanged: false,
+      }),
+      isLakeLockViolation: vi.fn().mockReturnValue(false),
+      adviseFollowup: vi.fn().mockReturnValue(mockStream),
+    });
+
+    const result = await handleAsk(
+      { message: "Vilket djup?", conversationId: "conv-1" },
+      deps,
+    );
+
+    expect(result.type).toBe("stream");
+    expect(deps.adviseFollowup).toHaveBeenCalledOnce();
+  });
+});

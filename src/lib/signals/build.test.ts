@@ -601,4 +601,64 @@ describe("buildSignals", () => {
       expect(signals.speciesComfort).toBeUndefined();
     });
   });
+
+  describe("C1: Invalid Date targetTime — never throws (ADR-0002)", () => {
+    it("does not throw when targetTime is an Invalid Date", async () => {
+      setupForecastOnly();
+      const invalidDate = new Date("ikväll"); // Invalid Date
+
+      await expect(
+        buildSignals({ lake: LAKE, targetTime: invalidDate, now: NOW }),
+      ).resolves.toBeDefined();
+    });
+
+    it("falls back to now for timeLocal when targetTime is Invalid Date", async () => {
+      setupForecastOnly();
+      const invalidDate = new Date("imorgon"); // Invalid Date
+
+      const signals = await buildSignals({
+        lake: LAKE,
+        targetTime: invalidDate,
+        now: NOW,
+      });
+
+      // timeLocal should be the now fallback, not NaN or a throw
+      expect(signals.timeLocal).toBe(NOW.toISOString());
+    });
+  });
+
+  describe("I1: bareLakeName is populated in the Signals snapshot", () => {
+    it("includes bareLakeName matching lake.name", async () => {
+      setupForecastOnly();
+
+      const signals = await buildSignals({
+        lake: LAKE, // name: "Test Lake"
+        targetTime: FUTURE_TARGET,
+        now: NOW,
+      });
+
+      expect(signals.bareLakeName).toBe(LAKE.name);
+    });
+
+    it("bareLakeName is distinct from lake.label when label is formatted", async () => {
+      setupForecastOnly();
+
+      const lakeWithFormattedLabel = {
+        ...LAKE,
+        label: "Test Lake (Teststad, Testlän)",
+      };
+
+      const signals = await buildSignals({
+        lake: lakeWithFormattedLabel,
+        targetTime: FUTURE_TARGET,
+        now: NOW,
+      });
+
+      // lake is the full label
+      expect(signals.lake).toBe("Test Lake (Teststad, Testlän)");
+      // bareLakeName is the bare name
+      expect(signals.bareLakeName).toBe(LAKE.name);
+      expect(signals.bareLakeName).not.toContain("(");
+    });
+  });
 });

@@ -21,6 +21,7 @@ import { randomUUID } from "node:crypto";
 import type { AnalyticsEvent } from "@/lib/analytics/events";
 import type { Extraction, HistoryMessage } from "@/lib/chat/extractor";
 import type { Lake } from "@/lib/lakes/resolve";
+import { formatLabel } from "@/lib/lakes/resolve-helpers";
 import type { Signals } from "@/lib/signals/types";
 import { CHAT_LIMIT_MESSAGE } from "./quota";
 
@@ -246,11 +247,30 @@ export async function handleAsk(
     }
 
     // Build signals
-    const targetTime = extraction.time ? new Date(extraction.time) : deps.now;
+    // C1 fix: the Extractor returns Swedish free-text time ("ikväll", "imorgon",
+    // "på lördag") which new Date() cannot parse → Invalid Date.  Guard: if the
+    // parsed date is invalid fall back to deps.now.  Proper Swedish relative-time
+    // resolution (e.g. via a date-fns locale) is a follow-up task.
+    const parsedTime = extraction.time ? new Date(extraction.time) : null;
+    const targetTime =
+      parsedTime !== null && !Number.isNaN(parsedTime.getTime())
+        ? parsedTime
+        : deps.now;
 
+    // I1 fix: use formatLabel for the full disambiguation label in Signals
+    // ("name (municipality, county)" per CONTEXT.md / ADR-0002).  The bare
+    // lake name for the lake-lock comparison is stored in signalsSnapshot as
+    // bareLakeName (set by buildSignals), decoupled from the formatted label.
+    // Unnamed bodies fall back to lake.id.
     const lakeWithLabel: Lake & { label: string } = {
       ...lake,
-      label: lake.name ?? lake.id,
+      label: lake.name
+        ? formatLabel({
+            name: lake.name,
+            municipality: lake.municipality,
+            county: lake.county,
+          })
+        : lake.id,
     };
 
     const signals = await deps.buildSignals({

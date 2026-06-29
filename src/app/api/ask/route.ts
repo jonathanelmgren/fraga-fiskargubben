@@ -84,7 +84,15 @@ function buildDeps(): AskHandlerDeps {
         frozen: row.frozen,
         signalsSnapshot: row.signalsSnapshot ?? null,
         lakeId: row.lakeId,
-        lakeName: row.signalsSnapshot?.lake ?? null,
+        // I1: use bareLakeName (bare "Tolken") for the lake-lock comparison,
+        // not lake (formatted label "Tolken (Borås, Västra Götaland)").
+        // Old snapshots without bareLakeName fall back to the label — the lock
+        // may fail to match on those legacy rows, which is acceptable (degraded
+        // gracefully to no-lock rather than a false block).
+        lakeName:
+          row.signalsSnapshot?.bareLakeName ??
+          row.signalsSnapshot?.lake ??
+          null,
       };
     },
 

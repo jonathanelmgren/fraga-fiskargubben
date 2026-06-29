@@ -3,8 +3,14 @@ export type Provenance = { source: Source; confidence: "high" | "low" };
 export type WithProvenance<T> = { value: T; provenance: Provenance };
 
 export type Signals = {
-  lake: string; // Lake label
+  lake: string; // Lake label — canonical "name (municipality, county)" format
   lakeId: string;
+  /**
+   * Bare lake name (e.g. "Tolken") without the municipality/county suffix.
+   * Used internally for the lake-lock comparison so the lock is not coupled
+   * to the formatted label.  Absent on old snapshots (treat as undefined).
+   */
+  bareLakeName?: string;
   timeLocal: string; // ISO local Target time
   airTempC?: WithProvenance<number>;
   pressureHpa?: WithProvenance<number>;
