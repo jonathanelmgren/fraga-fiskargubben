@@ -2,13 +2,28 @@ import {
   bigserial,
   boolean,
   doublePrecision,
+  integer,
   jsonb,
   pgTable,
   primaryKey,
   text,
   timestamp,
 } from "drizzle-orm/pg-core";
+import type { Signals } from "@/lib/signals/types";
 
+/**
+ * Better Auth-owned user table with two extra quota columns.
+ *
+ * Better Auth never sets these columns in its own INSERT (it only writes the
+ * core auth fields), so both columns carry DB-level defaults (default(0) and
+ * default(false)) — the DB fills them automatically on every Better-Auth-
+ * triggered insert.  Drizzle .$defaultFn() alone would only run on
+ * drizzle-initiated inserts; .default() writes a DEFAULT clause into the
+ * CREATE TABLE / ALTER TABLE DDL, which is what we need here.
+ *
+ * ADR-0004: creditsUsed tracks lifetime fresh-context starts; isPaid is a
+ * stub flag that lifts the 3-credit cap — real payment is a deferred phase.
+ */
 export const users = pgTable("user", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
@@ -23,6 +38,10 @@ export const users = pgTable("user", {
   updatedAt: timestamp("updated_at")
     .$defaultFn(() => new Date())
     .notNull(),
+  /** Lifetime count of Credits spent (new conversations with fresh data fetches). ADR-0004. */
+  creditsUsed: integer("credits_used").default(0).notNull(),
+  /** Stub paid flag — true lifts the 3-credit free cap. Real payment deferred. ADR-0004. */
+  isPaid: boolean("is_paid").default(false).notNull(),
 });
 
 export const sessions = pgTable("session", {
@@ -204,4 +223,70 @@ export const lakeSpecies = pgTable("lake_species", {
   species: text("species").array().notNull(),
   /** Quality of the import-time station→lake join: 'high' | 'low'. */
   confidence: text("confidence"),
+});
+
+/**
+ * A conversation is the billable unit (ADR-0004).
+ *
+ * One Credit = one new conversation = one fresh Signals fetch.
+ * Context (lakeId + targetTime) is locked at creation and never changes.
+ * The Signals snapshot is frozen at first prompt and stored here; follow-up
+ * turns re-read from this snapshot rather than fetching fresh data.
+ *
+ * Anonymous conversations have userId = null and carry a claimToken in a
+ * signed cookie.  On registration the conversation is claimed (userId set,
+ * claimToken cleared) and counts as 1 of 3 lifetime credits for the new
+ * account.  Unclaimed rows are GC'd after a TTL (ADR-0001).
+ *
+ * `frozen` is set true when the chat-turn limit (~20) is hit (Task 5.5).
+ * It is false by default so the column is schema-ready without affecting
+ * any current behaviour.
+ */
+export const conversations = pgTable("conversation", {
+  id: text("id").primaryKey(),
+  /**
+   * Null for anonymous conversations (ADR-0001).
+   * FK with cascade so deleting a user purges their conversations.
+   */
+  userId: text("user_id").references(() => users.id, { onDelete: "cascade" }),
+  /** Set for anonymous conversations; matched on registration to claim. ADR-0001. */
+  claimToken: text("claim_token"),
+  /** Locked Context lake for this conversation. ADR-0004. */
+  lakeId: text("lake_id"),
+  /** Locked Context target time for this conversation. ADR-0004. */
+  targetTime: timestamp("target_time"),
+  /**
+   * Frozen Signals snapshot captured at first prompt. Nullable until the
+   * first prompt resolves so the row can be inserted before signals are built.
+   * ADR-0004.
+   */
+  signalsSnapshot: jsonb("signals_snapshot").$type<Signals>(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  lastActiveAt: timestamp("last_active_at").defaultNow().notNull(),
+  /**
+   * Set true when the chat-turn limit is hit (Task 5.5).
+   * A frozen conversation serves a plain system alert and accepts no new
+   * user turns.  Not voiced as Fiskargubben — a deliberate system boundary.
+   * ADR-0004.
+   */
+  frozen: boolean("frozen").default(false).notNull(),
+});
+
+/**
+ * Individual chat turns within a conversation.
+ *
+ * Turn count derives from counting rows for a conversationId.
+ * The soft wind-down (turn 15) and hard freeze (turn ~20) are evaluated
+ * server-side by counting these rows.  ADR-0004.
+ */
+export const messages = pgTable("message", {
+  id: text("id").primaryKey(),
+  /** Parent conversation. Cascade-deleted when the conversation is removed. */
+  conversationId: text("conversation_id")
+    .notNull()
+    .references(() => conversations.id, { onDelete: "cascade" }),
+  /** 'user' | 'assistant' */
+  role: text("role").notNull(),
+  content: text("content").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
 });
