@@ -1,4 +1,11 @@
-import { boolean, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import {
+  bigserial,
+  boolean,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+} from "drizzle-orm/pg-core";
 
 export const users = pgTable("user", {
   id: text("id").primaryKey(),
@@ -54,4 +61,16 @@ export const verifications = pgTable("verification", {
   expiresAt: timestamp("expires_at").notNull(),
   createdAt: timestamp("created_at").$defaultFn(() => new Date()),
   updatedAt: timestamp("updated_at").$defaultFn(() => new Date()),
+});
+
+export const analyticsEvents = pgTable("analytics_event", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  type: text("type").notNull(),
+  lakeId: text("lake_id"),
+  conversationId: text("conversation_id"),
+  payload: jsonb("payload")
+    .$type<Record<string, unknown>>()
+    .default({})
+    .notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
 });
