@@ -1,0 +1,471 @@
+/**
+ * ask-handler.test.ts — unit tests for the POST /api/ask orchestration logic.
+ *
+ * These tests exercise the branching (gate ordering) of `handleAsk` without
+ * a real server, DB, or Claude API.  All leaf modules are injected as mocks.
+ *
+ * The 8 cases:
+ *  1. Anon 2nd prompt → register-to-continue (no extract/Claude called)
+ *  2. Chat-turn limit hit → freezeConversation + CHAT_LIMIT_MESSAGE (no Claude)
+ *  3. Off-topic → topic_refused + refusal text (no credit/Sonnet)
+ *  4. New convo, lake unresolved → reprompt (no credit)
+ *  5. New convo, out of credits → upgrade response (no Sonnet)
+ *  6. New convo, happy path → buildSignals + spendCredit + adviseFirst called
+ *  7. Follow-up, lake-lock violation → redirect (no Haiku/refetch)
+ *  8. Follow-up, happy path → adviseFollowup called with frozen snapshot
+ */
+
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("server-only", () => ({}));
+vi.mock("@/shared/db/client", () => ({ db: {} }));
+
+import { CHAT_LIMIT_MESSAGE } from "@/lib/chat/quota";
+import type { Signals } from "@/lib/signals/types";
+import {
+  type AskHandlerDeps,
+  type AskInput,
+  type AskResult,
+  handleAsk,
+} from "./ask-handler";
+
+// ---------------------------------------------------------------------------
+// Type helper
+// ---------------------------------------------------------------------------
+
+/** Narrow an AskResult to a specific type. Throws if it doesn't match. */
+function asType<T extends AskResult["type"]>(
+  result: AskResult,
+  type: T,
+): Extract<AskResult, { type: T }> {
+  if (result.type !== type) {
+    throw new Error(`Expected result.type="${type}", got "${result.type}"`);
+  }
+  return result as Extract<AskResult, { type: T }>;
+}
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+const BASE_SIGNALS: Signals = {
+  lake: "Tolken",
+  lakeId: "tolken-1",
+  timeLocal: "2026-06-29T10:00:00",
+};
+
+const BASE_LAKE = {
+  id: "tolken-1",
+  name: "Tolken",
+  municipality: "Borås",
+  county: "Västra Götaland",
+  lat: 57.7,
+  lon: 13.0,
+  areaHa: 1200,
+};
+
+/** A minimal mock stream that satisfies the interface the route needs */
+function makeStream() {
+  return {
+    toReadableStream: vi.fn().mockReturnValue(new ReadableStream()),
+    finalMessage: vi.fn().mockResolvedValue({
+      content: [{ type: "text", text: "Prova maskkroken." }],
+    }),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Helper: build a full deps object with sensible defaults; override per test
+// ---------------------------------------------------------------------------
+
+function makeDeps(overrides: Partial<AskHandlerDeps> = {}): AskHandlerDeps {
+  return {
+    getSession: vi.fn().mockResolvedValue(null),
+    getClaimToken: vi.fn().mockReturnValue(null),
+    getConversation: vi.fn().mockResolvedValue(null),
+    countUserMessages: vi.fn().mockResolvedValue(0),
+    getHistoryMessages: vi.fn().mockResolvedValue([]),
+    getUserRow: vi.fn().mockResolvedValue({ isPaid: false, creditsUsed: 0 }),
+    extract: vi.fn().mockResolvedValue({
+      onTopic: true,
+      lakeName: "Tolken",
+      contextChanged: false,
+    }),
+    resolveLake: vi.fn().mockResolvedValue(BASE_LAKE),
+    buildSignals: vi.fn().mockResolvedValue(BASE_SIGNALS),
+    adviseFirst: vi.fn().mockReturnValue(makeStream()),
+    adviseFollowup: vi.fn().mockReturnValue(makeStream()),
+    isLakeLockViolation: vi.fn().mockReturnValue(false),
+    getLakeLockRedirect: vi.fn().mockReturnValue("lake-lock redirect"),
+    canSpendCredit: vi.fn().mockReturnValue(true),
+    spendCredit: vi.fn().mockResolvedValue(undefined),
+    chatTurnAllowed: vi.fn().mockReturnValue(true),
+    freezeConversation: vi.fn().mockResolvedValue(undefined),
+    createConversation: vi.fn().mockResolvedValue("new-conv-id"),
+    persistMessage: vi.fn().mockResolvedValue(undefined),
+    updateLastActive: vi.fn().mockResolvedValue(undefined),
+    emit: vi.fn().mockResolvedValue(undefined),
+    now: new Date("2026-06-29T10:00:00Z"),
+    ...overrides,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 1. Anon 2nd prompt → register-to-continue
+// ---------------------------------------------------------------------------
+
+describe("case 1: anon 2nd prompt", () => {
+  it("returns register-to-continue without calling extract or advise", async () => {
+    const deps = makeDeps({
+      // anon: no session, but they have a claimToken + existing conversation
+      getSession: vi.fn().mockResolvedValue(null),
+      getClaimToken: vi.fn().mockReturnValue("token-abc"),
+      getConversation: vi.fn().mockResolvedValue({
+        id: "anon-conv-1",
+        userId: null,
+        claimToken: "token-abc",
+        frozen: false,
+        signalsSnapshot: BASE_SIGNALS,
+        lakeId: "tolken-1",
+      }),
+    });
+
+    const input: AskInput = {
+      message: "Vad biter ikväll?",
+      conversationId: "anon-conv-1",
+    };
+
+    const result = await handleAsk(input, deps);
+
+    expect(result.type).toBe("register_to_continue");
+    expect(deps.extract).not.toHaveBeenCalled();
+    expect(deps.adviseFirst).not.toHaveBeenCalled();
+    expect(deps.adviseFollowup).not.toHaveBeenCalled();
+  });
+
+  it("returns register-to-continue even for a NEW conversation if anon has used their slot", async () => {
+    const deps = makeDeps({
+      getSession: vi.fn().mockResolvedValue(null),
+      // claimToken present means they've started a convo before
+      getClaimToken: vi.fn().mockReturnValue("token-xyz"),
+      // no conversationId → first thing: check anon quota
+      getConversation: vi.fn().mockResolvedValue(null),
+    });
+
+    const input: AskInput = { message: "Vad biter?" }; // no conversationId
+
+    const result = await handleAsk(input, deps);
+
+    // anon with token but no existing conversationId — they already used their
+    // free slot (token was issued for a previous convo), block
+    expect(result.type).toBe("register_to_continue");
+    expect(deps.extract).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2. Chat-turn limit hit
+// ---------------------------------------------------------------------------
+
+describe("case 2: chat-turn limit", () => {
+  it("freezes conversation and returns CHAT_LIMIT_MESSAGE without calling Claude", async () => {
+    const deps = makeDeps({
+      getSession: vi.fn().mockResolvedValue({ user: { id: "user-1" } }),
+      getConversation: vi.fn().mockResolvedValue({
+        id: "conv-1",
+        userId: "user-1",
+        frozen: false,
+        signalsSnapshot: BASE_SIGNALS,
+        lakeId: "tolken-1",
+      }),
+      countUserMessages: vi.fn().mockResolvedValue(20),
+      chatTurnAllowed: vi.fn().mockReturnValue(false),
+    });
+
+    const input: AskInput = {
+      message: "Ännu ett meddelande",
+      conversationId: "conv-1",
+    };
+
+    const result = await handleAsk(input, deps);
+
+    const r = asType(result, "chat_limit");
+    expect(r.text).toBe(CHAT_LIMIT_MESSAGE);
+    expect(deps.freezeConversation).toHaveBeenCalledWith("conv-1");
+    expect(deps.extract).not.toHaveBeenCalled();
+    expect(deps.adviseFollowup).not.toHaveBeenCalled();
+  });
+
+  it("returns CHAT_LIMIT_MESSAGE immediately if conversation is already frozen", async () => {
+    const deps = makeDeps({
+      getSession: vi.fn().mockResolvedValue({ user: { id: "user-1" } }),
+      getConversation: vi.fn().mockResolvedValue({
+        id: "conv-1",
+        userId: "user-1",
+        frozen: true,
+        signalsSnapshot: BASE_SIGNALS,
+        lakeId: "tolken-1",
+      }),
+    });
+
+    const input: AskInput = {
+      message: "Hej igen",
+      conversationId: "conv-1",
+    };
+
+    const result = await handleAsk(input, deps);
+
+    const r = asType(result, "chat_limit");
+    expect(r.text).toBe(CHAT_LIMIT_MESSAGE);
+    expect(deps.freezeConversation).not.toHaveBeenCalled();
+    expect(deps.extract).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3. Off-topic → topic_refused
+// ---------------------------------------------------------------------------
+
+describe("case 3: off-topic message", () => {
+  it("emits topic_refused, returns refusal text, no credit spent, no Sonnet", async () => {
+    const deps = makeDeps({
+      getSession: vi.fn().mockResolvedValue({ user: { id: "user-1" } }),
+      getConversation: vi.fn().mockResolvedValue(null),
+      extract: vi.fn().mockResolvedValue({
+        onTopic: false,
+        contextChanged: false,
+        refusal:
+          "Jag snackar bara fiske, grabben. Fråga mig om sjöar istället.",
+      }),
+    });
+
+    const input: AskInput = { message: "Vad är meningen med livet?" };
+
+    const result = await handleAsk(input, deps);
+
+    const r = asType(result, "topic_refused");
+    expect(r.text).toContain("fiske");
+    expect(deps.emit).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "topic_refused" }),
+    );
+    expect(deps.spendCredit).not.toHaveBeenCalled();
+    expect(deps.adviseFirst).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. New convo, lake unresolved → reprompt
+// ---------------------------------------------------------------------------
+
+describe("case 4: new conversation, lake not resolved", () => {
+  it("emits lake_unresolved, returns reprompt, no credit spent", async () => {
+    const deps = makeDeps({
+      getSession: vi.fn().mockResolvedValue({ user: { id: "user-1" } }),
+      getConversation: vi.fn().mockResolvedValue(null),
+      extract: vi.fn().mockResolvedValue({
+        onTopic: true,
+        lakeName: "Fantasisjön",
+        contextChanged: false,
+      }),
+      resolveLake: vi.fn().mockResolvedValue(null),
+    });
+
+    const input: AskInput = { message: "Vad biter i Fantasisjön?" };
+
+    const result = await handleAsk(input, deps);
+
+    const r = asType(result, "lake_unresolved");
+    expect(r.text).toBeDefined();
+    expect(deps.emit).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "lake_unresolved" }),
+    );
+    expect(deps.spendCredit).not.toHaveBeenCalled();
+    expect(deps.adviseFirst).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5. New convo, out of credits → upgrade response
+// ---------------------------------------------------------------------------
+
+describe("case 5: new conversation, out of credits", () => {
+  it("returns upgrade response without calling Sonnet or spending credit", async () => {
+    const deps = makeDeps({
+      getSession: vi.fn().mockResolvedValue({ user: { id: "user-1" } }),
+      getConversation: vi.fn().mockResolvedValue(null),
+      getUserRow: vi.fn().mockResolvedValue({ isPaid: false, creditsUsed: 3 }),
+      canSpendCredit: vi.fn().mockReturnValue(false),
+    });
+
+    const input: AskInput = { message: "Vad biter i Tolken?" };
+
+    const result = await handleAsk(input, deps);
+
+    expect(result.type).toBe("out_of_credits");
+    expect(deps.spendCredit).not.toHaveBeenCalled();
+    expect(deps.adviseFirst).not.toHaveBeenCalled();
+    expect(deps.buildSignals).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. New convo, happy path
+// ---------------------------------------------------------------------------
+
+describe("case 6: new conversation, happy path", () => {
+  it("calls buildSignals, spendCredit, adviseFirst; emits lake_resolved + credit_spent", async () => {
+    const mockStream = makeStream();
+    const deps = makeDeps({
+      getSession: vi.fn().mockResolvedValue({ user: { id: "user-1" } }),
+      getConversation: vi.fn().mockResolvedValue(null),
+      getUserRow: vi.fn().mockResolvedValue({ isPaid: false, creditsUsed: 0 }),
+      canSpendCredit: vi.fn().mockReturnValue(true),
+      adviseFirst: vi.fn().mockReturnValue(mockStream),
+    });
+
+    const input: AskInput = { message: "Vad biter i Tolken imorgon?" };
+
+    const result = await handleAsk(input, deps);
+
+    expect(result.type).toBe("stream");
+    expect(deps.buildSignals).toHaveBeenCalledOnce();
+    expect(deps.spendCredit).toHaveBeenCalledWith("user-1");
+    expect(deps.adviseFirst).toHaveBeenCalledOnce();
+    expect(deps.adviseFollowup).not.toHaveBeenCalled();
+    expect(deps.emit).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "lake_resolved" }),
+    );
+    expect(deps.createConversation).toHaveBeenCalledOnce();
+  });
+
+  it("creates conversation with frozen signalsSnapshot before streaming", async () => {
+    const deps = makeDeps({
+      getSession: vi.fn().mockResolvedValue({ user: { id: "user-1" } }),
+      getConversation: vi.fn().mockResolvedValue(null),
+    });
+
+    await handleAsk({ message: "Vad biter i Tolken?" }, deps);
+
+    expect(deps.createConversation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        signalsSnapshot: BASE_SIGNALS,
+        lakeId: "tolken-1",
+      }),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7. Follow-up, lake-lock violation
+// ---------------------------------------------------------------------------
+
+describe("case 7: follow-up, lake-lock violation", () => {
+  it("returns lake-lock redirect without calling Haiku or refetching", async () => {
+    const deps = makeDeps({
+      getSession: vi.fn().mockResolvedValue({ user: { id: "user-1" } }),
+      getConversation: vi.fn().mockResolvedValue({
+        id: "conv-1",
+        userId: "user-1",
+        frozen: false,
+        signalsSnapshot: BASE_SIGNALS,
+        lakeId: "tolken-1",
+        lakeName: "Tolken",
+      }),
+      countUserMessages: vi.fn().mockResolvedValue(2),
+      extract: vi.fn().mockResolvedValue({
+        onTopic: true,
+        lakeName: "Vättern",
+        contextChanged: true,
+      }),
+      isLakeLockViolation: vi.fn().mockReturnValue(true),
+      getLakeLockRedirect: vi
+        .fn()
+        .mockReturnValue(
+          "jag känner bara till Tolken, grabben — dra igång en ny chatt",
+        ),
+    });
+
+    const input: AskInput = {
+      message: "Vad biter i Vättern?",
+      conversationId: "conv-1",
+    };
+
+    const result = await handleAsk(input, deps);
+
+    const r = asType(result, "lake_lock");
+    expect(r.text).toContain("Tolken");
+    expect(deps.adviseFollowup).not.toHaveBeenCalled();
+    expect(deps.resolveLake).not.toHaveBeenCalled();
+    expect(deps.buildSignals).not.toHaveBeenCalled();
+    expect(deps.spendCredit).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. Follow-up, happy path
+// ---------------------------------------------------------------------------
+
+describe("case 8: follow-up, happy path", () => {
+  it("calls adviseFollowup with the frozen snapshot, not a fresh fetch", async () => {
+    const mockStream = makeStream();
+    const deps = makeDeps({
+      getSession: vi.fn().mockResolvedValue({ user: { id: "user-1" } }),
+      getConversation: vi.fn().mockResolvedValue({
+        id: "conv-1",
+        userId: "user-1",
+        frozen: false,
+        signalsSnapshot: BASE_SIGNALS,
+        lakeId: "tolken-1",
+        lakeName: "Tolken",
+      }),
+      countUserMessages: vi.fn().mockResolvedValue(3),
+      extract: vi.fn().mockResolvedValue({
+        onTopic: true,
+        lakeName: "Tolken",
+        contextChanged: false,
+      }),
+      isLakeLockViolation: vi.fn().mockReturnValue(false),
+      adviseFollowup: vi.fn().mockReturnValue(mockStream),
+    });
+
+    const input: AskInput = {
+      message: "Vilket djup bör jag fiska på?",
+      conversationId: "conv-1",
+    };
+
+    const result = await handleAsk(input, deps);
+
+    expect(result.type).toBe("stream");
+    expect(deps.adviseFollowup).toHaveBeenCalledOnce();
+    expect(deps.adviseFirst).not.toHaveBeenCalled();
+    expect(deps.buildSignals).not.toHaveBeenCalled();
+    expect(deps.spendCredit).not.toHaveBeenCalled();
+
+    // The snapshot passed to adviseFollowup should be the frozen one
+    // biome-ignore lint/suspicious/noExplicitAny: accessing vi.Mock internals
+    const [args] = (deps.adviseFollowup as any).mock.calls[0];
+    expect(args.snapshot).toEqual(BASE_SIGNALS);
+  });
+
+  it("passes turnIndex = current user message count to adviseFollowup", async () => {
+    const deps = makeDeps({
+      getSession: vi.fn().mockResolvedValue({ user: { id: "user-1" } }),
+      getConversation: vi.fn().mockResolvedValue({
+        id: "conv-1",
+        userId: "user-1",
+        frozen: false,
+        signalsSnapshot: BASE_SIGNALS,
+        lakeId: "tolken-1",
+        lakeName: "Tolken",
+      }),
+      countUserMessages: vi.fn().mockResolvedValue(5),
+      isLakeLockViolation: vi.fn().mockReturnValue(false),
+    });
+
+    await handleAsk({ message: "Djupare?", conversationId: "conv-1" }, deps);
+
+    // biome-ignore lint/suspicious/noExplicitAny: accessing vi.Mock internals
+    const [args] = (deps.adviseFollowup as any).mock.calls[0];
+    expect(args.turnIndex).toBe(5);
+  });
+});
