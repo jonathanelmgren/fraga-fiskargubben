@@ -130,6 +130,31 @@ export const lakeDepth = pgTable("lake_depth", {
 });
 
 /**
+ * Water colour (humic/clear) and Secchi sight depth per lake.
+ *
+ * Rows are populated by `scripts/etl/import-mvm.ts` from the SLU
+ * Miljödata-MVM API (SampleSites / FullSamples).  The import script joins
+ * MVM sample stations to lakes at import time using `stationMatchesLake` in
+ * `src/lib/water/station-match.ts` (ADR-0002); the runtime lookup
+ * `colourFor()` in `src/lib/water/colour.ts` is a pure table read with no
+ * live MVM call and no reference to MVM_TICKET.
+ *
+ * `confidence` reflects the quality of the import-time join:
+ *   'high' — station was ≤ 200 m from the lake centroid.
+ *   'low'  — station was within the equal-area circle but > 200 m.
+ */
+export const waterColour = pgTable("water_colour", {
+  /** Lake id matching `lakes.id` (EU WFD water-body code). */
+  lakeId: text("lake_id").primaryKey(),
+  /** Colour classification derived from MVM absorbans/färgtal. */
+  colour: text("colour").notNull(),
+  /** Secchi sight depth in metres (may be absent in source). */
+  sightDepthM: doublePrecision("sight_depth_m"),
+  /** Quality of the import-time station→lake join: 'high' | 'low'. */
+  confidence: text("confidence").notNull(),
+});
+
+/**
  * SMHI metobs weather stations per parameter.
  *
  * A single physical station can report both air pressure and air temperature,

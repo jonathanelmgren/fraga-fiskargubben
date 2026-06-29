@@ -27,6 +27,7 @@
     "etl:metobs-stations": "tsx scripts/etl/import-metobs-stations.ts",
     "etl:shype": "tsx scripts/etl/import-shype.ts",
     "etl:depth": "tsx scripts/etl/import-depth.ts",
+    "etl:mvm": "tsx scripts/etl/import-mvm.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",

@@ -9,6 +9,14 @@ const schema = z.object({
   GOOGLE_CLIENT_SECRET: z.string().min(1),
   MICROSOFT_CLIENT_ID: z.string().min(1),
   MICROSOFT_CLIENT_SECRET: z.string().min(1),
+  /**
+   * SLU Miljödata-MVM public ticket — import-time only (ETL).
+   * To obtain: register as a web-service user at Artdatabanken UserAdmin
+   * (https://accounts.artdatabanken.se), then activate the ticket under
+   * "Mina sidor" in Miljödata-MVM (https://miljodata.slu.se/mvm/).
+   * No approval is required; the ticket is issued immediately.
+   */
+  MVM_TICKET: z.string().min(1),
 });
 
 const parsed = schema.safeParse(process.env);

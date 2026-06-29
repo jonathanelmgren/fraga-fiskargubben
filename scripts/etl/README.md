@@ -241,3 +241,83 @@ time.  The script creates its own `postgres` + `drizzle` connection using only
 
 The `lake_depth` table is an optional data layer.  Lakes without a row get
 `null` from `depthFor()` — callers must handle graceful absence.
+
+---
+
+# MVM ETL — seed water colour and Secchi sight depth (STUB)
+
+One-time (re-runnable) script that seeds the `water_colour` table from the
+SLU Miljödata-MVM API (SampleSites / FullSamples).  Records water colour
+(brown/humic vs clear) and Secchi sight depth per lake.
+
+## Status
+
+**STUB** — the MVM API base URL has not yet been verified.  The script exits
+with a clear error if `MVM_BASE_URL` is not set.  The system degrades
+gracefully: `colourFor()` in `src/lib/water/colour.ts` returns `null` when no
+`water_colour` row exists for a lake.
+
+## Prerequisites
+
+- `DATABASE_URL` environment variable pointing to the target Postgres database.
+- `MVM_TICKET` set to your Miljödata-MVM public ticket.
+- `MVM_BASE_URL` set to the verified MVM API base URL.
+
+## Obtaining the MVM ticket
+
+1. Register as a web-service user at Artdatabanken UserAdmin:
+   <https://accounts.artdatabanken.se>
+2. Log in to Miljödata-MVM "Mina sidor":
+   <https://miljodata.slu.se/mvm/>
+3. Activate the ticket.  No approval is required — it is issued immediately.
+
+## Running
+
+```bash
+MVM_BASE_URL="https://miljodata.slu.se/mvm/api/v1" \
+  MVM_TICKET="your-ticket-here" \
+  DATABASE_URL="postgres://..." \
+  pnpm etl:mvm
+```
+
+The script is **idempotent** — upserts on `lake_id` PK (`ON CONFLICT DO
+UPDATE`) so re-runs are safe.
+
+## Import-time join (ADR-0002)
+
+The MVM API returns sample stations identified by coordinates, not by EU WFD
+lake id.  The script joins each station to a lake **at import time** using
+`stationMatchesLake` (`src/lib/water/station-match.ts`):
+
+| Distance from lake centroid      | Confidence |
+| -------------------------------- | ---------- |
+| ≤ 200 m                          | `high`     |
+| > 200 m and ≤ equal-area radius  | `low`      |
+| > equal-area radius              | no match   |
+
+The equal-area radius is `sqrt(areaHa × 10 000 / π)` metres — the radius of a
+circle with the same area as the lake.  This is an approximation; a proper
+polygon-containment check will replace it when GSD polygon data is available.
+
+The runtime lookup `colourFor()` is a pure table read with **no live MVM call
+and no reference to MVM_TICKET**.
+
+## Colour classification threshold
+
+`deriveColour` in `src/lib/water/colour.ts`:
+
+| Input field    | Threshold   | Classification |
+| -------------- | ----------- | -------------- |
+| `absorbans420` | > 0.1 m⁻¹  | `brown`        |
+| `absorbans420` | ≤ 0.1 m⁻¹  | `clear`        |
+| `fargtal`      | > 30 mg Pt/L| `brown`        |
+| `fargtal`      | ≤ 30 mg Pt/L| `clear`        |
+
+References: EEA humic water classification; Naturvårdsverket water colour
+guidelines for Swedish national lake monitoring (NV rapport 6555, appendix).
+
+## Architecture
+
+Per ADR-0002: ETL runs once (or on-demand by an operator), never at request
+time.  The script creates its own `postgres` + `drizzle` connection using only
+`DATABASE_URL` (does not use `@/shared/db/client`).
