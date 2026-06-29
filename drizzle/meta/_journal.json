@@ -29,6 +29,13 @@
       "when": 1782747062000,
       "tag": "0003_pg_trgm",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1782748610068,
+      "tag": "0004_curly_hobgoblin",
+      "breakpoints": true
     }
   ]
 }

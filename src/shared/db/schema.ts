@@ -85,3 +85,9 @@ export const analyticsEvents = pgTable("analytics_event", {
     .notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
+
+export const forecastCache = pgTable("forecast_cache", {
+  lakeId: text("lake_id").primaryKey(),
+  fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull(),
+  doc: jsonb("doc").notNull(),
+});
