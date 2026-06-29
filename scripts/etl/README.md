@@ -185,3 +185,59 @@ time.  The script creates its own `postgres` + `drizzle` connection using only
 
 The `water_temp` table acts as an optional override layer.  Lakes without a row
 get the estimate fallback in `src/lib/water/temp.ts#waterTempFor()`.
+
+---
+
+# depth ETL — seed bathymetric depth scalars (STUB)
+
+One-time (re-runnable) script that seeds the `lake_depth` table from the SMHI
+Vattenwebb bathymetry dataset.  Max and mean depth are available for ~10k
+Swedish lakes.
+
+## Status
+
+**STUB** — the Vattenwebb bathymetry export URL/format has not yet been wired.
+The script exits with a clear error if `DEPTH_URL` is not set.  The rest of
+the system degrades gracefully: `depthFor()` in `src/lib/water/depth.ts`
+returns `null` when no `lake_depth` row exists for a lake.
+
+## Prerequisites
+
+- `DATABASE_URL` environment variable pointing to the target Postgres database.
+- `DEPTH_URL` set to the verified Vattenwebb bathymetry export URL.
+
+## Running
+
+```bash
+DEPTH_URL="https://..." DATABASE_URL="postgres://..." pnpm etl:depth
+```
+
+## Obtaining the dataset
+
+SMHI Vattenwebb provides bathymetry (djupdata) for Swedish lakes at
+<https://vattenwebb.smhi.se/>.  The relevant dataset contains max depth
+(`maxdjup`) and mean depth (`medeldjup`) per water body (EU WFD id).
+
+**The exact download URL must be supplied by the operator.**
+
+## Field-name assumptions (placeholder)
+
+The mapper (`mapDepthRecord` in `import-depth.ts`) currently assumes the
+following record shape (to be verified against the real export):
+
+| Field       | Type               | Description                                   |
+| ----------- | ------------------ | --------------------------------------------- |
+| `lakeId`    | `string`           | EU WFD water-body code matching `lakes.id`    |
+| `maxDepthM` | `number` (opt)     | Maximum lake depth in metres                  |
+| `meanDepthM`| `number` (opt)     | Mean lake depth in metres                     |
+
+Update `DepthRecord` in `import-depth.ts` once the real field names are known.
+
+## Architecture
+
+Per ADR-0002: ETL runs once (or on-demand by an operator), never at request
+time.  The script creates its own `postgres` + `drizzle` connection using only
+`DATABASE_URL` (does not use `@/shared/db/client`).
+
+The `lake_depth` table is an optional data layer.  Lakes without a row get
+`null` from `depthFor()` — callers must handle graceful absence.

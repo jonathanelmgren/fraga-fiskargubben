@@ -112,6 +112,24 @@ export const waterTemp = pgTable("water_temp", {
 });
 
 /**
+ * Bathymetric depth scalars per lake.
+ *
+ * Rows are populated by `scripts/etl/import-depth.ts` from the SMHI
+ * Vattenwebb bathymetry dataset.  Most lakes will NOT have a row (graceful
+ * absence — `depthFor()` in `src/lib/water/depth.ts` returns null for those).
+ * Both depth fields are nullable: the source only guarantees max depth for
+ * some lakes; mean depth may be absent even when max is present.
+ */
+export const lakeDepth = pgTable("lake_depth", {
+  /** Lake id matching `lakes.id` (EU WFD water-body code). */
+  lakeId: text("lake_id").primaryKey(),
+  /** Maximum lake depth in metres from the bathymetry source. */
+  maxDepthM: doublePrecision("max_depth_m"),
+  /** Mean lake depth in metres from the bathymetry source. */
+  meanDepthM: doublePrecision("mean_depth_m"),
+});
+
+/**
  * SMHI metobs weather stations per parameter.
  *
  * A single physical station can report both air pressure and air temperature,
