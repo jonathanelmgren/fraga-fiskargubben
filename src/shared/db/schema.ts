@@ -4,6 +4,7 @@ import {
   doublePrecision,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
 } from "drizzle-orm/pg-core";
@@ -91,3 +92,30 @@ export const forecastCache = pgTable("forecast_cache", {
   fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull(),
   doc: jsonb("doc").notNull(),
 });
+
+/**
+ * SMHI metobs weather stations per parameter.
+ *
+ * A single physical station can report both air pressure and air temperature,
+ * so the primary key is composite (id, parameter).
+ *
+ * SMHI metobs parameter ids used by import-metobs-stations.ts:
+ *   - air pressure    → parameter id 9  → stored as 'pressure'
+ *   - air temperature → parameter id 1  → stored as 'temp'
+ */
+export const metobsStations = pgTable(
+  "metobs_station",
+  {
+    /** SMHI station id (numeric, stored as text for join-safety). */
+    id: text("id").notNull(),
+    /** Station display name. */
+    name: text("name").notNull(),
+    /** Latitude in WGS84 decimal degrees. */
+    lat: doublePrecision("lat").notNull(),
+    /** Longitude in WGS84 decimal degrees. */
+    lon: doublePrecision("lon").notNull(),
+    /** Which weather parameter this row represents: 'pressure' or 'temp'. */
+    parameter: text("parameter").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.id, t.parameter] })],
+);

@@ -36,6 +36,13 @@
       "when": 1782748610068,
       "tag": "0004_curly_hobgoblin",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1782749389333,
+      "tag": "0005_square_wendell_vaughn",
+      "breakpoints": true
     }
   ]
 }

@@ -24,6 +24,7 @@
     "commitlint": "commitlint",
     "ts:check": "tsgo --noEmit",
     "etl:svar": "tsx scripts/etl/import-svar.ts",
+    "etl:metobs-stations": "tsx scripts/etl/import-metobs-stations.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",

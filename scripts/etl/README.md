@@ -73,3 +73,52 @@ Per ADR-0002: this ETL runs once (or on-demand by an operator), never at
 request time.  The script does not use `@/shared/db/client` (which imports
 `server-only` and validates all app env vars) — instead it creates its own
 minimal `postgres` + `drizzle` connection using only `DATABASE_URL`.
+
+---
+
+# metobs stations ETL — seed SMHI weather station lists
+
+One-time (re-runnable) script that seeds the `metobs_station` table from the
+SMHI Open Data metobs API for two weather parameters: air pressure and air
+temperature.  A later task uses these rows to find the nearest station to a
+lake when answering forecast questions.
+
+## Parameter ids
+
+| DB value    | SMHI parameter id | Description        |
+| ----------- | ----------------- | ------------------ |
+| `'pressure'` | **9**            | Air pressure       |
+| `'temp'`     | **1**            | Air temperature    |
+
+## Endpoint placeholder
+
+**The exact station-list URL path must be verified by the operator** against the
+current SMHI Open Data metobs API documentation at
+<https://opendata.smhi.se/apidocs/metobs/> before running.
+
+The script uses a `METOBS_STATION_URL` env var (defaulting to
+`<TODO: confirm real path, e.g. /api/version/1.0/parameter/{p}/station.json>`).
+The `{p}` placeholder is replaced at runtime with the numeric parameter id.
+The base URL is controlled by `METOBS_BASE` (default:
+`https://opendata-download-metobs.smhi.se`).
+
+## Prerequisites
+
+- `DATABASE_URL` environment variable pointing to the target Postgres database.
+- `METOBS_STATION_URL` set to the verified endpoint path (with `{p}` for the
+  parameter id), e.g. `/api/version/1.0/parameter/{p}/station.json`.
+- Optionally `METOBS_BASE` if the base URL differs from the default.
+
+## Running
+
+```bash
+# Once the correct endpoint path is known:
+METOBS_STATION_URL="/api/version/1.0/parameter/{p}/station.json" \
+  DATABASE_URL="postgres://..." \
+  pnpm etl:metobs-stations
+```
+
+The script is **idempotent** — running it multiple times upserts rows on the
+composite `(id, parameter)` PK so no duplicates are created.  A single
+physical station can appear in both the `'pressure'` and `'temp'` sets; the
+composite key handles this correctly.
