@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { signUp } from "@/lib/auth-client";
+import { GoogleButton } from "../google-button";
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -36,6 +37,12 @@ export default function RegisterPage() {
         <p className="mb-6 text-sm text-muted-foreground">
           Open registration — anyone can sign up.
         </p>
+        <GoogleButton label="Sign up with Google" />
+        <div className="my-5 flex items-center gap-3 text-xs text-muted-foreground">
+          <span className="h-px flex-1 bg-border" />
+          or
+          <span className="h-px flex-1 bg-border" />
+        </div>
         <form onSubmit={onSubmit} className="flex flex-col gap-4">
           <label className="flex flex-col gap-1.5 text-sm font-medium">
             Name

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { signIn } from "@/lib/auth-client";
+import { GoogleButton } from "../google-button";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -32,6 +33,12 @@ export default function LoginPage() {
         <h1 className="mb-6 text-2xl font-semibold tracking-tight text-card-foreground">
           Sign in
         </h1>
+        <GoogleButton label="Sign in with Google" />
+        <div className="my-5 flex items-center gap-3 text-xs text-muted-foreground">
+          <span className="h-px flex-1 bg-border" />
+          or
+          <span className="h-px flex-1 bg-border" />
+        </div>
         <form onSubmit={onSubmit} className="flex flex-col gap-4">
           <label className="flex flex-col gap-1.5 text-sm font-medium">
             Email

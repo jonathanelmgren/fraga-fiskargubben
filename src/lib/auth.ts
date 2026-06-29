@@ -26,10 +26,13 @@ export const auth = betterAuth({
     minPasswordLength: 8,
     requireEmailVerification: false,
   },
-  // SSO comes later. Add providers here once client id/secret env vars exist:
-  // socialProviders: {
-  //   github: { clientId: env.GITHUB_CLIENT_ID, clientSecret: env.GITHUB_CLIENT_SECRET },
-  // },
+  socialProviders: {
+    google: {
+      clientId: env.GOOGLE_CLIENT_ID,
+      clientSecret: env.GOOGLE_CLIENT_SECRET,
+    },
+    // Microsoft slots in here next — same shape plus `tenantId`.
+  },
   plugins: [nextCookies()],
 });
 

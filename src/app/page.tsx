@@ -4,20 +4,15 @@ import { SignOutButton } from "./sign-out-button";
 
 export default async function Home() {
   const session = await getSession();
+  const name = session?.user.name;
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center gap-6 p-8">
-      <h1 className="text-3xl font-semibold tracking-tight">fiskargubben</h1>
+      <h1 className="text-3xl font-semibold tracking-tight">
+        Hi {name ?? "anon"}
+      </h1>
       {session ? (
-        <div className="flex flex-col items-center gap-4">
-          <p className="text-muted-foreground">
-            Signed in as{" "}
-            <span className="font-medium text-foreground">
-              {session.user.email}
-            </span>
-          </p>
-          <SignOutButton />
-        </div>
+        <SignOutButton />
       ) : (
         <div className="flex gap-3">
           <Link
