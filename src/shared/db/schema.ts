@@ -94,6 +94,24 @@ export const forecastCache = pgTable("forecast_cache", {
 });
 
 /**
+ * Seeded S-HYPE modeled water temperatures per lake.
+ *
+ * Rows are populated by `scripts/etl/import-shype.ts` from the SMHI
+ * Vattenwebb S-HYPE sub-catchment export.  Most lakes will NOT have a row
+ * (the estimate-first fallback in `src/lib/water/temp.ts` handles those).
+ * When a row IS present, `waterTempFor()` returns it with source "modeled",
+ * confidence "high" instead of the code-computed estimate.
+ */
+export const waterTemp = pgTable("water_temp", {
+  /** Lake id matching `lakes.id` (EU WFD water-body code). */
+  lakeId: text("lake_id").primaryKey(),
+  /** Modeled water temperature in °C from the S-HYPE export. */
+  tempC: doublePrecision("temp_c").notNull(),
+  /** Timestamp of the S-HYPE observation/forecast used for this value. */
+  asOf: timestamp("as_of", { withTimezone: true }),
+});
+
+/**
  * SMHI metobs weather stations per parameter.
  *
  * A single physical station can report both air pressure and air temperature,

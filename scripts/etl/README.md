@@ -122,3 +122,66 @@ The script is **idempotent** — running it multiple times upserts rows on the
 composite `(id, parameter)` PK so no duplicates are created.  A single
 physical station can appear in both the `'pressure'` and `'temp'` sets; the
 composite key handles this correctly.
+
+---
+
+# S-HYPE ETL — seed modeled water temperatures (STUB)
+
+One-time (re-runnable) script that seeds the `water_temp` table from the SMHI
+Vattenwebb S-HYPE sub-catchment water-temperature export.
+
+## Status
+
+**STUB** — the Vattenwebb S-HYPE export URL/format has not yet been wired.
+The script exits with a clear error if `SHYPE_URL` is not set.  The rest of
+the system degrades gracefully: `waterTempFor()` falls back to the code-computed
+estimate (`source: "estimated"`, `confidence: "low"`) when no `water_temp` row
+exists for a lake.
+
+## Prerequisites
+
+- `DATABASE_URL` environment variable pointing to the target Postgres database.
+- `SHYPE_URL` set to the verified Vattenwebb S-HYPE export URL.
+
+## Running
+
+```bash
+SHYPE_URL="https://..." DATABASE_URL="postgres://..." pnpm etl:shype
+```
+
+## Obtaining the dataset
+
+SMHI Vattenwebb provides S-HYPE sub-catchment model output at
+<https://vattenwebb.smhi.se/>.  The relevant product is the
+**S-HYPE water-temperature** (sjötemperatur) export for Swedish lakes.
+
+Typical access path (verify against current service — may require registration):
+
+```
+https://vattenwebb.smhi.se/modelentry/api/...
+```
+
+Download the export once, store it locally, and pass the `file://` path to
+`SHYPE_URL`.  Do **not** hit the service at request time.
+
+## Field-name assumptions (placeholder)
+
+The mapper (`mapRecordToWaterTemp` in `import-shype.ts`) currently assumes the
+following record shape (to be verified against the real export):
+
+| Field    | Type     | Description                                          |
+| -------- | -------- | ---------------------------------------------------- |
+| `lakeId` | `string` | Sub-catchment / lake id matching `lakes.id`          |
+| `tempC`  | `number` | Modeled water temperature in °C                      |
+| `asOf`   | `string` | ISO-8601 timestamp of the model output               |
+
+Update `ShypeRecord` in `import-shype.ts` once the real field names are known.
+
+## Architecture
+
+Per ADR-0002: ETL runs once (or on-demand by an operator), never at request
+time.  The script creates its own `postgres` + `drizzle` connection using only
+`DATABASE_URL` (does not use `@/shared/db/client`).
+
+The `water_temp` table acts as an optional override layer.  Lakes without a row
+get the estimate fallback in `src/lib/water/temp.ts#waterTempFor()`.
