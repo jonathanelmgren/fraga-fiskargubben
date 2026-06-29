@@ -1,0 +1,41 @@
+{
+  "configVersion": "1.7",
+  "$schema": "https://github.com/jayu/rev-dep/blob/master/config-schema/1.7.schema.json?raw=true",
+  "rules": [
+    {
+      "path": ".",
+      "moduleBoundaries": [
+        {
+          "name": "src",
+          "pattern": "src/**/*",
+          "allow": ["src/**/*"]
+        }
+      ],
+      "circularImportsDetection": {
+        "enabled": true,
+        "ignoreTypeImports": false
+      },
+      "orphanFilesDetection": {
+        "enabled": false
+      },
+      "unusedNodeModulesDetection": {
+        "enabled": false
+      },
+      "missingNodeModulesDetection": {
+        "enabled": false
+      },
+      "unusedExportsDetection": {
+        "enabled": false
+      },
+      "unresolvedImportsDetection": {
+        "enabled": true
+      },
+      "devDepsUsageOnProdDetection": {
+        "enabled": true
+      },
+      "restrictedImportsDetection": {
+        "enabled": false
+      }
+    }
+  ]
+}
