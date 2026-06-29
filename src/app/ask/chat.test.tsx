@@ -1,0 +1,208 @@
+/**
+ * chat.test.tsx — focused component tests for the Chat UI.
+ *
+ * Coverage:
+ *  1. Submitting the form calls fetch to /api/ask with the typed message.
+ *  2. A `chat_limit` gate JSON response renders the plain system banner
+ *     (NOT as an assistant bubble; looks for the "Konversationsgränsen" text).
+ *  3. A `topic_refused` gate response renders as a persona (assistant) bubble
+ *     (inside .chat-bubble-assistant with the gate text).
+ *  4. A streamed text/plain response appends text to an assistant bubble.
+ *  5. register_to_continue gate renders the CTA with login/register links.
+ *
+ * Streaming in jsdom is fiddly; we cover it lightly (ReadableStream mock).
+ * Live streaming end-to-end is deferred to the Phase 6.2 Playwright e2e.
+ *
+ * Note: @testing-library/jest-dom is not installed; we use plain expect() +
+ * toBeNull / toBeTruthy / toContain / toBe assertions throughout.
+ */
+
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import Chat from "./chat";
+
+// ---------------------------------------------------------------------------
+// Mock next/image (jsdom can't load images)
+// ---------------------------------------------------------------------------
+
+vi.mock("next/image", () => ({
+  // Use a span instead of img to avoid biome noImgElement in tests
+  default: ({ alt }: { alt: string }) => (
+    <span data-testid="img-stub">{alt}</span>
+  ),
+}));
+
+// ---------------------------------------------------------------------------
+// Mock next/link
+// ---------------------------------------------------------------------------
+
+vi.mock("next/link", () => ({
+  default: ({
+    href,
+    children,
+    ...props
+  }: {
+    href: string;
+    children: React.ReactNode;
+    [k: string]: unknown;
+  }) => (
+    <a href={href} {...props}>
+      {children}
+    </a>
+  ),
+}));
+
+// ---------------------------------------------------------------------------
+// Mock useSession — default: logged out
+// ---------------------------------------------------------------------------
+
+vi.mock("@/lib/auth-client", () => ({
+  useSession: () => ({ data: null }),
+}));
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function makeJsonResponse(body: object, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function makeStreamResponse(text: string, conversationId = "conv-abc") {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(text));
+      controller.close();
+    },
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "X-Conversation-Id": conversationId,
+    },
+  });
+}
+
+async function typeAndSubmit(message: string) {
+  const textarea = screen.getByRole("textbox", { name: /skriv din fråga/i });
+  fireEvent.change(textarea, { target: { value: message } });
+  const button = screen.getByRole("button", { name: /skicka fråga/i });
+  fireEvent.click(button);
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe("Chat component", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("1. calls fetch /api/ask with the typed message on submit", async () => {
+    const fetchMock = vi
+      .spyOn(global, "fetch")
+      .mockResolvedValueOnce(makeStreamResponse("Prova maskkroken."));
+
+    render(<Chat />);
+    await typeAndSubmit("Ska jag fiska i Vättern imorgon?");
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledOnce();
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/ask");
+    expect(init.method).toBe("POST");
+    const body = JSON.parse(init.body as string);
+    expect(body.message).toBe("Ska jag fiska i Vättern imorgon?");
+  });
+
+  it("2. chat_limit gate renders a plain system banner (not an assistant bubble)", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValueOnce(
+      makeJsonResponse({ type: "chat_limit", text: "Chat limit reached." }),
+    );
+
+    render(<Chat />);
+    await typeAndSubmit("En fråga till");
+
+    await waitFor(() => {
+      // The plain banner — <section aria-label="Chatbegränsning"> → role "region"
+      expect(
+        screen.queryByRole("region", { name: /chatbegränsning/i }),
+      ).not.toBeNull();
+    });
+
+    const banner = screen.getByRole("region", { name: /chatbegränsning/i });
+    expect(banner.textContent).toContain("Konversationsgränsen");
+    // Must NOT be wrapped in .chat-bubble-assistant
+    expect(banner.closest(".chat-bubble-assistant")).toBeNull();
+  });
+
+  it("3. topic_refused gate renders as an assistant persona bubble", async () => {
+    const gateText = "Det där är inget fiske — prata om sjöar istället.";
+    vi.spyOn(global, "fetch").mockResolvedValueOnce(
+      makeJsonResponse({ type: "topic_refused", text: gateText }),
+    );
+
+    render(<Chat />);
+    await typeAndSubmit("Vad är meningen med livet?");
+
+    await waitFor(() => {
+      expect(screen.queryByText(gateText)).not.toBeNull();
+    });
+
+    const bubble = screen.getByText(gateText).closest(".chat-bubble-assistant");
+    expect(bubble).toBeTruthy();
+  });
+
+  it("4. streamed text/plain response populates an assistant bubble", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValueOnce(
+      makeStreamResponse("Prova maskkroken vid vassen tidigt på morgonen."),
+    );
+
+    render(<Chat />);
+    await typeAndSubmit("Tips för abborre?");
+
+    await waitFor(() => {
+      expect(screen.queryByText(/Prova maskkroken vid vassen/i)).not.toBeNull();
+    });
+
+    const bubble = screen
+      .getByText(/Prova maskkroken vid vassen/i)
+      .closest(".chat-bubble-assistant");
+    expect(bubble).toBeTruthy();
+  });
+
+  it("5. register_to_continue gate renders the CTA with login/register links", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValueOnce(
+      makeJsonResponse({
+        type: "register_to_continue",
+        text: "Registrera dig för att fortsätta.",
+      }),
+    );
+
+    render(<Chat />);
+    await typeAndSubmit("Ännu en fråga");
+
+    await waitFor(() => {
+      // CTA gate has class gate-cta and role=status
+      const cta = document.querySelector(".gate-cta");
+      expect(cta).not.toBeNull();
+    });
+
+    const cta = document.querySelector(".gate-cta") as HTMLElement;
+    expect(cta.textContent).toContain("Registrera");
+    expect(cta.querySelector('a[href="/register"]')).toBeTruthy();
+    expect(cta.querySelector('a[href="/login"]')).toBeTruthy();
+  });
+});
