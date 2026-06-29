@@ -111,6 +111,47 @@ No `--no-verify` needed.
 
 ---
 
+## Fix: Task 5.6 review findings
+
+### Finding 1 — Wrap claim UPDATEs in a DB transaction (Important)
+
+**What changed (`src/lib/chat/anon.ts`):**
+- `AnonDeps` now includes `"transaction"` in its `Pick<Db, ...>`.
+- The two sequential `deps.db.update(...)` calls inside `claimConversation` (conversation claim + carry-over credit) are wrapped in `deps.db.transaction(async (tx) => { ... })`. Both updates now issue on `tx` instead of `deps.db`. The find/SELECT stays outside the transaction.
+- The carry-over guard (`and(eq(users.id, userId), eq(users.creditsUsed, 0))`) is unchanged.
+- Stale comment about "sequential / no transaction" replaced with a note explaining the atomicity guarantee.
+
+**What changed (`src/lib/chat/anon.test.ts`):**
+- `MockDb` type updated to include `"transaction"`.
+- Claim-success test: added a `mockTransaction` spy that calls its callback with a `tx` stub sharing the same `mockUpdateFn`. Added assertion `expect(mockTransaction).toHaveBeenCalledTimes(1)` in addition to the existing two-update assertions.
+- Double-claim and already-claimed tests: added `transaction: mockTransaction` to their `mockDb` and asserted `expect(mockTransaction).not.toHaveBeenCalled()`.
+
+### Finding 2 — GC test should assert the WHERE predicate (Minor)
+
+**What changed (`src/lib/chat/anon.test.ts`):**
+- In the `gcUnclaimedAnon` "deletes unclaimed rows" test, added one line after the existing `mockWhere` call-count assertion:
+  `expect(mockWhere.mock.calls[0][0]).toBeTruthy();`
+  This asserts the WHERE predicate received by `.where(...)` is a composed (truthy) value, catching an accidentally dropped condition.
+
+### Verification
+
+```
+pnpm test src/lib/chat/anon.test.ts
+→ Test Files  1 passed (1)
+→ Tests  8 passed (8)
+
+pnpm ts:check
+→ (no output = clean)
+
+pnpm biome check src/lib/chat/anon.ts src/lib/chat/anon.test.ts
+→ Checked 99 files in 23ms. No fixes applied.
+→ Found 3 warnings.  ← all pre-existing in events.test.ts + temp.test.ts; 0 warnings in changed files
+```
+
+No `--no-verify` needed.
+
+---
+
 ## Self-review / concerns
 
 1. **Transaction gap**: the two sequential UPDATEs are not atomic. Acceptable at this stage; documented above.

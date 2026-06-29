@@ -62,7 +62,7 @@ import { conversations, users } from "@/shared/db/schema";
 // ---------------------------------------------------------------------------
 
 interface AnonDeps {
-  db: Pick<Db, "insert" | "update" | "delete" | "select">;
+  db: Pick<Db, "insert" | "update" | "delete" | "select" | "transaction">;
 }
 
 function defaultDeps(): AnonDeps {
@@ -139,10 +139,9 @@ export interface ClaimResult {
  *   3. If not found: return { claimed: false } — safe no-op (double-claim
  *      rejected, wrong token, row already claimed).
  *
- * Note: operations are sequential (not wrapped in a DB transaction) because
- * Next.js / Drizzle on the serverless edge does not always have transaction
- * support.  The window for a race is negligible at registration time; if
- * strict atomicity is needed, wrap in deps.db.transaction() when available.
+ * The conversation update and the carry-over credit update are wrapped in a
+ * single DB transaction so that a crash between them cannot leave the
+ * conversation claimed but the credit un-spent (or vice-versa).
  */
 export async function claimConversation(
   userId: string,
@@ -167,20 +166,25 @@ export async function claimConversation(
 
   const conv = rows[0] as { id: string };
 
-  // 2a. Claim the conversation: set userId, clear token
-  await deps.db
-    .update(conversations)
-    .set({ userId, claimToken: null })
-    .where(eq(conversations.id, conv.id));
+  // 2. Atomically: claim the conversation + apply carry-over credit.
+  //    Both updates run inside a transaction so a crash between them cannot
+  //    leave a partial state (conversation claimed but credit un-spent).
+  await deps.db.transaction(async (tx) => {
+    // 2a. Claim the conversation: set userId, clear token
+    await tx
+      .update(conversations)
+      .set({ userId, claimToken: null })
+      .where(eq(conversations.id, conv.id));
 
-  // 2b. Carry-over: creditsUsed = max(creditsUsed, 1)
-  //     Only set to 1 if currently 0 — prevents clobbering a higher count.
-  //     In practice a brand-new user always has creditsUsed=0, but the guard
-  //     is correct and documented (ADR-0004).
-  await deps.db
-    .update(users)
-    .set({ creditsUsed: 1 })
-    .where(and(eq(users.id, userId), eq(users.creditsUsed, 0)));
+    // 2b. Carry-over: creditsUsed = max(creditsUsed, 1)
+    //     Only set to 1 if currently 0 — prevents clobbering a higher count.
+    //     In practice a brand-new user always has creditsUsed=0, but the guard
+    //     is correct and documented (ADR-0004).
+    await tx
+      .update(users)
+      .set({ creditsUsed: 1 })
+      .where(and(eq(users.id, userId), eq(users.creditsUsed, 0)));
+  });
 
   return { claimed: true };
 }

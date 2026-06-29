@@ -14,7 +14,10 @@ import {
 // Shared type alias for mock db
 // ---------------------------------------------------------------------------
 
-type MockDb = Pick<Db, "insert" | "update" | "delete" | "select">;
+type MockDb = Pick<
+  Db,
+  "insert" | "update" | "delete" | "select" | "transaction"
+>;
 
 // ---------------------------------------------------------------------------
 // createAnonConversation
@@ -110,16 +113,27 @@ describe("claimConversation", () => {
       return { set: callCount === 1 ? convSet : userSet };
     });
 
+    // transaction mock: invoke callback with a tx that has the same update chain
+    const mockTransaction = vi
+      .fn()
+      .mockImplementation(async (cb: (tx: unknown) => Promise<void>) => {
+        await cb({ update: mockUpdateFn });
+      });
+
     const mockDb = {
       select: mockSelect,
       update: mockUpdateFn,
+      transaction: mockTransaction,
     } as unknown as MockDb;
 
     const result = await claimConversation("user-42", "tok-1", { db: mockDb });
 
     expect(result).toEqual({ claimed: true });
 
-    // Two updates: one for conversation, one for user
+    // Transaction was used for the two updates
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+
+    // Two updates inside the transaction: one for conversation, one for user
     expect(mockUpdateFn).toHaveBeenCalledTimes(2);
 
     // Conversation update: sets userId and clears claimToken
@@ -140,10 +154,12 @@ describe("claimConversation", () => {
     const mockSelect = vi.fn().mockReturnValue({ from: mockFrom });
 
     const mockUpdateFn = vi.fn();
+    const mockTransaction = vi.fn();
 
     const mockDb = {
       select: mockSelect,
       update: mockUpdateFn,
+      transaction: mockTransaction,
     } as unknown as MockDb;
 
     const result = await claimConversation("user-42", "tok-wrong", {
@@ -152,6 +168,7 @@ describe("claimConversation", () => {
 
     expect(result).toEqual({ claimed: false });
     expect(mockUpdateFn).not.toHaveBeenCalled();
+    expect(mockTransaction).not.toHaveBeenCalled();
   });
 
   it("does not throw when given an already-claimed token: returns {claimed:false}", async () => {
@@ -161,10 +178,12 @@ describe("claimConversation", () => {
     const mockFrom = vi.fn().mockReturnValue({ where: mockWhere2 });
     const mockSelect = vi.fn().mockReturnValue({ from: mockFrom });
     const mockUpdateFn = vi.fn();
+    const mockTransaction = vi.fn();
 
     const mockDb = {
       select: mockSelect,
       update: mockUpdateFn,
+      transaction: mockTransaction,
     } as unknown as MockDb;
 
     await expect(
@@ -190,6 +209,8 @@ describe("gcUnclaimedAnon", () => {
     expect(count).toBe(2);
     expect(mockDelete).toHaveBeenCalledTimes(1);
     expect(mockWhere).toHaveBeenCalledTimes(1);
+    // Assert a composed WHERE predicate was passed (not a no-op undefined/null)
+    expect(mockWhere.mock.calls[0][0]).toBeTruthy();
   });
 
   it("returns 0 when no rows are deleted", async () => {
