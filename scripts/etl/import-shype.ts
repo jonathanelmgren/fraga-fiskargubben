@@ -65,7 +65,7 @@ export function mapRecordToWaterTemp(record: ShypeRecord): WaterTempRow {
   if (!record.lakeId) {
     throw new Error("S-HYPE record is missing required lakeId.");
   }
-  if (typeof record.tempC !== "number" || !isFinite(record.tempC)) {
+  if (typeof record.tempC !== "number" || !Number.isFinite(record.tempC)) {
     throw new Error(
       `Invalid tempC on S-HYPE record for lakeId: ${record.lakeId}`,
     );
