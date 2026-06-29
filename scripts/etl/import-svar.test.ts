@@ -13,8 +13,8 @@ const FIXTURE_FEATURE = {
     MS_NAME: "Vänern",
     KOMMUNNAMN: "Västra Götalands kommuner",
     LANNAMN: "Västra Götalands län",
-    CENTROID_N: 658_930.5, // SWEREF99 northing (m) — converted to WGS84 lat
-    CENTROID_E: 327_120.3, // SWEREF99 easting (m) — converted to WGS84 lon
+    CENTROID_N: 658_930.5, // stored as-is; CRS must be WGS84/CRS84 at WFS-request level
+    CENTROID_E: 327_120.3, // stored as-is; see scripts/etl/README.md for CRS note
     AREA_HA: 593_380.0,
   },
 };

@@ -108,3 +108,56 @@ No errors or warnings in new files. One pre-existing warning in
 3. **`fetch` for large GeoJSON** — streaming parse (e.g. `JSONStream`) would be
    safer for very large responses, but `fetch` + `res.json()` is acceptable for
    a one-time script at dataset size (~50 MB).
+
+## Fix: Task 1.2 review findings
+
+### Finding 1 — `excluded.` column-name consistency in `onConflictDoUpdate`
+
+All `sql\`excluded.<col>\`` references already used the correct DB column names
+(no camelCase had slipped in). Added an inline comment to the `set` block in
+`scripts/etl/import-svar.ts` explicitly noting that these are PostgreSQL DB
+column names (snake_case), with a mapping reminder for each field:
+
+```
+name→name, municipality→municipality, county→county,
+lat→lat, lon→lon, areaHa→area_ha
+```
+
+No logic changed.
+
+### Finding 2 — Fixture comment drift in the test file
+
+Replaced misleading fixture comments in `scripts/etl/import-svar.test.ts`:
+
+Before:
+```
+CENTROID_N: 658_930.5, // SWEREF99 northing (m) — converted to WGS84 lat
+CENTROID_E: 327_120.3, // SWEREF99 easting (m) — converted to WGS84 lon
+```
+
+After:
+```
+CENTROID_N: 658_930.5, // stored as-is; CRS must be WGS84/CRS84 at WFS-request level
+CENTROID_E: 327_120.3, // stored as-is; see scripts/etl/README.md for CRS note
+```
+
+The mapper does not perform any coordinate conversion; the new comments match
+the README's framing (operator must request CRS84/EPSG:4326 at the WFS level).
+
+### Covering test
+
+```
+pnpm test scripts/etl/import-svar.test.ts
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Duration  677ms
+```
+
+### ts:check
+
+```
+pnpm ts:check
+> tsgo --noEmit
+(no output — clean)
+```

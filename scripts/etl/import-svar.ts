@@ -183,6 +183,11 @@ async function main(): Promise<void> {
         .onConflictDoUpdate({
           target: lakes.id,
           set: {
+            // `excluded.<col>` refers to the PostgreSQL pseudo-table of the
+            // proposed row; column names here are DB column names (snake_case),
+            // not Drizzle field names.  Confirmed against schema.ts:
+            //   name→name, municipality→municipality, county→county,
+            //   lat→lat, lon→lon, areaHa→area_ha
             name: sql`excluded.name`,
             municipality: sql`excluded.municipality`,
             county: sql`excluded.county`,
