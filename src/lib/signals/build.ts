@@ -118,7 +118,13 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
     cloud_area_fraction?: number;
   };
 
-  const source = conditionsSource(targetUtc, now);
+  let source: "forecast" | "observed";
+  try {
+    source = conditionsSource(targetUtc, now);
+  } catch {
+    missFire(lake.id, "conditions_source");
+    source = "forecast";
+  }
 
   const conditions = await safe<ConditionsResult>(
     async () => {
@@ -219,9 +225,15 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
 
   // ── Step 7: Derived signals ───────────────────────────────────────────────
 
-  // Light window (pure — always succeeds if sunTimes does)
-  const sun = sunTimes(lake.lat, lake.lon, targetTime);
-  const light = lightWindow(targetTime, sun);
+  // Light window (pure — guarded because sunTimes/lightWindow can throw on edge inputs)
+  let light: Signals["lightWindow"];
+  try {
+    const sun = sunTimes(lake.lat, lake.lon, targetTime);
+    light = lightWindow(targetTime, sun);
+  } catch {
+    missFire(lake.id, "light_window");
+    // light remains undefined → lightWindow signal is omitted below
+  }
 
   // Windward shore — only if wind direction is available
   let windwardShoreSignal: Signals["windwardShore"];
@@ -238,7 +250,10 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
     speciesResult !== undefined &&
     speciesResult.length > 0
   ) {
-    speciesComfortSignal = speciesComfort(speciesResult, waterTemp.value);
+    const comfortResult = speciesComfort(speciesResult, waterTemp.value);
+    if (Object.keys(comfortResult).length > 0) {
+      speciesComfortSignal = comfortResult;
+    }
   }
 
   // ── Assemble Signals ──────────────────────────────────────────────────────
@@ -320,7 +335,7 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
   }
 
   // Derived
-  signals.lightWindow = light;
+  if (light !== undefined) signals.lightWindow = light;
   if (windwardShoreSignal) signals.windwardShore = windwardShoreSignal;
   if (speciesComfortSignal) signals.speciesComfort = speciesComfortSignal;
 

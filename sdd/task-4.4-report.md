@@ -134,3 +134,63 @@ The 3 warnings are pre-existing in `src/lib/analytics/events.test.ts` (noExplici
 3. **`now` is required** in `BuildSignalsInput` (not optional), enforcing testability at the type level. Any production call site must pass the current clock.
 
 4. **speciesComfort with empty result**: if `speciesComfort` returns `{}` (no recognised species), the field is still set to `{}`. Acceptable but could be discussed.
+
+---
+
+## Fix: Task 4.4 graceful-degradation gaps
+
+### Finding 1 — `conditionsSource` call unwrapped
+
+**What changed** (`build.ts` ~line 121): The bare `const source = conditionsSource(targetUtc, now)` was wrapped in a `try/catch`. On throw it defaults to `"forecast"` and fires `missFire(lake.id, "conditions_source")`. Normal (non-throwing) path is unchanged.
+
+### Finding 2 — `sunTimes`/`lightWindow` derivation unwrapped
+
+**What changed** (`build.ts` ~line 223): The two-line derivation:
+```ts
+const sun = sunTimes(lake.lat, lake.lon, targetTime);
+const light = lightWindow(targetTime, sun);
+```
+is now wrapped in a `try/catch`. On throw, `light` remains `undefined`, `missFire(lake.id, "light_window")` is called, and `signals.lightWindow` is not set (conditional assignment `if (light !== undefined)`). Previously `signals.lightWindow = light` was unconditional; that line was updated to match.
+
+`@/lib/signals/light` is now mocked in `build.test.ts` (added `vi.mock("@/lib/signals/light", ...)` and `setupForecastOnly` sets `sunTimes` → FAKE_SUN, `lightWindow` → `"day"`).
+
+### Finding 3 — Empty `speciesComfort {}` set instead of omitted
+
+**What changed** (`build.ts` ~line 241): The assignment `speciesComfortSignal = speciesComfort(...)` is now guarded:
+```ts
+const comfortResult = speciesComfort(speciesResult, waterTemp.value);
+if (Object.keys(comfortResult).length > 0) {
+  speciesComfortSignal = comfortResult;
+}
+```
+When all species are unrecognised (e.g. `["unknown_fish"]`), `speciesComfort` returns `{}` and the signal is omitted.
+
+### New Tests (build.test.ts)
+
+Added 4 new tests (27 total, was 23):
+
+- **`graceful degradation — light window`** (3 tests):
+  - `resolves (does not throw) when sunTimes throws`
+  - `omits lightWindow when sunTimes throws`
+  - `emits source_miss(light_window) when sunTimes throws`
+- **`graceful degradation — speciesComfort empty result`** (1 test):
+  - `omits speciesComfort when speciesComfort returns {} (unknown species)`
+
+### Verification
+
+**Test command + output:**
+```
+pnpm test src/lib/signals/build.test.ts
+
+Test Files  1 passed (1)
+      Tests  27 passed (27)
+   Duration  459ms
+```
+
+**TypeScript:** `pnpm ts:check` (`tsgo --noEmit`) exits clean — no output.
+
+**Biome:** `./node_modules/.bin/biome check src/lib/signals/build.ts src/lib/signals/build.test.ts`
+```
+Checked 2 files in 9ms. No fixes applied.
+```
+Zero findings on the two changed files. (Pre-existing warnings in unrelated files are unchanged.)

@@ -41,9 +41,15 @@ vi.mock("@/lib/analytics/events", () => ({
   emit: vi.fn(),
 }));
 
+vi.mock("@/lib/signals/light", () => ({
+  sunTimes: vi.fn(),
+  lightWindow: vi.fn(),
+}));
+
 // ── Import after mocks ────────────────────────────────────────────────────────
 
 import { emit } from "@/lib/analytics/events";
+import { lightWindow, sunTimes } from "@/lib/signals/light";
 import { colourFor } from "@/lib/water/colour";
 import { depthFor } from "@/lib/water/depth";
 import { speciesFor } from "@/lib/water/species";
@@ -56,7 +62,6 @@ import {
   observedConditions,
   pressureTrend24h,
 } from "@/lib/weather/metobs";
-
 import { buildSignals } from "./build";
 
 // ── Test fixtures ─────────────────────────────────────────────────────────────
@@ -127,6 +132,11 @@ const WATER_TEMP_WITH_PROV: WithProvenance<number> = {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+const FAKE_SUN = {
+  sunrise: new Date("2026-07-15T03:00:00Z"),
+  sunset: new Date("2026-07-15T20:00:00Z"),
+};
+
 function setupForecastOnly() {
   vi.mocked(conditionsSource).mockReturnValue("forecast");
   vi.mocked(getForecast).mockResolvedValue(FORECAST_DOC);
@@ -146,6 +156,9 @@ function setupForecastOnly() {
   vi.mocked(depthFor).mockResolvedValue(null);
   vi.mocked(colourFor).mockResolvedValue(null);
   vi.mocked(speciesFor).mockResolvedValue(null);
+  // Light
+  vi.mocked(sunTimes).mockReturnValue(FAKE_SUN);
+  vi.mocked(lightWindow).mockReturnValue("day");
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -524,6 +537,68 @@ describe("buildSignals", () => {
       });
 
       expect(signals.pressureTrend).toBeUndefined();
+    });
+  });
+
+  describe("graceful degradation — light window", () => {
+    it("resolves (does not throw) when sunTimes throws", async () => {
+      setupForecastOnly();
+      vi.mocked(sunTimes).mockImplementation(() => {
+        throw new Error("invalid coordinates");
+      });
+
+      await expect(
+        buildSignals({ lake: LAKE, targetTime: FUTURE_TARGET, now: NOW }),
+      ).resolves.toBeDefined();
+    });
+
+    it("omits lightWindow when sunTimes throws", async () => {
+      setupForecastOnly();
+      vi.mocked(sunTimes).mockImplementation(() => {
+        throw new Error("invalid coordinates");
+      });
+
+      const signals = await buildSignals({
+        lake: LAKE,
+        targetTime: FUTURE_TARGET,
+        now: NOW,
+      });
+
+      expect(signals.lightWindow).toBeUndefined();
+    });
+
+    it("emits source_miss(light_window) when sunTimes throws", async () => {
+      setupForecastOnly();
+      vi.mocked(sunTimes).mockImplementation(() => {
+        throw new Error("invalid coordinates");
+      });
+
+      await buildSignals({ lake: LAKE, targetTime: FUTURE_TARGET, now: NOW });
+
+      expect(vi.mocked(emit)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "source_miss",
+          payload: expect.objectContaining({ source: "light_window" }),
+        }),
+      );
+    });
+  });
+
+  describe("graceful degradation — speciesComfort empty result", () => {
+    it("omits speciesComfort when speciesComfort returns {} (unknown species)", async () => {
+      setupForecastOnly();
+      // Use a species name that has no rule in the table → speciesComfort returns {}
+      vi.mocked(speciesFor).mockResolvedValue(["unknown_fish"]);
+
+      const signals = await buildSignals({
+        lake: LAKE,
+        targetTime: FUTURE_TARGET,
+        now: NOW,
+      });
+
+      // speciesPresent is set, but speciesComfort should be omitted (not {})
+      expect(signals.speciesPresent).toEqual(["unknown_fish"]);
+      expect(signals.speciesComfort).toBeUndefined();
     });
   });
 });
