@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 vi.mock("@/shared/db/client", () => ({ db: {} }));
 
-import { type AnalyticsEventType, emit } from "./events";
+import { type AnalyticsEventType, type EmitDeps, emit } from "./events";
 
 const types: AnalyticsEventType[] = [
   "lake_resolved",
@@ -23,7 +23,7 @@ describe("analytics emit", () => {
       .mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
     await emit(
       { type: "lake_resolved", lakeId: "654321" },
-      { db: { insert } as any },
+      { db: { insert } as unknown as EmitDeps["db"] },
     );
     expect(insert).toHaveBeenCalledOnce();
   });

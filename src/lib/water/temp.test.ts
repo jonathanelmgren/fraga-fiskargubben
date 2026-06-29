@@ -23,7 +23,7 @@ describe("estimateWaterTemp", () => {
 
   it("returns a finite celsius value in a sane range [0, 30]", () => {
     const result = estimateWaterTemp(summerBase);
-    expect(isFinite(result.value)).toBe(true);
+    expect(Number.isFinite(result.value)).toBe(true);
     expect(result.value).toBeGreaterThanOrEqual(0);
     expect(result.value).toBeLessThanOrEqual(30);
   });
@@ -93,7 +93,7 @@ describe("estimateWaterTemp", () => {
 
   it("works without optional fields", () => {
     const result = estimateWaterTemp({ season: "spring" });
-    expect(isFinite(result.value)).toBe(true);
+    expect(Number.isFinite(result.value)).toBe(true);
     expect(result.provenance.source).toBe("estimated");
   });
 

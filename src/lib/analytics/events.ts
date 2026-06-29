@@ -17,7 +17,7 @@ export interface AnalyticsEvent {
   payload?: Record<string, unknown>;
 }
 
-interface EmitDeps {
+export interface EmitDeps {
   db: Pick<typeof realDb, "insert">;
 }
 
