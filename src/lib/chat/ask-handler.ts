@@ -17,6 +17,7 @@
  * a Next.js Response (stream or JSON).
  */
 
+import { randomUUID } from "node:crypto";
 import type { AnalyticsEvent } from "@/lib/analytics/events";
 import type { Extraction, HistoryMessage } from "@/lib/chat/extractor";
 import type { Lake } from "@/lib/lakes/resolve";
@@ -130,7 +131,13 @@ export type AskResult =
   | { type: "lake_unresolved"; text: string }
   | { type: "out_of_credits"; text: string }
   | { type: "lake_lock"; text: string }
-  | { type: "stream"; stream: AdviceStream; conversationId: string };
+  | {
+      type: "stream";
+      stream: AdviceStream;
+      conversationId: string;
+      /** Present only for new anon conversations; the route uses this to set the fiska_claim cookie. */
+      claimToken?: string;
+    };
 
 // ---------------------------------------------------------------------------
 // In-persona gate messages (Swedish, Fiskargubben voice)
@@ -252,10 +259,14 @@ export async function handleAsk(
       now: deps.now,
     });
 
+    // Generate a claimToken for new anon conversations so the route can
+    // set the fiska_claim cookie (enabling the anon quota gate on 2nd prompts).
+    const newAnonClaimToken = isAnon ? randomUUID() : null;
+
     // Create conversation row with frozen snapshot
     const newConvId = await deps.createConversation({
       userId,
-      claimToken: isAnon ? claimToken : null,
+      claimToken: newAnonClaimToken,
       lakeId: lake.id,
       targetTime,
       signalsSnapshot: signals,
@@ -274,7 +285,14 @@ export async function handleAsk(
       history,
     });
 
-    return { type: "stream", stream: adviceStream, conversationId: newConvId };
+    return {
+      type: "stream",
+      stream: adviceStream,
+      conversationId: newConvId,
+      // Surface the claimToken for new anon conversations so route.ts can
+      // set the fiska_claim cookie — this is the plumbing that was missing.
+      ...(newAnonClaimToken !== null ? { claimToken: newAnonClaimToken } : {}),
+    };
   }
 
   // ── Step 5b: Follow-up ──────────────────────────────────────────────────

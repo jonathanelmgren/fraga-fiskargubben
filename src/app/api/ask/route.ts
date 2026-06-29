@@ -247,21 +247,17 @@ export async function POST(request: Request): Promise<Response> {
       }
     })();
 
-    // Set claim token cookie for anon users if this was a new conversation
-    // (the conversation was just created — anon new-conversation path)
-    const session = await deps.getSession();
-    if (!session && !claimToken) {
-      // New anon conversation: set the claim token cookie
-      // TODO: the createConversation call in handleAsk already generated
-      // the conversation id, but we need the claimToken from that call.
-      // Currently createConversation doesn't return claimToken.
-      // For now we defer cookie-setting — the anon quota gate uses the
-      // presence of a claimToken to block 2nd prompts.
-      // DONE_WITH_CONCERNS: anon claim cookie not set in this iteration;
-      // the anon quota gate in handleAsk currently checks for claimToken,
-      // but the route doesn't set it yet for new anon conversations.
-      // Fix: createConversation should return { id, claimToken } so the
-      // route can set the cookie. This is a follow-up TODO for Phase 6.
+    // Set claim token cookie for new anon conversations.
+    // handleAsk returns claimToken on the stream result when it created a new
+    // anon conversation. Without this cookie the anon quota gate (isAnon &&
+    // claimToken !== null) can never trip, giving anon users unlimited prompts.
+    if (result.claimToken) {
+      cookieStore.set(CLAIM_TOKEN_COOKIE, result.claimToken, {
+        httpOnly: true,
+        sameSite: "lax",
+        secure: true,
+        path: "/",
+      });
     }
 
     return new Response(readable, {

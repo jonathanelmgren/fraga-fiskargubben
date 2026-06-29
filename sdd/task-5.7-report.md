@@ -97,3 +97,49 @@ The 3 warnings are pre-existing in src/lib/water/temp.test.ts (noGlobalIsFinite)
 - conversationId non-null assertions were eliminated in favour of an explicit followConvId cast — the invariant is clear from the surrounding guard.
 - buildSignals requires lake.name: string but Lake.name is string | null; the route wraps with lake.name ?? lake.id (ID is always non-null).
 - Fire-and-forget persistence after streaming is a pragmatic trade-off: persistence failure does not break the user-facing stream, but a crash between stream start and finalMessage() resolving could lose the assistant message. Acceptable for v1.
+
+## Fix: Task 5.7 review findings
+
+### Finding 1 (IMPORTANT): Claim cookie now written for new anon conversation
+
+**Root cause:** `createConversation` was called with `claimToken: isAnon ? claimToken : null` — but `claimToken` came from the cookie, which was `null` for a brand-new anon user. The handler was passing `null` into the DB and the route had no token to set in the cookie.
+
+**Fix (Option A — handler surfaces the token):**
+
+- `ask-handler.ts`: Added `import { randomUUID } from "node:crypto"`. On the new-conversation path, generates `newAnonClaimToken = isAnon ? randomUUID() : null` and passes it to `createConversation`. The `AskResult` stream variant gets an optional `claimToken?: string` field. When `newAnonClaimToken` is non-null, the stream result includes it.
+- `route.ts`: The stub `if (!session && !claimToken) { /* TODO */ }` block is replaced with `if (result.claimToken) { cookieStore.set(CLAIM_TOKEN_COOKIE, result.claimToken, { httpOnly: true, sameSite: "lax", secure: true, path: "/" }); }`. Uses the existing `CLAIM_TOKEN_COOKIE` constant — no second hardcoded name.
+- Cookie is HttpOnly, SameSite=Lax, Secure. HMAC signing remains deferred (pre-existing DONE_WITH_CONCERNS note).
+
+**New tests (case 6):**
+- "returns claimToken on stream result for new anon conversation so route can set the cookie" — asserts `result.claimToken` is a non-empty string and that `createConversation` was called with that same token.
+- "does NOT return claimToken for logged-in user new conversation" — asserts `result.claimToken` is undefined.
+
+### Finding 2 (Minor): credit_spent double-emit check
+
+**Finding:** `spendCredit` in `src/lib/chat/quota.ts` (lines 104–107) already calls `await deps.emit({ type: "credit_spent", payload: { userId } })` internally. Adding a second explicit emit in `ask-handler.ts` would double-count. **No change made.** The existing `spendCredit` call in the handler is sufficient; `credit_spent` is emitted exactly once per credit spend.
+
+### Finding 3 (Minor): Off-topic test negative assertion
+
+Added `expect(deps.adviseFollowup).not.toHaveBeenCalled()` to the case 3 (off-topic) test alongside the existing `adviseFirst` check.
+
+### Test run
+
+```
+pnpm test src/lib/chat/ask-handler.test.ts
+Test Files  1 passed (1)
+Tests:      14 passed (14)   ← was 12, +2 new claimToken plumbing tests
+```
+
+### ts:check
+
+```
+pnpm ts:check → exit 0, no errors
+```
+
+### biome
+
+```
+pnpm biome check src/app/api/ask/route.ts src/lib/chat/ask-handler.ts src/lib/chat/ask-handler.test.ts
+Checked 102 files. Found 3 warnings.
+```
+All 3 warnings are pre-existing in `src/lib/analytics/events.test.ts` and `src/lib/water/temp.test.ts` — none in the changed files.

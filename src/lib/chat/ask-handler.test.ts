@@ -250,6 +250,7 @@ describe("case 3: off-topic message", () => {
     );
     expect(deps.spendCredit).not.toHaveBeenCalled();
     expect(deps.adviseFirst).not.toHaveBeenCalled();
+    expect(deps.adviseFollowup).not.toHaveBeenCalled();
   });
 });
 
@@ -352,6 +353,41 @@ describe("case 6: new conversation, happy path", () => {
         lakeId: "tolken-1",
       }),
     );
+  });
+
+  it("returns claimToken on stream result for new anon conversation so route can set the cookie", async () => {
+    // Anon: no session, no prior claimToken
+    const deps = makeDeps({
+      getSession: vi.fn().mockResolvedValue(null),
+      getClaimToken: vi.fn().mockReturnValue(null),
+      getConversation: vi.fn().mockResolvedValue(null),
+    });
+
+    const result = await handleAsk({ message: "Vad biter i Tolken?" }, deps);
+
+    // Must be a stream result
+    const r = asType(result, "stream");
+    // claimToken must be present and non-empty (a UUID v4)
+    expect(r.claimToken).toBeDefined();
+    expect(typeof r.claimToken).toBe("string");
+    expect(r.claimToken?.length).toBeGreaterThan(0);
+    // createConversation must have been called with that same claimToken
+    expect(deps.createConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ claimToken: r.claimToken }),
+    );
+  });
+
+  it("does NOT return claimToken for logged-in user new conversation", async () => {
+    const deps = makeDeps({
+      getSession: vi.fn().mockResolvedValue({ user: { id: "user-1" } }),
+      getConversation: vi.fn().mockResolvedValue(null),
+    });
+
+    const result = await handleAsk({ message: "Vad biter i Tolken?" }, deps);
+
+    const r = asType(result, "stream");
+    // Logged-in users don't get a claimToken
+    expect(r.claimToken).toBeUndefined();
   });
 });
 
