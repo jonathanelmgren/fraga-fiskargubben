@@ -23,6 +23,7 @@
     "rev-dep": "rev-dep config run",
     "commitlint": "commitlint",
     "ts:check": "tsgo --noEmit",
+    "etl:svar": "tsx scripts/etl/import-svar.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
