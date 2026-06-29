@@ -13,9 +13,11 @@
  * lazy-db pattern) rather than importing `gcUnclaimedAnon`, because anon.ts
  * has `import "server-only"` which throws when imported into a plain Node/tsx
  * process.  The query is identical to gcUnclaimedAnon (the tested source of
- * truth): DELETE WHERE userId IS NULL AND createdAt < cutoff.
+ * truth): DELETE WHERE userId IS NULL AND lastActiveAt < cutoff.
  *
- * TTL: rows with userId IS NULL created before (now − TTL_DAYS) are deleted.
+ * TTL: rows with userId IS NULL that have been INACTIVE since before
+ * (now − TTL_DAYS) are deleted — filtering on lastActiveAt (maintained per
+ * turn by /api/ask) so an actively-used anon conversation is not purged.
  */
 
 const TTL_DAYS = Number(process.env.ANON_GC_TTL_DAYS ?? "7");
@@ -39,10 +41,11 @@ async function main(): Promise<void> {
   const deleted = await db
     .delete(conversations)
     .where(
-      and(isNull(conversations.userId), lt(conversations.createdAt, cutoff)),
-    );
+      and(isNull(conversations.userId), lt(conversations.lastActiveAt, cutoff)),
+    )
+    .returning({ id: conversations.id });
 
-  const count = Array.isArray(deleted) ? deleted.length : 0;
+  const count = deleted.length;
   console.log(
     `GC'd ${count} unclaimed anon conversation row(s) older than ${TTL_DAYS}d (cutoff ${cutoff.toISOString()}).`,
   );

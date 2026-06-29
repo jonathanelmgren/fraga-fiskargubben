@@ -45,6 +45,7 @@ import {
   freezeConversation,
   spendCredit,
 } from "@/lib/chat/quota";
+import { ExternalServiceError, TimeoutError } from "@/lib/errors";
 import { getSession } from "@/lib/get-session";
 import { resolveLake } from "@/lib/lakes/resolve";
 import { buildSignals } from "@/lib/signals/build";
@@ -62,7 +63,7 @@ const UUID_RE =
 
 /** H1: in-persona Swedish fallback the chat UI renders as a generic error. */
 const GENERIC_ERROR_MESSAGE =
-  "något krånglar i tacklingen just nu, grabben — kasta igen om en stund.";
+  "Något krånglar i tacklingen just nu, hörru — kasta igen om en stund.";
 
 /**
  * H1: classify an unexpected error from handleAsk into a stable in-persona
@@ -79,8 +80,17 @@ function classifyError(err: unknown): Response {
     return Response.json(
       {
         type: "lake_unresolved",
-        text: "det är fullt på sjön just nu — vänta en stund och kasta igen.",
+        text: "Det är fullt på sjön just nu — vänta en stund och kasta igen.",
       },
+      { status: 503 },
+    );
+  }
+  // M14: a typed upstream failure (Anthropic/SMHI outage or timeout) maps to
+  // 503 — a transient "try again" — rather than a generic 500 (and crucially,
+  // an extractor outage is NOT silently rendered as an off-topic refusal).
+  if (err instanceof ExternalServiceError || err instanceof TimeoutError) {
+    return Response.json(
+      { type: "lake_unresolved", text: GENERIC_ERROR_MESSAGE },
       { status: 503 },
     );
   }

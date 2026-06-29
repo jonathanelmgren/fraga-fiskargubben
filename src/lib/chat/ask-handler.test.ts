@@ -96,7 +96,9 @@ function makeDeps(overrides: Partial<AskHandlerDeps> = {}): AskHandlerDeps {
     isLakeLockViolation: vi.fn().mockReturnValue(false),
     getLakeLockRedirect: vi.fn().mockReturnValue("lake-lock redirect"),
     canSpendCredit: vi.fn().mockReturnValue(true),
-    spendCredit: vi.fn().mockResolvedValue(undefined),
+    // E5: spendCredit now returns true when a credit was actually spent
+    // (guarded atomic UPDATE matched a row).
+    spendCredit: vi.fn().mockResolvedValue(true),
     chatTurnAllowed: vi.fn().mockReturnValue(true),
     freezeConversation: vi.fn().mockResolvedValue(undefined),
     createConversation: vi.fn().mockResolvedValue("new-conv-id"),
@@ -230,8 +232,7 @@ describe("case 3: off-topic message", () => {
       getConversation: vi.fn().mockResolvedValue(null),
       extract: vi.fn().mockResolvedValue({
         onTopic: false,
-        refusal:
-          "Jag snackar bara fiske, grabben. Fråga mig om sjöar istället.",
+        refusal: "Jag snackar bara fiske, hörru. Fråga mig om sjöar istället.",
       }),
     });
 
@@ -410,7 +411,7 @@ describe("case 7: follow-up, lake-lock violation", () => {
       getLakeLockRedirect: vi
         .fn()
         .mockReturnValue(
-          "jag känner bara till Tolken, grabben — dra igång en ny chatt",
+          "Jag känner bara till Tolken, hörru — dra igång en ny chatt",
         ),
     });
 

@@ -19,7 +19,7 @@
 
 import "server-only";
 
-import { eq, sql } from "drizzle-orm";
+import { and, eq, or, sql } from "drizzle-orm";
 import { type AnalyticsEvent, emit as realEmit } from "@/lib/analytics/events";
 import type { Db } from "@/shared/db/client";
 import { db as realDb } from "@/shared/db/client";
@@ -37,6 +37,13 @@ export const FREE_CREDITS = 3;
  * messageCount should be the count of role='user' message rows already stored.
  */
 export const MAX_CHAT_TURNS = 20;
+
+/**
+ * Turn index at which the assistant starts "winding down" a conversation
+ * (nudging toward a fresh chat) ahead of the hard MAX_CHAT_TURNS cap.
+ * Co-located with MAX_CHAT_TURNS so the two limits stay coupled.
+ */
+export const WINDING_DOWN_TURN = 15;
 
 /**
  * Plain, non-persona system alert shown when the chat-turn limit is hit.
@@ -79,6 +86,13 @@ interface QuotaDeps {
   emit: (event: AnalyticsEvent) => Promise<void>;
 }
 
+interface SpendCreditDeps {
+  // spendCredit needs `.returning()` on the update to know whether the
+  // guarded conditional actually matched a row.
+  db: Pick<Db, "update">;
+  emit: (event: AnalyticsEvent) => Promise<void>;
+}
+
 function defaultDeps(): QuotaDeps {
   return { db: realDb, emit: realEmit };
 }
@@ -88,23 +102,46 @@ function defaultDeps(): QuotaDeps {
 // ---------------------------------------------------------------------------
 
 /**
- * Atomically increments creditsUsed for the given user and emits a
- * credit_spent analytics event.  Call this AFTER canSpendCredit returns true
- * and BEFORE the Sonnet first-prompt call.
+ * Atomically spends a Credit for the given user.
+ *
+ * E5 (check-then-spend race): the increment is GUARDED in the same statement —
+ * it only fires when the user is still under the free limit (or paid). Two
+ * concurrent free-tier requests can therefore not both succeed: the DB
+ * serialises the conditional UPDATEs and only the ones that still match the
+ * `creditsUsed < FREE_CREDITS` predicate affect a row. The caller MUST treat a
+ * `false` return (zero rows affected) as out-of-credits.
+ *
+ * `credit_spent` is emitted only when a credit was actually spent.
+ *
+ * Call this after canSpendCredit returns true (cheap pre-check) — but rely on
+ * the boolean return for the authoritative decision.
+ *
+ * @returns true if a credit was spent, false if the user was already at/over
+ *          the free limit (and is not paid).
  */
 export async function spendCredit(
   userId: string,
-  deps: QuotaDeps = defaultDeps(),
-): Promise<void> {
-  await deps.db
+  deps: SpendCreditDeps = defaultDeps(),
+): Promise<boolean> {
+  const updated = await deps.db
     .update(users)
     .set({ creditsUsed: sql`${users.creditsUsed} + 1` })
-    .where(eq(users.id, userId));
+    .where(
+      and(
+        eq(users.id, userId),
+        or(eq(users.isPaid, true), sql`${users.creditsUsed} < ${FREE_CREDITS}`),
+      ),
+    )
+    .returning({ id: users.id });
 
-  await deps.emit({
-    type: "credit_spent",
-    payload: { userId },
-  });
+  const spent = updated.length > 0;
+  if (spent) {
+    await deps.emit({
+      type: "credit_spent",
+      payload: { userId },
+    });
+  }
+  return spent;
 }
 
 /**

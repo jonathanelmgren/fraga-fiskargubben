@@ -40,6 +40,28 @@ function isPersonaGate(g: GateType): boolean {
   return PERSONA_GATES.includes(g);
 }
 
+/** All known gate types — used to validate the untrusted server `type` string. */
+const KNOWN_GATE_TYPES: GateType[] = [
+  "register_to_continue",
+  "chat_limit",
+  "topic_refused",
+  "lake_unresolved",
+  "out_of_credits",
+  "lake_lock",
+  "error",
+];
+
+/**
+ * Runtime guard for the server-provided gate `type`. An unknown/garbled value
+ * must not be blindly cast to GateType (it would fall through to the generic
+ * italic fallback silently). Returns a valid GateType or null when unknown.
+ */
+function asGateType(value: string): GateType | null {
+  return (KNOWN_GATE_TYPES as string[]).includes(value)
+    ? (value as GateType)
+    : null;
+}
+
 // ---------------------------------------------------------------------------
 // Bubble sub-components
 // ---------------------------------------------------------------------------
@@ -111,6 +133,34 @@ function ThinkingIndicator() {
   );
 }
 
+/**
+ * Shared "conversation limit reached / start a new chat" banner. Previously
+ * duplicated verbatim in the chat_limit gate and the frozen system notice;
+ * extracted so the copy + link live in one place.
+ */
+function ChatLimitBanner({
+  ariaLabel,
+  className,
+}: {
+  ariaLabel: string;
+  className: string;
+}) {
+  return (
+    <section aria-label={ariaLabel} className={className}>
+      <span className="shrink-0 text-base">⚓</span>
+      <span>
+        Konversationsgränsen är nådd.{" "}
+        <Link
+          href="/ask"
+          className="underline underline-offset-2 hover:text-stone-800"
+        >
+          Starta en ny chatt
+        </Link>
+      </span>
+    </section>
+  );
+}
+
 function GateBanner({ gateType, text }: { gateType: GateType; text: string }) {
   if (gateType === "register_to_continue") {
     return (
@@ -173,21 +223,10 @@ function GateBanner({ gateType, text }: { gateType: GateType; text: string }) {
   if (gateType === "chat_limit") {
     // Plain system notice — NOT Fiskargubben's voice
     return (
-      <section
-        aria-label="Chatbegränsning"
+      <ChatLimitBanner
+        ariaLabel="Chatbegränsning"
         className="chat-limit-banner flex items-center gap-3 rounded-lg border border-stone-300/70 bg-stone-100/60 px-4 py-3 text-xs text-stone-600 mx-2"
-      >
-        <span className="shrink-0 text-base">⚓</span>
-        <span>
-          Konversationsgränsen är nådd.{" "}
-          <Link
-            href="/ask"
-            className="underline underline-offset-2 hover:text-stone-800"
-          >
-            Starta en ny chatt
-          </Link>
-        </span>
-      </section>
+      />
     );
   }
 
@@ -256,6 +295,11 @@ export default function Chat() {
       setThinking(true);
       forceScroll();
 
+      // E2: hoisted so the catch can finalize a dangling partial bubble and
+      // cancel the reader if a mid-stream read rejects.
+      let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+      let streamingMsgId: string | null = null;
+
       try {
         const response = await fetch("/api/ask", {
           method: "POST",
@@ -299,6 +343,7 @@ export default function Chat() {
 
           // Start streaming into a new assistant message
           const assistantMsgId = nextId();
+          streamingMsgId = assistantMsgId;
           setMessages((prev) => [
             ...prev,
             {
@@ -319,6 +364,7 @@ export default function Chat() {
             setStreaming(false);
             return;
           }
+          activeReader = reader;
 
           let done = false;
           while (!done) {
@@ -351,6 +397,8 @@ export default function Chat() {
             }
             return updated;
           });
+          activeReader = null;
+          streamingMsgId = null;
           setStreaming(false);
         } else {
           // Structured gate JSON response
@@ -362,7 +410,10 @@ export default function Chat() {
             gate = { type: "lake_unresolved", text: "Något gick fel." };
           }
 
-          const gateType = gate.type as GateType;
+          // Validate the untrusted server `type` at runtime; an unknown value
+          // falls back to the generic "error" state explicitly rather than
+          // being cast and silently dropped into the italic fallback render.
+          const gateType = asGateType(gate.type) ?? "error";
 
           if (gateType === "chat_limit") {
             setFrozen(true);
@@ -385,6 +436,29 @@ export default function Chat() {
       } catch {
         setThinking(false);
         setStreaming(false);
+
+        // E2: a mid-stream read rejection leaves a dangling partial assistant
+        // bubble (streaming:true cursor). Cancel the reader and finalize that
+        // bubble (clear the cursor) before appending the error bubble, so we
+        // don't show a frozen blinking cursor next to the error.
+        if (activeReader) {
+          try {
+            await activeReader.cancel();
+          } catch {
+            // reader already errored/closed — nothing to cancel.
+          }
+        }
+        if (streamingMsgId) {
+          const danglingId = streamingMsgId;
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.role === "assistant" && m.id === danglingId
+                ? { ...m, streaming: false }
+                : m,
+            ),
+          );
+        }
+
         setMessages((prev) => [
           ...prev,
           {
@@ -460,21 +534,10 @@ export default function Chat() {
 
       {/* Frozen system notice */}
       {frozen && (
-        <section
-          aria-label="Chatt fryst"
-          className="frozen-banner shrink-0 mx-4 mb-2 flex items-center gap-2 rounded-lg border border-stone-300/70 bg-stone-100/60 px-4 py-3 text-xs text-stone-600"
-        >
-          <span className="text-base">⚓</span>
-          <span>
-            Konversationsgränsen är nådd.{" "}
-            <Link
-              href="/ask"
-              className="underline underline-offset-2 hover:text-stone-800"
-            >
-              Starta en ny chatt
-            </Link>
-          </span>
-        </section>
+        <ChatLimitBanner
+          ariaLabel="Chatt fryst"
+          className="frozen-banner shrink-0 mx-4 mb-2 flex items-center gap-3 rounded-lg border border-stone-300/70 bg-stone-100/60 px-4 py-3 text-xs text-stone-600"
+        />
       )}
 
       {/* Input area */}

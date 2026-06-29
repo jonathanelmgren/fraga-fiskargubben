@@ -9,7 +9,7 @@
 
 /** Off-topic refusal (extractor topic gate). */
 export const CANNED_REFUSAL =
-  "Jag snackar bara fiske, grabben. Fråga mig om sjöar, abborre eller gädda istället.";
+  "Jag snackar bara fiske, hörru. Fråga mig om sjöar, abborre eller gädda istället.";
 
 /**
  * Chat-turn limit hit — deliberately a PLAIN system alert, NOT Fiskargubben's
@@ -20,12 +20,12 @@ export const CHAT_LIMIT_MESSAGE =
 
 /** Anon free-prompt exhausted → register to continue. */
 export const ANON_REGISTER_MESSAGE =
-  "Registrera dig för att fortsätta — anon-fisket är ett gratisprova, grabben.";
+  "Registrera dig för att fortsätta — anon-fisket är ett gratisprova, hörru.";
 
 /** Lake could not be resolved from the user's message. */
 export const LAKE_UNRESOLVED_MESSAGE =
-  "kände inte igen sjön du nämnde — kan du skriva sjönamnet tydligare, eventuellt med kommunen?";
+  "Kände inte igen sjön du nämnde — kan du skriva sjönamnet tydligare, eventuellt med kommunen?";
 
 /** Free credits exhausted. */
 export const OUT_OF_CREDITS_MESSAGE =
-  "du har förbrukat dina gratiskrediter — uppgradera för att fiska vidare.";
+  "Du har förbrukat dina gratiskrediter — uppgradera för att fiska vidare.";

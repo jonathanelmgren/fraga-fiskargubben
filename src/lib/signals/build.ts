@@ -67,6 +67,24 @@ function wp<T>(
 }
 
 /**
+ * Assign a numeric provenance-wrapped value onto `target[key]` only when the
+ * value is present and finite.  Collapses the repeated
+ * `x !== undefined && Number.isFinite(x)` guards on the conditions fields.
+ * Behaviour is identical to the inline blocks (same wp()/provenance semantics).
+ */
+function assignFinite<K extends keyof Signals>(
+  target: Signals,
+  key: K,
+  value: number | undefined,
+  source: Source,
+  confidence: Provenance["confidence"],
+): void {
+  if (value !== undefined && Number.isFinite(value)) {
+    target[key] = wp(value, source, confidence) as Signals[K];
+  }
+}
+
+/**
  * Derive calendar season from the LOCAL month (0-indexed).
  * Northern hemisphere: Dec-Feb=winter, Mar-May=spring, Jun-Aug=summer, Sep-Nov=autumn.
  *
@@ -108,7 +126,11 @@ async function safe<T>(
 ): Promise<T | undefined> {
   try {
     return await fn();
-  } catch {
+  } catch (err) {
+    // L: log at debug level so a real code bug is distinguishable from
+    // legitimate "data unavailable" — without losing the never-throws contract
+    // (we still call onMiss() and return undefined).
+    console.error("[signals] source producer failed (treated as miss):", err);
     onMiss();
     return undefined;
   }
@@ -316,34 +338,28 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
   };
 
   // Conditions fields
-  if (
-    conditions?.air_temperature !== undefined &&
-    Number.isFinite(conditions.air_temperature)
-  ) {
-    signals.airTempC = wp(conditions.air_temperature, source, "high");
-  }
-  if (
-    conditions?.air_pressure_at_mean_sea_level !== undefined &&
-    Number.isFinite(conditions.air_pressure_at_mean_sea_level)
-  ) {
-    signals.pressureHpa = wp(
-      conditions.air_pressure_at_mean_sea_level,
-      source,
-      "high",
-    );
-  }
-  if (
-    conditions?.wind_speed !== undefined &&
-    Number.isFinite(conditions.wind_speed)
-  ) {
-    signals.windMs = wp(conditions.wind_speed, source, "high");
-  }
-  if (
-    conditions?.cloud_area_fraction !== undefined &&
-    Number.isFinite(conditions.cloud_area_fraction)
-  ) {
-    signals.cloudPct = wp(conditions.cloud_area_fraction, source, "high");
-  }
+  assignFinite(
+    signals,
+    "airTempC",
+    conditions?.air_temperature,
+    source,
+    "high",
+  );
+  assignFinite(
+    signals,
+    "pressureHpa",
+    conditions?.air_pressure_at_mean_sea_level,
+    source,
+    "high",
+  );
+  assignFinite(signals, "windMs", conditions?.wind_speed, source, "high");
+  assignFinite(
+    signals,
+    "cloudPct",
+    conditions?.cloud_area_fraction,
+    source,
+    "high",
+  );
 
   // Trends
   if (pressureTrendSignal) signals.pressureTrend = pressureTrendSignal;

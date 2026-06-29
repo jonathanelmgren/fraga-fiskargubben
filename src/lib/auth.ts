@@ -81,9 +81,15 @@ export const auth = betterAuth({
                 // Cookie store unavailable outside a request context — ignore.
               }
             }
-          } catch {
-            // Claim failures are swallowed: the user account was created
+          } catch (err) {
+            // Claim failures are non-fatal: the user account was created
             // successfully; the unclaimed conversation will be GC'd by TTL.
+            // L: log (don't swallow silently) so a lost carry-over credit is
+            // debuggable rather than vanishing without a trace.
+            console.warn(
+              `[auth] claimConversation failed for user ${user.id} — carry-over credit not applied:`,
+              err,
+            );
           }
         },
       },

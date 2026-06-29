@@ -39,6 +39,15 @@ const MVM_BASE_URL =
 /** H8: chunk size keeps each INSERT well under Postgres' 65,535 bind-param cap. */
 const BATCH_SIZE = 1_000;
 
+/**
+ * L: redact the MVM_TICKET secret before logging a URL. The ticket stays in the
+ * request itself (the un-redacted URL is what we fetch) — only the log output is
+ * sanitised so the secret never lands in CI logs / terminal scrollback.
+ */
+function redactTicket(url: string): string {
+  return url.replace(/ticket=[^&]*/i, "ticket=***");
+}
+
 // ---------------------------------------------------------------------------
 // Type definitions (shapes are placeholder — adapt to real MVM response)
 // ---------------------------------------------------------------------------
@@ -185,7 +194,7 @@ async function main(): Promise<void> {
 
   // ── 2. Fetch MVM sample stations ─────────────────────────────────────────
   const stationsUrl = `${MVM_BASE_URL}/SampleSites?ticket=${ticket}`;
-  console.log(`Fetching MVM sample sites from: ${stationsUrl}`);
+  console.log(`Fetching MVM sample sites from: ${redactTicket(stationsUrl)}`);
 
   const stationsRes = await fetch(stationsUrl);
   if (!stationsRes.ok) {
@@ -198,7 +207,7 @@ async function main(): Promise<void> {
 
   // ── 3. Fetch MVM measurements (FullSamples) ───────────────────────────────
   const samplesUrl = `${MVM_BASE_URL}/FullSamples?ticket=${ticket}`;
-  console.log(`Fetching MVM samples from: ${samplesUrl}`);
+  console.log(`Fetching MVM samples from: ${redactTicket(samplesUrl)}`);
 
   const samplesRes = await fetch(samplesUrl);
   if (!samplesRes.ok) {

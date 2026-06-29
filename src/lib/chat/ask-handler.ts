@@ -25,6 +25,7 @@ import { formatLabel } from "@/lib/lakes/resolve-helpers";
 import type { Signals } from "@/lib/signals/types";
 import {
   ANON_REGISTER_MESSAGE,
+  CANNED_REFUSAL,
   CHAT_LIMIT_MESSAGE,
   LAKE_UNRESOLVED_MESSAGE,
   OUT_OF_CREDITS_MESSAGE,
@@ -111,7 +112,12 @@ export type AskHandlerDeps = {
   isLakeLockViolation(extraction: Extraction, lakeName: string): boolean;
   getLakeLockRedirect(lakeName: string): string;
   canSpendCredit(user: UserRow): boolean;
-  spendCredit(userId: string): Promise<void>;
+  /**
+   * Atomically spends a credit; returns false when the guarded UPDATE matched
+   * no row (user already at/over the free limit) — the caller treats false as
+   * out-of-credits to close the check-then-spend race (E5).
+   */
+  spendCredit(userId: string): Promise<boolean>;
   chatTurnAllowed(messageCount: number): boolean;
   freezeConversation(id: string): Promise<void>;
 
@@ -250,7 +256,9 @@ export async function handleAsk(
     await deps.emit({ type: "topic_refused" });
     return {
       type: "topic_refused",
-      text: extraction.refusal ?? "Off-topic.",
+      // L: Swedish persona fallback (CANNED_REFUSAL) instead of an English
+      // "Off-topic." string on an all-Swedish surface.
+      text: extraction.refusal ?? CANNED_REFUSAL,
     };
   }
 
@@ -338,8 +346,18 @@ export async function handleAsk(
     // the credit/stream discrepancy is at least visible.
     // TODO(refund): thread a finalMessage()-failure callback into handleAsk so
     // a failed first-turn stream can refund the spent credit.
+    //
+    // E5 (check-then-spend race): spendCredit is a GUARDED atomic UPDATE that
+    // returns false when the user has, since the canSpendCredit pre-check,
+    // exhausted the free limit (e.g. a concurrent request raced ahead). Treat
+    // a false return as out-of-credits so two concurrent free-tier prompts can
+    // never both stream.
     if (userId) {
-      await deps.spendCredit(userId);
+      const spent = await deps.spendCredit(userId);
+      if (!spent) {
+        await deps.emit({ type: "out_of_credits" });
+        return { type: "out_of_credits", text: OUT_OF_CREDITS_MESSAGE };
+      }
     }
     await deps.emit({ type: "lake_resolved", lakeId: lake.id });
 
@@ -363,12 +381,23 @@ export async function handleAsk(
 
   // ── Step 5b: Follow-up ──────────────────────────────────────────────────
   // At this point conversationId and conversation are both non-null
-  // (we only reach here when !(!conversationId || !conversation))
-  const followConvId = conversationId as string;
+  // (we only reach here when !(!conversationId || !conversation)), so derive
+  // the id from the (typed, non-null) conversation row rather than casting.
+  const followConvId = conversation.id;
 
   const snapshot = conversation.signalsSnapshot;
   if (!snapshot) {
-    // Shouldn't happen in normal flow — treat as fatal gate failure
+    // The lake WAS resolved on this conversation; a missing frozen snapshot is
+    // an internal data anomaly (e.g. a write that never landed), NOT a failure
+    // to recognise the lake. Emit a persistence_failure so it is observable
+    // instead of being silently rendered as a "lake not recognised" message.
+    // We still return a sensible gate to the user (we can't continue without a
+    // snapshot); reuse lake_unresolved so as not to invent a new gate type.
+    await deps.emit({
+      type: "persistence_failure",
+      conversationId: followConvId,
+      payload: { reason: "missing_signals_snapshot" },
+    });
     return { type: "lake_unresolved", text: LAKE_UNRESOLVED_MESSAGE };
   }
 

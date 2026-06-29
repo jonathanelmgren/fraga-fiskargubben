@@ -1,6 +1,6 @@
 # Analytics: capture structured events to Postgres now, dashboards later
 
-We emit structured **Analytics events** to an append-only Postgres `analytics_events` table
+We emit structured **Analytics events** to an append-only Postgres `analytics_event` table
 (`type`, `lake_id?`, `payload jsonb`, `created_at`) inline from the pipeline that already does the
 work — no new infrastructure, since Postgres is already the datastore. The **event taxonomy is
 defined up front** (`lake_resolved`, `lake_unresolved`, `source_miss` with which source missed,

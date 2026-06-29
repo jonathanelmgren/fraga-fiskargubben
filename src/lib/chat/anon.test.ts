@@ -4,89 +4,13 @@ vi.mock("server-only", () => ({}));
 vi.mock("@/shared/db/client", () => ({ db: {} }));
 
 import type { Db } from "@/shared/db/client";
-import {
-  claimConversation,
-  createAnonConversation,
-  gcUnclaimedAnon,
-} from "./anon";
+import { claimConversation, gcUnclaimedAnon } from "./anon";
 
 // ---------------------------------------------------------------------------
 // Shared type alias for mock db
 // ---------------------------------------------------------------------------
 
-type MockDb = Pick<
-  Db,
-  "insert" | "update" | "delete" | "select" | "transaction"
->;
-
-// ---------------------------------------------------------------------------
-// createAnonConversation
-// ---------------------------------------------------------------------------
-
-describe("createAnonConversation", () => {
-  it("inserts a conversations row with userId=null and a non-empty claimToken", async () => {
-    const mockValues = vi.fn().mockResolvedValue(undefined);
-    const mockInsert = vi.fn().mockReturnValue({ values: mockValues });
-    const mockDb = { insert: mockInsert } as unknown as MockDb;
-
-    const result = await createAnonConversation({}, { db: mockDb });
-
-    // L5: id is generated in-function (insert has no .returning()) and returned
-    // as conversationId; it must match the id passed into the insert.
-    expect(result.conversationId).toBeTruthy();
-    expect(result.claimToken).toBeTruthy();
-    expect(result.claimToken.length).toBeGreaterThan(10);
-
-    // Assert the insert was called with userId=null
-    expect(mockInsert).toHaveBeenCalledTimes(1);
-    const insertedValues = mockValues.mock.calls[0][0] as Record<
-      string,
-      unknown
-    >;
-    expect(insertedValues.userId).toBeNull();
-    expect(insertedValues.claimToken).toBe(result.claimToken);
-    expect(insertedValues.id).toBe(result.conversationId);
-  });
-
-  it("generates different tokens on each call (unguessable)", async () => {
-    const makeMock = () => {
-      const mockValues = vi.fn().mockResolvedValue([{ id: "conv-x" }]);
-      const mockInsert = vi.fn().mockReturnValue({ values: mockValues });
-      return { mockInsert };
-    };
-
-    const { mockInsert: ins1 } = makeMock();
-    const { mockInsert: ins2 } = makeMock();
-
-    const db1 = { insert: ins1 } as unknown as MockDb;
-    const db2 = { insert: ins2 } as unknown as MockDb;
-
-    const r1 = await createAnonConversation({}, { db: db1 });
-    const r2 = await createAnonConversation({}, { db: db2 });
-
-    expect(r1.claimToken).not.toBe(r2.claimToken);
-
-    // Tokens should look like UUIDs or hex strings
-    expect(r1.claimToken).toMatch(/^[0-9a-f-]{32,}$/i);
-    expect(r2.claimToken).toMatch(/^[0-9a-f-]{32,}$/i);
-  });
-
-  it("passes lakeId and targetTime into the insert when provided", async () => {
-    const mockValues = vi.fn().mockResolvedValue([{ id: "conv-lake" }]);
-    const mockInsert = vi.fn().mockReturnValue({ values: mockValues });
-    const mockDb = { insert: mockInsert } as unknown as MockDb;
-
-    const targetTime = new Date("2026-07-01T10:00:00Z");
-    await createAnonConversation(
-      { lakeId: "SE123", targetTime },
-      { db: mockDb },
-    );
-
-    const inserted = mockValues.mock.calls[0][0] as Record<string, unknown>;
-    expect(inserted.lakeId).toBe("SE123");
-    expect(inserted.targetTime).toEqual(targetTime);
-  });
-});
+type MockDb = Pick<Db, "update" | "delete" | "select" | "transaction">;
 
 // ---------------------------------------------------------------------------
 // claimConversation
@@ -249,8 +173,10 @@ describe("claimConversation", () => {
 // ---------------------------------------------------------------------------
 
 describe("gcUnclaimedAnon", () => {
-  it("deletes unclaimed rows older than the cutoff and returns the count", async () => {
-    const mockWhere = vi.fn().mockResolvedValue([{}, {}]); // 2 deleted rows
+  it("deletes inactive unclaimed rows older than the cutoff and returns the count", async () => {
+    // L5: the delete now ends in .returning() so the count is truthful.
+    const mockReturning = vi.fn().mockResolvedValue([{ id: "a" }, { id: "b" }]);
+    const mockWhere = vi.fn().mockReturnValue({ returning: mockReturning });
     const mockDelete = vi.fn().mockReturnValue({ where: mockWhere });
 
     const mockDb = { delete: mockDelete } as unknown as MockDb;
@@ -261,12 +187,14 @@ describe("gcUnclaimedAnon", () => {
     expect(count).toBe(2);
     expect(mockDelete).toHaveBeenCalledTimes(1);
     expect(mockWhere).toHaveBeenCalledTimes(1);
+    expect(mockReturning).toHaveBeenCalledTimes(1);
     // Assert a composed WHERE predicate was passed (not a no-op undefined/null)
     expect(mockWhere.mock.calls[0][0]).toBeTruthy();
   });
 
   it("returns 0 when no rows are deleted", async () => {
-    const mockWhere = vi.fn().mockResolvedValue([]);
+    const mockReturning = vi.fn().mockResolvedValue([]);
+    const mockWhere = vi.fn().mockReturnValue({ returning: mockReturning });
     const mockDelete = vi.fn().mockReturnValue({ where: mockWhere });
     const mockDb = { delete: mockDelete } as unknown as MockDb;
 

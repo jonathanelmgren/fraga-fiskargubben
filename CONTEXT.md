@@ -73,7 +73,7 @@ _Avoid_: "cache" (the snapshot is not invalidated by the 1h forecast cache).
 The resolved `(Lake, Target time)` pair a conversation is about, **locked** at its first prompt —
 one lake per conversation, immutable. If a **follow-up** names a different lake (or clearly
 different time), the conversation does **not** re-fetch or escalate; Haiku declines in persona
-("jag känner bara till {lake}, grabben — dra igång en ny chatt för ett annat vatten") with no
+("Jag känner bara till {lake}, hörru — dra igång en ny chatt för ett annat vatten") with no
 answer and no **Credit** spent. A different lake means a new conversation.
 _Avoid_: "topic", "scope".
 

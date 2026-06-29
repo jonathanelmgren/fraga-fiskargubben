@@ -1,14 +1,13 @@
 /**
- * anon.ts — anonymous conversation creation, claim-on-registration, and GC.
+ * anon.ts — anonymous conversation claim-on-registration and GC.
  *
  * ADR-0001 / ADR-0004 plumbing:
  *
  *  - An anonymous conversation is a `conversations` row with userId=null
- *    and a cryptographically random `claimToken`.
- *
- *  - The claimToken is returned by `createAnonConversation`; the CALLER is
- *    responsible for storing it in a SIGNED httpOnly cookie.  This module
- *    never reads or writes cookies.
+ *    and a cryptographically random `claimToken`.  The row + token are created
+ *    inline by the /api/ask route (see route.ts createConversation), which
+ *    stores the token in an httpOnly cookie.  This module never reads or
+ *    writes cookies.
  *
  *  - On registration, `claimConversation(userId, claimToken)` is called
  *    (by Task 5.7 / the Better Auth after-user-create hook, or the
@@ -28,8 +27,9 @@
  *    { claimed: false } — safe no-op, no throw, no credit change.
  *
  *  - GC: `gcUnclaimedAnon(olderThan)` deletes all rows with userId IS NULL
- *    and createdAt < olderThan.  Call from a cron / `scripts/gc-anon.ts`
- *    (see below).  The cutoff is injected — do NOT call `new Date()` inside.
+ *    and lastActiveAt < olderThan (inactive, not merely old).  Call from a
+ *    cron / `scripts/gc-anon.ts` (see below).  The cutoff is injected — do
+ *    NOT call `new Date()` inside.
  *
  * Cookie responsibility note:
  *   The caller (Task 5.7 / route handler) must:
@@ -51,7 +51,6 @@
 
 import "server-only";
 
-import { randomUUID } from "node:crypto";
 import { and, eq, isNull, lt } from "drizzle-orm";
 import type { Db } from "@/shared/db/client";
 import { db as realDb } from "@/shared/db/client";
@@ -62,59 +61,11 @@ import { conversations, users } from "@/shared/db/schema";
 // ---------------------------------------------------------------------------
 
 interface AnonDeps {
-  db: Pick<Db, "insert" | "update" | "delete" | "select" | "transaction">;
+  db: Pick<Db, "update" | "delete" | "select" | "transaction">;
 }
 
 function defaultDeps(): AnonDeps {
   return { db: realDb };
-}
-
-// ---------------------------------------------------------------------------
-// createAnonConversation
-// ---------------------------------------------------------------------------
-
-export interface CreateAnonOptions {
-  lakeId?: string;
-  targetTime?: Date;
-}
-
-export interface AnonConversationResult {
-  conversationId: string;
-  /**
-   * Unguessable claim token (UUID v4).
-   * The CALLER must place this in a SIGNED httpOnly cookie.
-   * Never log this value.
-   */
-  claimToken: string;
-}
-
-/**
- * Creates an anonymous conversation row (userId=null) and returns the id +
- * a fresh claim token.
- *
- * The caller is responsible for storing the token in a SIGNED httpOnly cookie.
- */
-export async function createAnonConversation(
-  opts: CreateAnonOptions,
-  deps: AnonDeps = defaultDeps(),
-): Promise<AnonConversationResult> {
-  const id = randomUUID();
-  const claimToken = randomUUID();
-
-  const row = {
-    id,
-    userId: null,
-    claimToken,
-    lakeId: opts.lakeId ?? null,
-    targetTime: opts.targetTime ?? null,
-  };
-
-  // L5: the insert has no .returning(), so the previous Array.isArray branch
-  // was dead — drizzle's insert resolves to a result object, not a row array.
-  // The id is generated here, so return it directly.
-  await deps.db.insert(conversations).values(row);
-
-  return { conversationId: id, claimToken };
 }
 
 // ---------------------------------------------------------------------------
@@ -206,8 +157,12 @@ export async function claimConversation(
 // ---------------------------------------------------------------------------
 
 /**
- * Deletes anonymous conversation rows that have never been claimed and were
- * created before `olderThan`.
+ * Deletes anonymous conversation rows that have never been claimed and have
+ * been INACTIVE since before `olderThan`.
+ *
+ * M-gc: filter on `lastActiveAt` (maintained by the /api/ask route on every
+ * turn) rather than `createdAt`, so an anon conversation that is still being
+ * actively used is not purged just because it was first created long ago.
  *
  * Returns the number of rows deleted.
  *
@@ -218,11 +173,18 @@ export async function gcUnclaimedAnon(
   olderThan: Date,
   deps: AnonDeps = defaultDeps(),
 ): Promise<number> {
+  // L5: a delete WITHOUT .returning() resolves to a driver result object, not a
+  // row array, so the old Array.isArray(...).length always returned 0. Use
+  // .returning() so the count is truthful and the GC log is meaningful.
   const deleted = await deps.db
     .delete(conversations)
     .where(
-      and(isNull(conversations.userId), lt(conversations.createdAt, olderThan)),
-    );
+      and(
+        isNull(conversations.userId),
+        lt(conversations.lastActiveAt, olderThan),
+      ),
+    )
+    .returning({ id: conversations.id });
 
-  return Array.isArray(deleted) ? deleted.length : 0;
+  return deleted.length;
 }

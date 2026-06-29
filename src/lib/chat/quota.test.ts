@@ -105,9 +105,11 @@ describe("CHAT_LIMIT_MESSAGE", () => {
 // ---------------------------------------------------------------------------
 
 describe("spendCredit", () => {
-  it("issues a DB increment on credits_used and emits credit_spent", async () => {
-    // Build a mock drizzle chain: db.update(...).set(...).where(...)
-    const mockWhere = vi.fn().mockResolvedValue(undefined);
+  it("issues a guarded DB increment, returns true, and emits credit_spent when a row is affected", async () => {
+    // E5: the spend is a guarded atomic UPDATE that ends in .returning(); a
+    // non-empty result means a credit was actually spent.
+    const mockReturning = vi.fn().mockResolvedValue([{ id: "user-abc" }]);
+    const mockWhere = vi.fn().mockReturnValue({ returning: mockReturning });
     const mockSet = vi.fn().mockReturnValue({ where: mockWhere });
     const mockUpdate = vi.fn().mockReturnValue({ set: mockSet });
     const mockDb = { update: mockUpdate } as unknown as Pick<
@@ -117,12 +119,15 @@ describe("spendCredit", () => {
 
     const mockEmit = vi.fn().mockResolvedValue(undefined);
 
-    await spendCredit("user-abc", { db: mockDb, emit: mockEmit });
+    const spent = await spendCredit("user-abc", { db: mockDb, emit: mockEmit });
+
+    expect(spent).toBe(true);
 
     // DB update was called
     expect(mockUpdate).toHaveBeenCalledTimes(1);
     expect(mockSet).toHaveBeenCalledTimes(1);
     expect(mockWhere).toHaveBeenCalledTimes(1);
+    expect(mockReturning).toHaveBeenCalledTimes(1);
 
     // analytics emit called with correct event type and userId in payload
     expect(mockEmit).toHaveBeenCalledTimes(1);
@@ -132,6 +137,28 @@ describe("spendCredit", () => {
     };
     expect(emittedEvent.type).toBe("credit_spent");
     expect(emittedEvent.payload).toMatchObject({ userId: "user-abc" });
+  });
+
+  it("E5: returns false and does NOT emit when the guarded UPDATE affects 0 rows (already at limit)", async () => {
+    const mockReturning = vi.fn().mockResolvedValue([]);
+    const mockWhere = vi.fn().mockReturnValue({ returning: mockReturning });
+    const mockSet = vi.fn().mockReturnValue({ where: mockWhere });
+    const mockUpdate = vi.fn().mockReturnValue({ set: mockSet });
+    const mockDb = { update: mockUpdate } as unknown as Pick<
+      import("@/shared/db/client").Db,
+      "update"
+    >;
+
+    const mockEmit = vi.fn().mockResolvedValue(undefined);
+
+    const spent = await spendCredit("user-maxed", {
+      db: mockDb,
+      emit: mockEmit,
+    });
+
+    expect(spent).toBe(false);
+    expect(mockReturning).toHaveBeenCalledTimes(1);
+    expect(mockEmit).not.toHaveBeenCalled();
   });
 });
 

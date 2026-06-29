@@ -1,4 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+
+// advise.ts imports WINDING_DOWN_TURN from ./quota, which has `import
+// "server-only"`; stub it so the (Node) test environment can import the chain.
+vi.mock("server-only", () => ({}));
+vi.mock("@/shared/db/client", () => ({ db: {} }));
+
 import { FISKARGUBBEN_SYSTEM } from "@/lib/chat/persona";
 import { ADVICE_MODEL, FOLLOWUP_MODEL } from "@/lib/claude/models";
 import type { Signals } from "@/lib/signals/types";
@@ -301,7 +307,7 @@ describe("getLakeLockRedirect()", () => {
   it("returns in-persona redirect string with lake name interpolated", () => {
     const result = getLakeLockRedirect("Tolken");
     expect(result).toBe(
-      "jag känner bara till Tolken, grabben — dra igång en ny chatt för ett annat vatten",
+      "Jag känner bara till Tolken, hörru — dra igång en ny chatt för ett annat vatten",
     );
   });
 

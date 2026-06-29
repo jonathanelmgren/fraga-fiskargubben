@@ -4,6 +4,12 @@ import { searchLakes } from "@/lib/lakes/resolve";
 const MIN_Q_LENGTH = 2;
 const MAX_Q_LENGTH = 64;
 
+/**
+ * M: lake data is static/seeded, so successful typeahead responses are cacheable.
+ * 5 minutes at the edge/browser cuts repeated DB scans for the same keystrokes.
+ */
+const CACHE_CONTROL = "public, max-age=300";
+
 export async function GET(request: Request): Promise<Response> {
   const { searchParams } = new URL(request.url);
   const q = (searchParams.get("q") ?? "").trim();
@@ -19,7 +25,9 @@ export async function GET(request: Request): Promise<Response> {
   // consumer treats a non-array / empty result as "no hits".
   try {
     const hits = await searchLakes(q);
-    return Response.json(hits);
+    return Response.json(hits, {
+      headers: { "Cache-Control": CACHE_CONTROL },
+    });
   } catch {
     return Response.json(
       { error: "lake search temporarily unavailable" },

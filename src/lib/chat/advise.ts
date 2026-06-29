@@ -18,6 +18,7 @@ import { FISKARGUBBEN_SYSTEM } from "@/lib/chat/persona";
 import { ADVICE_MODEL, FOLLOWUP_MODEL } from "@/lib/claude/models";
 import type { Signals } from "@/lib/signals/types";
 import type { Extraction, HistoryMessage } from "./extractor";
+import { WINDING_DOWN_TURN } from "./quota";
 
 // ---------------------------------------------------------------------------
 // Shared types
@@ -131,7 +132,7 @@ export function adviseFollowup({
 }: AdviseFollowupParams) {
   const client = deps?.client ?? defaultClient();
 
-  const windingDown = turnIndex >= 15;
+  const windingDown = turnIndex >= WINDING_DOWN_TURN;
   const userContent = buildUserContent({
     signals: snapshot,
     message,
@@ -177,7 +178,7 @@ export function isLakeLockViolation(
  * In-persona redirect string for lake-lock violations (ADR-0004).
  */
 export function getLakeLockRedirect(lakeName: string): string {
-  return `jag känner bara till ${lakeName}, grabben — dra igång en ny chatt för ett annat vatten`;
+  return `Jag känner bara till ${lakeName}, hörru — dra igång en ny chatt för ett annat vatten`;
 }
 
 // ---------------------------------------------------------------------------
@@ -209,7 +210,10 @@ function buildUserContent({
     parts.push(`[windingDown] ${windingDown}`);
   }
 
-  parts.push(`[MEDDELANDE]\n${message}`);
+  // M-injection: wrap the untrusted user message in a delimited block. The
+  // persona system prompt instructs the model to treat tagged content as data,
+  // never as instructions, so prompt-injection can't override the topic gate.
+  parts.push(`[MEDDELANDE]\n<user_message>\n${message}\n</user_message>`);
 
   return parts.join("\n\n");
 }
