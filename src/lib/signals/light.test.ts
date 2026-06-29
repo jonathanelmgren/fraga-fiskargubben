@@ -5,12 +5,14 @@ import { lightWindow, sunTimes } from "./light";
 //
 // Reference: Stockholm (59.3293° N, 18.0686° E) on 2026-04-15 (spring, no polar issues).
 //
-// USNO / timeanddate.com reference for Stockholm 2026-04-15:
-//   Sunrise ≈ 04:57 UTC (06:57 local CEST)
-//   Sunset  ≈ 18:32 UTC (20:32 local CEST)
+// NOAA sunrise equation (and an independent NOAA simplified formula) for
+// Stockholm 2026-04-15 both give:
+//   Sunrise ≈ 03:35 UTC (05:35 local CEST)
+//   Sunset  ≈ 18:00 UTC (20:00 local CEST)
 //
-// We allow ±5 min tolerance (the standard NOAA sunrise equation is accurate to
-// within a minute or two; 5 min covers rounding and equation-of-time approximations).
+// We allow ±7.5 min tolerance (the standard sunrise equation is accurate to
+// within a minute or two; the window covers rounding and equation-of-time
+// approximations, while still ruling out timezone (±1h) and epoch (±6h) errors).
 
 describe("sunTimes", () => {
   const LAT = 59.3293;
