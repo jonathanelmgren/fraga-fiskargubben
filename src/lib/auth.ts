@@ -34,8 +34,10 @@ export const auth = betterAuth({
     microsoft: {
       clientId: env.MICROSOFT_CLIENT_ID,
       clientSecret: env.MICROSOFT_CLIENT_SECRET,
-      // "common" = any work, school, or personal Microsoft account (open reg).
-      tenantId: "common",
+      // "consumers" = personal Microsoft accounts only (outlook/hotmail/live).
+      // Entra app is registered as "personal accounts only" to avoid the
+      // multitenant publisher-verification (MPN) consent gate.
+      tenantId: "consumers",
     },
   },
   plugins: [nextCookies()],
