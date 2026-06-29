@@ -36,6 +36,9 @@ const MVM_BASE_URL =
   process.env.MVM_BASE_URL ??
   "<TODO: MVM base URL — e.g. https://miljodata.slu.se/mvm/api/v1>";
 
+/** H8: chunk size keeps each INSERT well under Postgres' 65,535 bind-param cap. */
+const BATCH_SIZE = 1_000;
+
 // ---------------------------------------------------------------------------
 // Type definitions (shapes are placeholder — adapt to real MVM response)
 // ---------------------------------------------------------------------------
@@ -220,24 +223,43 @@ async function main(): Promise<void> {
   // For this stub we keep the last-seen row per lakeId (operator can refine).
   const bestByLake = new Map<string, ColourRow>();
 
-  for (const sample of samples) {
-    const station = stationMap.get(sample.stationId);
-    if (!station) {
-      skipped++;
-      continue;
-    }
+  // C2: memoize the station→lake match per UNIQUE stationId.  The previous
+  // code re-ran the full O(lakes) scan + haversine for EVERY sample row, so a
+  // station with N time-series samples was re-joined N times → effectively
+  // O(samples × lakes).  Memoizing collapses it to O(stations × lakes).  A
+  // coarse bounding-box pre-filter (BBOX_DEG) skips far-away lakes before the
+  // haversine so each station→lake join is near-O(local lakes).
+  // [scope] memo + bbox pre-filter only; a full PostGIS spatial index is
+  // deferred.  [~] deferred: PostGIS spatial join.
+  type StationMatch = { lakeId: string; confidence: "high" | "low" } | null;
+  const matchByStation = new Map<string, StationMatch>();
 
-    // Find the best-matching lake for this station.
+  /** ~degrees of latitude per km; lakes farther than the area radius can't match. */
+  const BBOX_DEG = 0.6; // ~66 km half-window — generous vs largest area radii
+
+  function joinStationToLake(station: MvmStation): StationMatch {
+    const cached = matchByStation.get(station.stationId);
+    if (cached !== undefined) return cached;
+
     let bestLakeId: string | null = null;
     let bestConfidence: "high" | "low" | null = null;
     let bestDistKm = Number.POSITIVE_INFINITY;
 
     for (const lake of lakeCandidates) {
-      const { matches, confidence } = stationMatchesLake(
+      // Cheap bounding-box reject before the trig-heavy haversine.
+      if (
+        Math.abs(lake.lat - station.lat) > BBOX_DEG ||
+        Math.abs(lake.lon - station.lon) > BBOX_DEG
+      ) {
+        continue;
+      }
+
+      const match = stationMatchesLake(
         { lat: station.lat, lon: station.lon },
         { lat: lake.lat, lon: lake.lon, areaHa: lake.areaHa },
       );
-      if (!matches) continue;
+      if (!match.matches) continue;
+      const { confidence } = match;
 
       // Haversine for tie-breaking — prefer closest lake.
       const distKm = haversine(
@@ -257,10 +279,28 @@ async function main(): Promise<void> {
       }
     }
 
-    if (bestLakeId === null || bestConfidence === null) {
+    const result: StationMatch =
+      bestLakeId !== null && bestConfidence !== null
+        ? { lakeId: bestLakeId, confidence: bestConfidence }
+        : null;
+    matchByStation.set(station.stationId, result);
+    return result;
+  }
+
+  for (const sample of samples) {
+    const station = stationMap.get(sample.stationId);
+    if (!station) {
+      skipped++;
+      continue;
+    }
+
+    const matched = joinStationToLake(station);
+    if (matched === null) {
       noMatch++;
       continue;
     }
+    const bestLakeId = matched.lakeId;
+    const bestConfidence = matched.confidence;
 
     let row: ColourRow;
     try {
@@ -307,11 +347,15 @@ async function main(): Promise<void> {
 
   rows.push(...bestByLake.values());
 
-  // ── 6. Batch upsert ───────────────────────────────────────────────────────
-  if (rows.length > 0) {
+  // ── 6. Batch upsert (chunked) ──────────────────────────────────────────────
+  // H8: chunk the insert.  Postgres caps a statement at 65,535 bind params, so
+  // a single INSERT of up to ~100k rows × 4 cols would throw at ~16k rows.
+  // BATCH_SIZE keeps each statement well under the cap.
+  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+    const chunk = rows.slice(i, i + BATCH_SIZE);
     await db
       .insert(waterColour)
-      .values(rows)
+      .values(chunk)
       .onConflictDoUpdate({
         target: waterColour.lakeId,
         set: {

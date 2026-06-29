@@ -76,7 +76,9 @@ export interface LakeRow {
  * Throws if any required property (MS_CD, KOMMUNNAMN, LANNAMN, CENTROID_N,
  * CENTROID_E, AREA_HA) is missing.
  */
-export function mapFeatureToLake(feature: SvarFeature): LakeRow {
+export function mapFeatureToLake(
+  feature: Pick<SvarFeature, "id" | "properties">,
+): LakeRow {
   const p = feature.properties;
 
   if (!p.MS_CD) {
@@ -153,7 +155,14 @@ async function main(): Promise<void> {
     features: SvarFeature[];
   };
 
-  const features: SvarFeature[] = geojson.features ?? [];
+  // H11: drop the unused `geometry` from each feature immediately after parse.
+  // mapFeatureToLake only reads `properties`; retaining the full polygon
+  // geometry for ~100k features held hundreds of MB for nothing.  We keep only
+  // the properties we map.  [scope] full streaming-parse of the response is a
+  // larger rework — [~] deferred: stream-parse rework.
+  const features: Array<Pick<SvarFeature, "id" | "properties">> = (
+    geojson.features ?? []
+  ).map((f) => ({ id: f.id, properties: f.properties }));
   console.log(`Fetched ${features.length} features.`);
 
   let imported = 0;

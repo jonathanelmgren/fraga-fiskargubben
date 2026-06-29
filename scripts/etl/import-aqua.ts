@@ -34,6 +34,9 @@ const AQUA_BASE_URL =
   process.env.AQUA_BASE_URL ??
   "<TODO: Aqua base URL — e.g. https://sotebasen.slu.se/api/v1>";
 
+/** H8: chunk size keeps each INSERT well under Postgres' 65,535 bind-param cap. */
+const BATCH_SIZE = 1_000;
+
 // ---------------------------------------------------------------------------
 // Type definitions (shapes are placeholders — adapt to real Sötebasen response)
 // ---------------------------------------------------------------------------
@@ -172,11 +175,12 @@ async function main(): Promise<void> {
     let bestDistKm = Number.POSITIVE_INFINITY;
 
     for (const lake of lakeCandidates) {
-      const { matches, confidence } = stationMatchesLake(
+      const match = stationMatchesLake(
         { lat: station.lat, lon: station.lon },
         { lat: lake.lat, lon: lake.lon, areaHa: lake.areaHa },
       );
-      if (!matches) continue;
+      if (!match.matches) continue;
+      const { confidence } = match;
 
       const distKm = haversine(
         { lat: station.lat, lon: station.lon },
@@ -227,11 +231,13 @@ async function main(): Promise<void> {
     rows.push({ lakeId, species, confidence });
   }
 
-  // ── 8. Batch upsert ───────────────────────────────────────────────────────
-  if (rows.length > 0) {
+  // ── 8. Batch upsert (chunked) ──────────────────────────────────────────────
+  // H8: chunk so a large INSERT can't exceed Postgres' 65,535 bind-param cap.
+  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+    const chunk = rows.slice(i, i + BATCH_SIZE);
     await db
       .insert(lakeSpecies)
-      .values(rows)
+      .values(chunk)
       .onConflictDoUpdate({
         target: lakeSpecies.lakeId,
         set: {

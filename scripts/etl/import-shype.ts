@@ -29,6 +29,9 @@ const SHYPE_URL =
   process.env.SHYPE_URL ??
   "<TODO: SMHI Vattenwebb S-HYPE sub-catchment water-temperature export URL — see scripts/etl/README.md>";
 
+/** H8: chunk size keeps each INSERT well under Postgres' 65,535 bind-param cap. */
+const BATCH_SIZE = 1_000;
+
 // ---------------------------------------------------------------------------
 // Type definitions — adapt once the real S-HYPE export schema is known.
 // ---------------------------------------------------------------------------
@@ -131,10 +134,12 @@ async function main(): Promise<void> {
     }
   }
 
-  if (rows.length > 0) {
+  // H8: chunk so a large INSERT can't exceed Postgres' 65,535 bind-param cap.
+  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+    const chunk = rows.slice(i, i + BATCH_SIZE);
     await db
       .insert(waterTemp)
-      .values(rows)
+      .values(chunk)
       .onConflictDoUpdate({
         target: waterTemp.lakeId,
         set: {
