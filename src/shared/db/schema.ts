@@ -1,6 +1,7 @@
 import {
   bigserial,
   boolean,
+  doublePrecision,
   jsonb,
   pgTable,
   text,
@@ -61,6 +62,16 @@ export const verifications = pgTable("verification", {
   expiresAt: timestamp("expires_at").notNull(),
   createdAt: timestamp("created_at").$defaultFn(() => new Date()),
   updatedAt: timestamp("updated_at").$defaultFn(() => new Date()),
+});
+
+export const lakes = pgTable("lakes", {
+  id: text("id").primaryKey(),
+  name: text("name"),
+  municipality: text("municipality").notNull(),
+  county: text("county").notNull(),
+  lat: doublePrecision("lat").notNull(),
+  lon: doublePrecision("lon").notNull(),
+  areaHa: doublePrecision("area_ha").notNull(),
 });
 
 export const analyticsEvents = pgTable("analytics_event", {
