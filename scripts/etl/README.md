@@ -1,3 +1,50 @@
+# ETL runbook — seeding the data layer
+
+All slow/static data sources are **pre-imported into Postgres by these seed scripts**
+(ADR-0002); only the SMHI snow1g forecast is fetched live at request time. These run **once**
+(re-runnable / idempotent) at setup, and periodically (chemistry & species seasonally, station
+rosters rarely) — **never on the request path**.
+
+## Run order
+
+Seed in this order (later sources join against the `lakes` table created first):
+
+| # | Command | Seeds | Notes |
+|---|---------|-------|-------|
+| 1 | `pnpm etl:svar` | `lakes` (all SVAR water bodies) | The join key for everything else. Run first. |
+| 2 | `pnpm etl:metobs-stations` | `metobs_station` (pressure=9, temp=1) | Nearest-station lookup for weather trends. |
+| 3 | `pnpm etl:shype` | `water_temp` (modeled override) | STUB — optional enrichment; estimate-first works without it. |
+| 4 | `pnpm etl:depth` | `lake_depth` (max/mean) | STUB — graceful absence; most lakes have none. |
+| 5 | `pnpm etl:mvm` | `water_colour` + sight depth | STUB — needs the **MVM ticket** (see below). |
+| 6 | `pnpm etl:aqua` | `lake_species` | STUB — survey coverage only. |
+
+Apply migrations first: `pnpm db:migrate`. The `pg_trgm` extension (migration 0003) is required
+for lake typeahead.
+
+## ⚠️ Operator verification required before production
+
+Every external source URL/parameter below was implemented against documented assumptions but
+**must be confirmed against the live API before a real seed run** — they default to a `<TODO …>`
+placeholder that the script refuses to run against:
+
+- **SVAR** (`SVAR_WFS_URL`): confirm the Vattenwebb WFS download URL **and request coordinates in
+  WGS84 / CRS84 (EPSG:4326)** — if the WFS returns projected SWEREF99TM coords they would be stored
+  as-is into `lat`/`lon` and be wrong. SVAR field names are assumed from docs (see Field-name assumptions).
+- **metobs** (`METOBS_STATION_URL`, `METOBS_OBS_URL`): confirm the station-list and observation
+  endpoint paths and the response shape (envelope vs flat array). The obs `period` for the 5-day
+  air-temp trend is currently `"latest-months"`, which likely returns **more than 5 days** — narrow it.
+- **S-HYPE / depth**: confirm the Vattenwebb export format + field names (`ShypeRecord` / depth record).
+- **MVM** (`MVM_TICKET`, endpoints): the ticket is **import-time only** (never on the request path).
+  The colour threshold (absorbans / färgtal → brown/clear) is a documented assumption. The
+  coordinate→lake join is **O(stations × lakes)** — add a bounding-box pre-filter before seeding
+  against the full ~100k-lake table or it may time out.
+- **Aqua**: confirm the Sötebasen endpoint paths.
+
+The runtime app does **not** require any of these (the MVM ticket is `.optional()` in the env
+schema); a missing source simply omits its Signal (graceful degradation, ADR-0002).
+
+---
+
 # SVAR ETL — import Swedish water bodies
 
 One-time (re-runnable) script that seeds the `lakes` table from the SMHI
