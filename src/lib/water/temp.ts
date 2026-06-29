@@ -11,8 +11,10 @@
  *   2. Air-temp trend nudge: +1.5 (warming) / -1.5 (cooling) / 0 (steady)
  *      — scaled by lake-responsiveness factor (see step 3).
  *   3. Lake-size responsiveness: small lakes heat and cool faster.
- *      responsiveness = 1.0 for lakes < 50 ha, decays to 0.6 for very large
- *      lakes (> 2000 ha).  Computed as: clamp(1 - log10(areaHa/50) * 0.2, 0.6, 1.0)
+ *      responsiveness = 1.0 for lakes < 50 ha, decaying on a log10 scale and
+ *      clamped to a 0.6 floor.  Computed as: clamp(1 - log10(areaHa/50) * 0.2,
+ *      0.6, 1.0).  L12: the floor of 0.6 is reached near ~15,800 ha (where
+ *      log10(area/50) * 0.2 = 0.4), NOT at 2000 ha as a stale comment claimed.
  *      Defaults to 0.8 when areaHa is unknown (a medium-sized lake assumption).
  *
  * Result is clamped to [0, 30] — the realistic Swedish freshwater range.
@@ -80,8 +82,8 @@ const DEFAULT_RESPONSIVENESS = 0.8;
  * Compute lake responsiveness from surface area.
  *
  * Small lakes (< 50 ha) are fully responsive (1.0).
- * Very large lakes (> 2000 ha) are less responsive (0.6).
- * Interpolates on log10 scale between those bounds.
+ * Responsiveness decays on a log10 scale and is clamped to a 0.6 floor, which
+ * is reached near ~15,800 ha (L12 — not 2000 ha).
  */
 function lakeResponsiveness(areaHa: number): number {
   if (areaHa < 50) return 1.0;
@@ -159,17 +161,15 @@ export async function waterTempFor(
 ): Promise<WithProvenance<number>> {
   const estimate = estimateWaterTemp(estimateInput);
 
-  // Lazy imports keep DB / server-only code out of test scope.
-  const { db } = await import("@/shared/db/client");
+  // H12: shared lazy single-row-by-lakeId lookup (keeps DB out of test scope).
   const { waterTemp } = await import("@/shared/db/schema");
-  const { eq } = await import("drizzle-orm");
+  const { selectOneByLakeId } = await import("./select-one");
 
-  const rows = await db
-    .select({ tempC: waterTemp.tempC })
-    .from(waterTemp)
-    .where(eq(waterTemp.lakeId, lakeId))
-    .limit(1);
-
-  const row = rows[0] ?? null;
+  const row = (await selectOneByLakeId(
+    waterTemp,
+    waterTemp.lakeId,
+    { tempC: waterTemp.tempC },
+    lakeId,
+  )) as WaterTempRow | null;
   return chooseWaterTemp(row, estimate);
 }

@@ -17,6 +17,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import { EXTRACTOR_MODEL } from "@/lib/claude/models";
+// L8: gate strings consolidated in ./gate-messages (single source of truth).
+import { CANNED_REFUSAL } from "./gate-messages";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -33,7 +35,6 @@ export type Extraction = {
   municipality?: string;
   time?: string;
   intent?: string;
-  contextChanged: boolean;
   /** Set when onTopic=false. Canned in-persona Swedish refusal. */
   refusal?: string;
 };
@@ -66,19 +67,11 @@ const ExtractionOutputSchema = z.object({
     .string()
     .optional()
     .describe("Short description of what the user wants to do or catch"),
-  contextChanged: z
-    .boolean()
-    .describe(
-      "true if the lake or time changed compared to the prior conversation history",
-    ),
+  // M10: `contextChanged` was a REQUIRED schema field (forcing the model to
+  // compute it) but the handler never read it — the lake-lock decision uses
+  // isLakeLockViolation on lakeName.  Dropped to stop forcing a dead model
+  // field and to remove drift between the Extractor contract and the wiring.
 });
-
-// ---------------------------------------------------------------------------
-// Canned in-persona refusal (used when onTopic=false or parse failure)
-// ---------------------------------------------------------------------------
-
-const CANNED_REFUSAL =
-  "Jag snackar bara fiske, grabben. Fråga mig om sjöar, abborre eller gädda istället.";
 
 // ---------------------------------------------------------------------------
 // Dependency injection shim (so tests can inject a fake client)
@@ -122,7 +115,6 @@ Regler:
 - municipality: kommunnamnet om användaren nämner det i samband med sjön.
 - time: när användaren vill fiska (t.ex. "ikväll", "imorgon", "på lördag").
 - intent: kort beskrivning av vad användaren vill göra eller fånga.
-- contextChanged: true om sjön eller tidpunkten har ändrats jämfört med historiken nedan.
 
 Svara ENBART med det strukturerade JSON-objektet — ingen annan text.`;
 
@@ -151,7 +143,6 @@ Svara ENBART med det strukturerade JSON-objektet — ingen annan text.`;
   if (response.parsed_output == null) {
     return {
       onTopic: false,
-      contextChanged: false,
       refusal: CANNED_REFUSAL,
     };
   }
@@ -162,7 +153,6 @@ Svara ENBART med det strukturerade JSON-objektet — ingen annan text.`;
   if (!parsed.onTopic) {
     return {
       onTopic: false,
-      contextChanged: parsed.contextChanged,
       refusal: CANNED_REFUSAL,
     };
   }
@@ -173,6 +163,5 @@ Svara ENBART med det strukturerade JSON-objektet — ingen annan text.`;
     municipality: parsed.municipality,
     time: parsed.time,
     intent: parsed.intent,
-    contextChanged: parsed.contextChanged,
   };
 }

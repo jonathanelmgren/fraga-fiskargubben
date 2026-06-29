@@ -35,6 +35,16 @@ export { formatLabel } from "./resolve-helpers";
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function searchLakes(q: string): Promise<LakeHit[]> {
+  // L2: cap query length and escape LIKE metacharacters (% and _) in the
+  // prefix operand so user input can't inject wildcards or blow up the scan.
+  const capped = q.trim().slice(0, 64);
+  const likePrefix = `${capped.replace(/([%_\\])/g, "\\$1")}%`;
+
+  // H10: use the trigram similarity OPERATOR `name % $q` (GIN-indexable via
+  // lakes_name_trgm_idx) instead of `similarity(name, $q) > 0.1` (which a GIN
+  // index cannot serve and forced a per-row similarity() over 100k rows on
+  // every keystroke).  The exact/prefix branches use `lower(name)` which is now
+  // backed by the lakes_lower_name_idx expression index (migration 0011).
   const rows = await db.execute<{
     id: string;
     name: string;
@@ -54,17 +64,17 @@ export async function searchLakes(q: string): Promise<LakeHit[]> {
     WHERE
       name IS NOT NULL
       AND (
-        lower(name) = lower(${q})
-        OR lower(name) LIKE lower(${q}) || '%'
-        OR similarity(name, ${q}) > 0.1
+        lower(name) = lower(${capped})
+        OR lower(name) LIKE lower(${likePrefix}) ESCAPE '\\'
+        OR name % ${capped}
       )
     ORDER BY
       CASE
-        WHEN lower(name) = lower(${q})       THEN 0
-        WHEN lower(name) LIKE lower(${q}) || '%' THEN 1
+        WHEN lower(name) = lower(${capped})       THEN 0
+        WHEN lower(name) LIKE lower(${likePrefix}) ESCAPE '\\' THEN 1
         ELSE 2
       END ASC,
-      similarity(name, ${q}) DESC,
+      similarity(name, ${capped}) DESC,
       area_ha DESC
     LIMIT 10
   `);

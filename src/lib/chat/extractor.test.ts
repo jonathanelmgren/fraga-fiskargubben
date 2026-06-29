@@ -12,7 +12,6 @@ function onTopicOutput(overrides: Partial<Record<string, unknown>> = {}) {
     municipality: "Ulricehamn",
     time: "ikväll",
     intent: "fiska abborre",
-    contextChanged: false,
     ...overrides,
   };
 }
@@ -24,7 +23,6 @@ function offTopicOutput() {
     municipality: undefined,
     time: undefined,
     intent: undefined,
-    contextChanged: false,
   };
 }
 
@@ -61,7 +59,6 @@ describe("extract()", () => {
     expect(result.municipality).toBe("Ulricehamn");
     expect(result.time).toBe("ikväll");
     expect(result.intent).toBe("fiska abborre");
-    expect(result.contextChanged).toBe(false);
     expect(result.refusal).toBeUndefined();
   });
 
@@ -79,18 +76,6 @@ describe("extract()", () => {
     expect(typeof result.refusal).toBe("string");
     // Should be in-persona — something gruff and fishing-related
     expect(result.refusal?.length).toBeGreaterThan(0);
-  });
-
-  it("contextChanged is surfaced from model output", async () => {
-    const client = buildMockClient(onTopicOutput({ contextChanged: true }));
-    const result = await extract(
-      "vad sägs om Vättern istället",
-      [{ role: "user", content: "berätta om Tolken" }],
-      // biome-ignore lint/suspicious/noExplicitAny: test fake
-      { client: client as any },
-    );
-
-    expect(result.contextChanged).toBe(true);
   });
 
   it("parsed_output null → returns fallback off-topic with refusal, no crash", async () => {

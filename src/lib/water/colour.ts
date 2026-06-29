@@ -83,27 +83,39 @@ export function deriveColour(input: ColourInput): WaterColour {
  * (and therefore never touches MVM_TICKET).  The ticket is ETL-only.
  */
 export async function colourFor(lakeId: string): Promise<ColourResult> {
-  // Lazy imports — keep DB / server-only deps out of pure-unit test scope.
-  const { db } = await import("@/shared/db/client");
+  // H12: shared lazy single-row-by-lakeId lookup (keeps DB out of test scope).
   const { waterColour } = await import("@/shared/db/schema");
-  const { eq } = await import("drizzle-orm");
+  const { selectOneByLakeId } = await import("./select-one");
 
-  const rows = await db
-    .select({
+  const row = (await selectOneByLakeId(
+    waterColour,
+    waterColour.lakeId,
+    {
       colour: waterColour.colour,
       sightDepthM: waterColour.sightDepthM,
       confidence: waterColour.confidence,
-    })
-    .from(waterColour)
-    .where(eq(waterColour.lakeId, lakeId))
-    .limit(1);
-
-  const row = rows[0] ?? null;
+    },
+    lakeId,
+  )) as {
+    colour: string;
+    sightDepthM: number | null;
+    confidence: string;
+  } | null;
   if (row === null) return null;
 
+  // M8: the DB columns are plain `text`, so a bad value must not silently
+  // become an invalid union member.  Validate at the boundary; an unrecognised
+  // value is treated as graceful absence (null) rather than a confident-wrong
+  // signal.
+  const colour: WaterColour | null =
+    row.colour === "brown" || row.colour === "clear" ? row.colour : null;
+  if (colour === null) return null;
+
+  const confidence: "high" | "low" = row.confidence === "high" ? "high" : "low";
+
   return {
-    colour: row.colour as WaterColour,
+    colour,
     sightDepthM: row.sightDepthM,
-    confidence: row.confidence as "high" | "low",
+    confidence,
   };
 }

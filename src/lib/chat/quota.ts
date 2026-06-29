@@ -41,9 +41,9 @@ export const MAX_CHAT_TURNS = 20;
 /**
  * Plain, non-persona system alert shown when the chat-turn limit is hit.
  * Deliberately NOT in Fiskargubben's gruff voice — this is a system boundary.
+ * L8: defined in ./gate-messages; re-exported here for existing import sites.
  */
-export const CHAT_LIMIT_MESSAGE =
-  "Du har nått gränsen för den här chatten. Starta en ny chatt.";
+export { CHAT_LIMIT_MESSAGE } from "./gate-messages";
 
 // ---------------------------------------------------------------------------
 // Pure gate functions

@@ -15,7 +15,10 @@ type GateType =
   | "topic_refused"
   | "lake_unresolved"
   | "out_of_credits"
-  | "lake_lock";
+  | "lake_lock"
+  // L6: distinct generic-error state for non-OK HTTP responses (5xx/503) so a
+  // server error isn't mislabeled as a persona gate.
+  | "error";
 
 type Message =
   | { role: "user"; text: string; id: string }
@@ -148,10 +151,22 @@ function GateBanner({ gateType, text }: { gateType: GateType; text: string }) {
         <p className="text-sm font-medium text-stone-700 mb-2">
           Du har använt dina gratisfrågor
         </p>
+        {/* L7: render the server-provided in-persona text (OUT_OF_CREDITS_MESSAGE)
+            when present, instead of dropping it for hardcoded copy. */}
         <p className="text-xs text-stone-500">
-          Uppgradering kommer snart — hör av dig om du vill vara med i betan.
+          {text ||
+            "Uppgradering kommer snart — hör av dig om du vill vara med i betan."}
         </p>
       </div>
+    );
+  }
+
+  if (gateType === "error") {
+    // L6: generic server-error state, distinct from the persona gates.
+    return (
+      <p role="status" className="text-xs text-red-700/80 px-4 italic mx-2">
+        {text || "Något gick snett — försök igen om ett ögonblick."}
+      </p>
     );
   }
 
@@ -193,10 +208,10 @@ function GateBanner({ gateType, text }: { gateType: GateType; text: string }) {
 // Main Chat component
 // ---------------------------------------------------------------------------
 
-let msgSeq = 0;
+// L13: per-message id generator using crypto.randomUUID (no module-level
+// mutable counter shared across component instances).
 function nextId() {
-  msgSeq += 1;
-  return `msg-${msgSeq}`;
+  return `msg-${crypto.randomUUID()}`;
 }
 
 export default function Chat() {
@@ -209,17 +224,16 @@ export default function Chat() {
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  // Track when content changes so the scroll effect can re-run
-  const contentVersion = useRef(0);
 
-  // Auto-scroll to bottom on new messages (scrollIntoView may be absent in jsdom)
-  // biome-ignore lint/correctness/useExhaustiveDependencies: contentVersion ref triggers via forceScroll
+  // L13: auto-scroll on message count change.  Depending on a ref's .current
+  // (the old code) was inert — refs don't trigger effect re-runs.  `forceScroll`
+  // still scrolls imperatively during streaming (where the count is unchanged).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: scroll only on count change
   useEffect(() => {
     bottomRef.current?.scrollIntoView?.({ behavior: "smooth" });
-  }, [contentVersion.current]);
+  }, [messages.length]);
 
   const forceScroll = useCallback(() => {
-    contentVersion.current += 1;
     bottomRef.current?.scrollIntoView?.({ behavior: "smooth" });
   }, []);
 
@@ -251,6 +265,27 @@ export default function Chat() {
             ...(conversationId ? { conversationId } : {}),
           }),
         });
+
+        // L6: handle non-OK HTTP first.  A 5xx/503 (e.g. upstream/DB failure
+        // mapped by the route's error boundary) must NOT fall through to the
+        // content-type branch where it would be mislabeled as lake_unresolved.
+        // out_of_credits is a 402 but a legitimate gate, so allow it through.
+        if (!response.ok && response.status !== 402) {
+          setThinking(false);
+          let serverText = "";
+          try {
+            const j = (await response.json()) as { text?: string };
+            serverText = typeof j.text === "string" ? j.text : "";
+          } catch {
+            // non-JSON error body — fall back to the generic copy
+          }
+          setMessages((prev) => [
+            ...prev,
+            { role: "gate", gateType: "error", text: serverText, id: nextId() },
+          ]);
+          forceScroll();
+          return;
+        }
 
         // Check content-type to decide stream vs gate JSON
         const ct = response.headers.get("content-type") ?? "";

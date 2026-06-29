@@ -57,21 +57,19 @@ export function normalizeSpecies(rawList: string[]): string[] {
  * touches external services.
  */
 export async function speciesFor(lakeId: string): Promise<string[] | null> {
-  // Lazy imports — keep DB / server-only deps out of pure-unit test scope.
-  const { db } = await import("@/shared/db/client");
+  // H12: shared lazy single-row-by-lakeId lookup (keeps DB out of test scope).
+  // L11: `confidence` is intentionally NOT selected — it was queried-then-
+  // discarded before, and surfacing it on the Signals contract widens the
+  // Signals type broadly.  [~] deferred: species provenance on Signals.
   const { lakeSpecies } = await import("@/shared/db/schema");
-  const { eq } = await import("drizzle-orm");
+  const { selectOneByLakeId } = await import("./select-one");
 
-  const rows = await db
-    .select({
-      species: lakeSpecies.species,
-      confidence: lakeSpecies.confidence,
-    })
-    .from(lakeSpecies)
-    .where(eq(lakeSpecies.lakeId, lakeId))
-    .limit(1);
-
-  const row = rows[0] ?? null;
+  const row = (await selectOneByLakeId(
+    lakeSpecies,
+    lakeSpecies.lakeId,
+    { species: lakeSpecies.species },
+    lakeId,
+  )) as { species: string[] | null } | null;
   if (row === null) return null;
 
   return row.species ?? [];

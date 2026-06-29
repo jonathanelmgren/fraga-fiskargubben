@@ -35,10 +35,15 @@ export interface LakeAnchor {
   areaHa: number;
 }
 
-export interface MatchResult {
-  matches: boolean;
-  confidence: "high" | "low";
-}
+/**
+ * M8: a discriminated union so `confidence` only exists when `matches` is true.
+ * Previously `confidence` was always present and set to a meaningless "low" on
+ * a non-match (structural convenience) — callers could read a confidence that
+ * had no meaning.  Now the type forces a `matches` check before reading it.
+ */
+export type MatchResult =
+  | { matches: true; confidence: "high" | "low" }
+  | { matches: false };
 
 /** Threshold below which a station is considered certainly inside the lake (km). */
 const HIGH_CONFIDENCE_RADIUS_KM = 0.2; // 200 m
@@ -48,8 +53,7 @@ const HIGH_CONFIDENCE_RADIUS_KM = 0.2; // 200 m
  *
  * Returns `{ matches: true, confidence: 'high' }` when the station is within
  * 200 m of the centroid; `{ matches: true, confidence: 'low' }` when within
- * the equal-area circle; `{ matches: false }` otherwise (confidence value is
- * meaningless but set to `'low'` for structural convenience).
+ * the equal-area circle; `{ matches: false }` otherwise.
  */
 export function stationMatchesLake(
   station: StationPoint,
@@ -66,5 +70,5 @@ export function stationMatchesLake(
     return { matches: true, confidence: "low" };
   }
 
-  return { matches: false, confidence: "low" };
+  return { matches: false };
 }

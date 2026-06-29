@@ -101,21 +101,19 @@ export function mapDepthRecord(record: DepthRecord): DepthRow {
  * Requires `DATABASE_URL` at runtime; never called during pure unit tests.
  */
 export async function depthFor(lakeId: string): Promise<DepthResult> {
-  // Lazy imports — keep DB / server-only code out of test scope.
-  const { db } = await import("@/shared/db/client");
+  // H12: shared lazy single-row-by-lakeId lookup (keeps DB out of test scope).
   const { lakeDepth } = await import("@/shared/db/schema");
-  const { eq } = await import("drizzle-orm");
+  const { selectOneByLakeId } = await import("./select-one");
 
-  const rows = await db
-    .select({
+  const row = (await selectOneByLakeId(
+    lakeDepth,
+    lakeDepth.lakeId,
+    {
       maxDepthM: lakeDepth.maxDepthM,
       meanDepthM: lakeDepth.meanDepthM,
-    })
-    .from(lakeDepth)
-    .where(eq(lakeDepth.lakeId, lakeId))
-    .limit(1);
-
-  const row = rows[0] ?? null;
+    },
+    lakeId,
+  )) as { maxDepthM: number | null; meanDepthM: number | null } | null;
   if (row === null) return null;
 
   return { maxDepthM: row.maxDepthM, meanDepthM: row.meanDepthM };

@@ -23,15 +23,21 @@ import type { Extraction, HistoryMessage } from "./extractor";
 // Shared types
 // ---------------------------------------------------------------------------
 
+/**
+ * M9: type the client's `messages` surface honestly to include `.stream`
+ * (and `.parse`, used by the extractor's sibling deps) rather than casting
+ * `client.messages as Anthropic["messages"]` at the call sites — the cast hid
+ * whether the injected test fake matched the real `.stream` signature.
+ */
 export type AdviseDeps = {
-  client: Pick<Anthropic, "messages">;
+  client: { messages: Pick<Anthropic["messages"], "stream"> };
 };
 
 // ---------------------------------------------------------------------------
 // Dependency injection — lazy to avoid module-level env reads in tests
 // ---------------------------------------------------------------------------
 
-function defaultClient(): Pick<Anthropic, "messages"> {
+function defaultClient(): AdviseDeps["client"] {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { env } = require("@/shared/env") as typeof import("@/shared/env");
   return new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
@@ -86,7 +92,7 @@ export function adviseFirst({
     { role: "user", content: userContent },
   ];
 
-  return (client.messages as Anthropic["messages"]).stream({
+  return client.messages.stream({
     model: ADVICE_MODEL,
     max_tokens: 1024,
     thinking: { type: "adaptive" },
@@ -138,7 +144,7 @@ export function adviseFollowup({
     { role: "user", content: userContent },
   ];
 
-  return (client.messages as Anthropic["messages"]).stream({
+  return client.messages.stream({
     model: FOLLOWUP_MODEL,
     max_tokens: 1024,
     system: SYSTEM_BLOCK,

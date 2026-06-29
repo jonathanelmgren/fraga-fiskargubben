@@ -269,7 +269,6 @@ describe("isLakeLockViolation()", () => {
   const baseExtraction: Extraction = {
     onTopic: true,
     lakeName: "Tolken",
-    contextChanged: false,
   };
 
   it("returns false when extraction lake matches conversation lake", () => {

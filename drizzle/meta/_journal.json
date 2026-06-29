@@ -78,6 +78,13 @@
       "when": 1782754075904,
       "tag": "0010_natural_ezekiel",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1782754075905,
+      "tag": "0011_hotpath_indexes",
+      "breakpoints": true
     }
   ]
 }

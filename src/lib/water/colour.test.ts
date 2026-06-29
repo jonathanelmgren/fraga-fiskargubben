@@ -55,7 +55,7 @@ describe("stationMatchesLake", () => {
       areaHa: FIOLEN_AREA_HA,
     };
     const result = stationMatchesLake(station, lake);
-    expect(result.matches).toBe(true);
+    if (!result.matches) throw new Error("expected matches:true");
     expect(result.confidence).toBe("high");
   });
 
@@ -70,7 +70,7 @@ describe("stationMatchesLake", () => {
       areaHa: FIOLEN_AREA_HA,
     };
     const result = stationMatchesLake(station, lake);
-    expect(result.matches).toBe(true);
+    if (!result.matches) throw new Error("expected matches:true");
     expect(result.confidence).toBe("high");
   });
 
@@ -83,7 +83,7 @@ describe("stationMatchesLake", () => {
       areaHa: FIOLEN_AREA_HA,
     };
     const result = stationMatchesLake(station, lake);
-    expect(result.matches).toBe(true);
+    if (!result.matches) throw new Error("expected matches:true");
     expect(result.confidence).toBe("low");
   });
 
@@ -128,7 +128,7 @@ describe("stationMatchesLake", () => {
     const vanern = { lat: 58.9, lon: 13.5, areaHa: 565_000 };
     const station = { lat: 59.08, lon: 13.5 }; // ~20 km north
     const result = stationMatchesLake(station, vanern);
-    expect(result.matches).toBe(true);
+    if (!result.matches) throw new Error("expected matches:true");
     expect(result.confidence).toBe("low"); // >200 m, inside area circle
   });
 
@@ -136,7 +136,7 @@ describe("stationMatchesLake", () => {
     const vanern = { lat: 58.9, lon: 13.5, areaHa: 565_000 };
     const station = { lat: 58.9 + 0.001, lon: 13.5 }; // ~111 m
     const result = stationMatchesLake(station, vanern);
-    expect(result.matches).toBe(true);
+    if (!result.matches) throw new Error("expected matches:true");
     expect(result.confidence).toBe("high");
   });
 });
