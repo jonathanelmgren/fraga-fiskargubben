@@ -1,0 +1,14 @@
+node_modules
+.next
+.git
+.env
+.env.*
+!.env.example
+e2e/.artifacts
+playwright-report
+test-results
+*.tsbuildinfo
+.claude
+.DS_Store
+logs
+drizzle/meta
