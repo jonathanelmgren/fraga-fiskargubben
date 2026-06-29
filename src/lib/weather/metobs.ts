@@ -10,6 +10,45 @@ import { metobsStations } from "@/shared/db/schema";
 
 export type MetobsParameter = "pressure" | "temp";
 
+/**
+ * A single raw obs entry from the SMHI metobs API.
+ * `date` is epoch ms; `value` is the string numeric value.
+ */
+export type RawObsEntry = { date: number; value: string };
+
+/**
+ * A set of raw observation arrays for the four conditions parameters.
+ * Passed to mapObsToConditions; any array may be empty if that parameter
+ * had no data for the requested time window.
+ */
+export type RawObsSet = {
+  temp: RawObsEntry[];
+  pressure: RawObsEntry[];
+  windSpeed: RawObsEntry[];
+  windDir: RawObsEntry[];
+};
+
+/**
+ * Observed conditions at a specific target time, drawn from metobs actuals.
+ *
+ * Field names are intentionally aligned with the forecast path's SmhiDataParams
+ * so Phase 4 buildSignals can consume both paths with the same shape:
+ *   air_temperature               — °C
+ *   air_pressure_at_mean_sea_level — hPa
+ *   wind_speed                    — m/s
+ *   wind_from_direction           — degrees (0–360)
+ *   source                        — always "observed" for this type
+ *
+ * Only fields with actual data are populated; missing parameters are undefined.
+ */
+export type ObservedConditions = {
+  air_temperature?: number;
+  air_pressure_at_mean_sea_level?: number;
+  wind_speed?: number;
+  wind_from_direction?: number;
+  source: "observed";
+};
+
 export type MetobsStation = {
   id: string;
   name: string;
@@ -65,6 +104,79 @@ export function classifyTempTrend(
  */
 export function tempConfidence(distanceKm: number): "high" | "low" {
   return distanceKm > 40 ? "low" : "high";
+}
+
+/**
+ * ADR-0002 dual-source switch.
+ *
+ * Returns "observed" when targetTimeUtc is strictly before `now`,
+ * "forecast" when it equals now or is in the future.
+ *
+ * Boundary decision: "now" is not past — observations may lag by minutes, so
+ * the current moment always uses the forecast path. This is conservative and
+ * correct: if the user queries "right now", we have a forecast but may not
+ * yet have an observation indexed for this exact second.
+ *
+ * @param targetTimeUtc  UTC ISO-8601 string of the conditions target time.
+ * @param now            Injected for testability; defaults to `new Date()`.
+ */
+export function conditionsSource(
+  targetTimeUtc: string,
+  now: Date = new Date(),
+): "forecast" | "observed" {
+  return new Date(targetTimeUtc).getTime() < now.getTime()
+    ? "observed"
+    : "forecast";
+}
+
+/**
+ * Pick the observation entry nearest to targetTimeUtc.
+ * Tie-break: first (earlier) entry wins — observations lean toward confirmed
+ * historical data rather than the later boundary.
+ * Returns undefined when the array is empty.
+ * Pure — no I/O.
+ */
+function pickNearestObs(
+  obs: RawObsEntry[],
+  targetTimeUtc: string,
+): number | undefined {
+  if (obs.length === 0) return undefined;
+
+  const targetMs = new Date(targetTimeUtc).getTime();
+  let best = obs[0];
+  let bestDiff = Math.abs(best.date - targetMs);
+
+  for (const entry of obs.slice(1)) {
+    const diff = Math.abs(entry.date - targetMs);
+    if (diff < bestDiff) {
+      best = entry;
+      bestDiff = diff;
+    }
+  }
+
+  const num = Number.parseFloat(best.value);
+  return Number.isNaN(num) ? undefined : num;
+}
+
+/**
+ * Map a set of raw metobs observation arrays to ObservedConditions.
+ *
+ * Each parameter is independently nearest-picked relative to targetTimeUtc.
+ * Fields without data are omitted (undefined). source is always "observed".
+ *
+ * Pure — no I/O; exported for fixture testing.
+ */
+export function mapObsToConditions(
+  obs: RawObsSet,
+  targetTimeUtc: string,
+): ObservedConditions {
+  return {
+    air_temperature: pickNearestObs(obs.temp, targetTimeUtc),
+    air_pressure_at_mean_sea_level: pickNearestObs(obs.pressure, targetTimeUtc),
+    wind_speed: pickNearestObs(obs.windSpeed, targetTimeUtc),
+    wind_from_direction: pickNearestObs(obs.windDir, targetTimeUtc),
+    source: "observed",
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -234,4 +346,91 @@ export async function airTempTrend5d(
   const first = obs[0].value;
   const last = obs[obs.length - 1].value;
   return { trend: classifyTempTrend(last - first), confidence };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Observed conditions (past-time actuals path) — ADR-0002 dual source
+//
+// SMHI parameter ids for conditions fetch:
+//   1  = air temperature (°C)
+//   9  = air pressure at mean sea level (hPa)
+//   4  = wind speed (m/s)         [PLACEHOLDER: verify against SMHI docs]
+//   3  = wind direction (degrees) [PLACEHOLDER: verify against SMHI docs]
+//
+// The fetch uses the same PLACEHOLDER endpoint pattern as the trend fetch above.
+// Operator must confirm param ids + URL against https://opendata.smhi.se/apidocs/metobs/
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** SMHI parameter id for wind speed (PLACEHOLDER — verify against SMHI docs). */
+const WIND_SPEED_PARAM_ID = 4;
+/** SMHI parameter id for wind from direction (PLACEHOLDER — verify against SMHI docs). */
+const WIND_DIR_PARAM_ID = 3;
+
+/**
+ * Fetch raw observation entries (date as epoch ms, value as string) for a
+ * single SMHI metobs parameter. Keeps the raw shape so mapObsToConditions can
+ * do nearest-time picking without double-parsing.
+ *
+ * PLACEHOLDER: endpoint URL and parameter ids are unverified — see comment above.
+ */
+async function fetchRawObs(
+  stationId: string,
+  parameterId: number,
+  period: "latest-day" | "latest-months",
+): Promise<RawObsEntry[]> {
+  const base =
+    process.env.METOBS_BASE ?? "https://opendata-download-metobs.smhi.se";
+  // PLACEHOLDER: path pattern is unverified — operator must confirm against
+  // https://opendata.smhi.se/apidocs/metobs/ before relying on this.
+  const pathTemplate =
+    process.env.METOBS_OBS_URL ??
+    "/api/version/1.0/parameter/{p}/station/{s}/period/{period}/data.json";
+
+  const url = `${base}${pathTemplate
+    .replace("{p}", String(parameterId))
+    .replace("{s}", stationId)
+    .replace("{period}", period)}`;
+
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(
+      `metobs raw observation fetch failed: ${res.status} ${res.statusText} for ${url}`,
+    );
+  }
+
+  type SmhiObsDoc = {
+    value?: Array<{ date: number; value: string }>;
+  };
+  const doc: SmhiObsDoc = (await res.json()) as SmhiObsDoc;
+  if (!Array.isArray(doc.value)) return [];
+
+  return doc.value;
+}
+
+/**
+ * Fetch metobs actual observations around `targetTimeUtc` for a station and
+ * return them as ObservedConditions (same shape as the forecast conditions path,
+ * each field marked source: "observed").
+ *
+ * For past target times only (use conditionsSource() to decide which path to call).
+ *
+ * PLACEHOLDER: parameter ids and endpoint URL are unverified — see module-level
+ * comment. Fetches "latest-day" for all four parameters; if targetTimeUtc is
+ * more than ~24h in the past, data may be absent and fields will be undefined.
+ */
+export async function observedConditions(
+  stationId: string,
+  targetTimeUtc: string,
+): Promise<ObservedConditions> {
+  const [temp, pressure, windSpeed, windDir] = await Promise.all([
+    fetchRawObs(stationId, TEMP_PARAM_ID, "latest-day"),
+    fetchRawObs(stationId, PRESSURE_PARAM_ID, "latest-day"),
+    fetchRawObs(stationId, WIND_SPEED_PARAM_ID, "latest-day"),
+    fetchRawObs(stationId, WIND_DIR_PARAM_ID, "latest-day"),
+  ]);
+
+  return mapObsToConditions(
+    { temp, pressure, windSpeed, windDir },
+    targetTimeUtc,
+  );
 }

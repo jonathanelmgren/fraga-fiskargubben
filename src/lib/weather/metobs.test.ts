@@ -18,8 +18,17 @@ vi.mock("@/shared/env", () => ({
 
 import { describe, expect, it } from "vitest";
 import {
+  pressureObsFixture,
+  tempObsFixture,
+  windDirObsFixture,
+  windSpeedObsFixture,
+} from "./__fixtures__/metobs-conditions-fixture";
+import {
   classifyPressureTrend,
   classifyTempTrend,
+  conditionsSource,
+  mapObsToConditions,
+  type RawObsSet,
   tempConfidence,
 } from "./metobs";
 
@@ -114,5 +123,103 @@ describe("tempConfidence", () => {
   it("returns 'low' when distance is well over 40 km", () => {
     expect(tempConfidence(60)).toBe("low");
     expect(tempConfidence(200)).toBe("low");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// conditionsSource — pure unit tests (ADR-0002 dual-source switch)
+//
+// Boundary decision: targetTimeUtc strictly BEFORE `now` → "observed".
+// targetTimeUtc equal to or after `now` → "forecast".
+// Rationale: "now" is never truly in the past — observations may lag by minutes,
+// so we conservatively use the forecast for the current moment.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("conditionsSource", () => {
+  const now = new Date("2024-06-15T12:00:00Z");
+
+  it("returns 'observed' for a clearly past time", () => {
+    expect(conditionsSource("2024-06-14T12:00:00Z", now)).toBe("observed");
+  });
+
+  it("returns 'observed' for a time 1 ms before now", () => {
+    const justBefore = new Date(now.getTime() - 1).toISOString();
+    expect(conditionsSource(justBefore, now)).toBe("observed");
+  });
+
+  it("returns 'forecast' for a time exactly equal to now (boundary: now → forecast)", () => {
+    expect(conditionsSource(now.toISOString(), now)).toBe("forecast");
+  });
+
+  it("returns 'forecast' for a time 1 ms after now", () => {
+    const justAfter = new Date(now.getTime() + 1).toISOString();
+    expect(conditionsSource(justAfter, now)).toBe("forecast");
+  });
+
+  it("returns 'forecast' for a clearly future time", () => {
+    expect(conditionsSource("2024-06-16T12:00:00Z", now)).toBe("forecast");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// mapObsToConditions — pure mapper, fixture-tested (no network)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("mapObsToConditions", () => {
+  const targetTimeUtc = "2024-06-15T12:00:00Z"; // epoch 1718452800000 — last fixture entry
+
+  const obsSet: RawObsSet = {
+    temp: tempObsFixture.value,
+    pressure: pressureObsFixture.value,
+    windSpeed: windSpeedObsFixture.value,
+    windDir: windDirObsFixture.value,
+  };
+
+  it("picks the temp observation nearest to the target time", () => {
+    const result = mapObsToConditions(obsSet, targetTimeUtc);
+    expect(result.air_temperature).toBe(16.1);
+  });
+
+  it("picks the pressure observation nearest to the target time", () => {
+    const result = mapObsToConditions(obsSet, targetTimeUtc);
+    expect(result.air_pressure_at_mean_sea_level).toBe(1012.0);
+  });
+
+  it("picks the wind_speed observation nearest to the target time", () => {
+    const result = mapObsToConditions(obsSet, targetTimeUtc);
+    expect(result.wind_speed).toBe(4.1);
+  });
+
+  it("picks the wind_from_direction observation nearest to the target time", () => {
+    const result = mapObsToConditions(obsSet, targetTimeUtc);
+    expect(result.wind_from_direction).toBe(260);
+  });
+
+  it("marks every field with source: 'observed'", () => {
+    const result = mapObsToConditions(obsSet, targetTimeUtc);
+    expect(result.source).toBe("observed");
+  });
+
+  it("returns undefined fields when the obs array is empty for that parameter", () => {
+    const sparse: RawObsSet = {
+      temp: [],
+      pressure: pressureObsFixture.value,
+      windSpeed: [],
+      windDir: [],
+    };
+    const result = mapObsToConditions(sparse, targetTimeUtc);
+    expect(result.air_temperature).toBeUndefined();
+    expect(result.air_pressure_at_mean_sea_level).toBe(1012.0);
+    expect(result.wind_speed).toBeUndefined();
+    expect(result.wind_from_direction).toBeUndefined();
+    expect(result.source).toBe("observed");
+  });
+
+  it("picks earlier entry when equidistant (first wins tie-break)", () => {
+    // Target at 10:30 is equidistant from 10:00 and 11:00
+    const result = mapObsToConditions(obsSet, "2024-06-15T10:30:00Z");
+    // 10:00 entry (epoch 1718445600000) and 11:00 entry (1718449200000)
+    // 10:30 is 1800000 ms from both; first wins
+    expect(result.air_temperature).toBe(14.7);
   });
 });
