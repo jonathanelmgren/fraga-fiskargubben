@@ -31,7 +31,12 @@ export const auth = betterAuth({
       clientId: env.GOOGLE_CLIENT_ID,
       clientSecret: env.GOOGLE_CLIENT_SECRET,
     },
-    // Microsoft slots in here next — same shape plus `tenantId`.
+    microsoft: {
+      clientId: env.MICROSOFT_CLIENT_ID,
+      clientSecret: env.MICROSOFT_CLIENT_SECRET,
+      // "common" = any work, school, or personal Microsoft account (open reg).
+      tenantId: "common",
+    },
   },
   plugins: [nextCookies()],
 });

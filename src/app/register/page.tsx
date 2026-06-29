@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { signUp } from "@/lib/auth-client";
-import { GoogleButton } from "../google-button";
+import { GoogleButton, MicrosoftButton } from "../social-buttons";
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -37,7 +37,10 @@ export default function RegisterPage() {
         <p className="mb-6 text-sm text-muted-foreground">
           Open registration — anyone can sign up.
         </p>
-        <GoogleButton label="Sign up with Google" />
+        <div className="flex flex-col gap-2">
+          <GoogleButton label="Sign up with Google" />
+          <MicrosoftButton label="Sign up with Microsoft" />
+        </div>
         <div className="my-5 flex items-center gap-3 text-xs text-muted-foreground">
           <span className="h-px flex-1 bg-border" />
           or
@@ -89,6 +92,17 @@ export default function RegisterPage() {
           <Link href="/login" className="font-medium text-foreground underline">
             Sign in
           </Link>
+        </p>
+        <p className="mt-4 text-center text-xs text-muted-foreground">
+          By signing up you agree to our{" "}
+          <Link href="/termsofservice" className="underline">
+            Terms of Service
+          </Link>{" "}
+          and{" "}
+          <Link href="/privacystatement" className="underline">
+            Privacy Statement
+          </Link>
+          .
         </p>
       </div>
     </main>
