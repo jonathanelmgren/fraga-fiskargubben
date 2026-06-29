@@ -3,8 +3,29 @@
  * No network, no database.
  */
 
-import { describe, expect, it } from "vitest";
-import { deriveColour } from "./colour";
+// vi.mock calls are hoisted — these always run, even before imports.
+import { vi } from "vitest";
+
+// Allow server-only imports in the test environment.
+vi.mock("server-only", () => ({}));
+
+// Stub the env module so Zod validation doesn't blow up on missing secrets.
+vi.mock("@/shared/env", () => ({
+  env: {
+    DATABASE_URL:
+      process.env.DATABASE_URL ?? "postgres://localhost/fiskargubben",
+    ANTHROPIC_API_KEY: "test",
+    BETTER_AUTH_SECRET: "test-secret-that-is-at-least-32-chars!!",
+    BETTER_AUTH_URL: "http://localhost:3000",
+    GOOGLE_CLIENT_ID: "test",
+    GOOGLE_CLIENT_SECRET: "test",
+    MICROSOFT_CLIENT_ID: "test",
+    MICROSOFT_CLIENT_SECRET: "test",
+  },
+}));
+
+import { beforeEach, describe, expect, it } from "vitest";
+import { colourFor, deriveColour } from "./colour";
 import { stationMatchesLake } from "./station-match";
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -154,5 +175,64 @@ describe("deriveColour", () => {
 
   it("throws if neither absorbans420 nor fargtal is provided", () => {
     expect(() => deriveColour({})).toThrow();
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// colourFor — DB-backed lookup (db layer mocked)
+// ────────────────────────────────────────────────────────────────────────────
+
+// Mock the lazy DB imports that colourFor uses internally.
+const mockSelect = vi.fn();
+const mockFrom = vi.fn();
+const mockWhere = vi.fn();
+const mockLimit = vi.fn();
+
+vi.mock("@/shared/db/client", () => ({
+  db: {
+    select: mockSelect,
+  },
+}));
+vi.mock("@/shared/db/schema", () => ({
+  waterColour: {
+    lakeId: "lakeId",
+    colour: "colour",
+    sightDepthM: "sightDepthM",
+    confidence: "confidence",
+  },
+}));
+vi.mock("drizzle-orm", () => ({
+  eq: (_col: unknown, _val: unknown) => "eq-predicate",
+}));
+
+beforeEach(() => {
+  mockLimit.mockReset();
+  mockWhere.mockReset().mockReturnValue({ limit: mockLimit });
+  mockFrom.mockReset().mockReturnValue({ where: mockWhere });
+  mockSelect.mockReset().mockReturnValue({ from: mockFrom });
+});
+
+describe("colourFor", () => {
+  it("returns null when no row exists for the given lakeId", async () => {
+    mockLimit.mockResolvedValue([]);
+    const result = await colourFor("lake-that-does-not-exist");
+    expect(result).toBeNull();
+  });
+
+  it("returns the row shape when a row exists for the given lakeId", async () => {
+    mockLimit.mockResolvedValue([
+      { colour: "brown", sightDepthM: 2.5, confidence: "high" },
+    ]);
+    const result = await colourFor("lake-with-data");
+    expect(result).not.toBeNull();
+    expect(result?.colour).toBe("brown");
+    expect(result?.sightDepthM).toBe(2.5);
+    expect(result?.confidence).toBe("high");
+  });
+
+  it("returns null when DB returns empty array for an absent lakeId (clear-water lake, no ETL run)", async () => {
+    mockLimit.mockResolvedValue([]);
+    const result = await colourFor("absent-lake-id-999");
+    expect(result).toBeNull();
   });
 });

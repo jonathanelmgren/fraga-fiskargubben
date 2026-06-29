@@ -163,6 +163,7 @@ async function main(): Promise<void> {
   const { waterColour, lakes } = await import("@/shared/db/schema");
   const { stationMatchesLake } = await import("@/lib/water/station-match");
   const { deriveColour } = await import("@/lib/water/colour");
+  const { haversine } = await import("@/lib/geo/haversine");
 
   const pg = postgres(databaseUrl);
   const db = drizzle(pg);
@@ -239,7 +240,6 @@ async function main(): Promise<void> {
       if (!matches) continue;
 
       // Haversine for tie-breaking — prefer closest lake.
-      const { haversine } = await import("@/lib/geo/haversine");
       const distKm = haversine(
         { lat: station.lat, lon: station.lon },
         { lat: lake.lat, lon: lake.lon },

@@ -154,3 +154,50 @@ Tests  108 passed | 12 skipped (120)
 1. **Boundary precision:** The ≤200 m test uses 195 m because `0.2/111°` gives 200.3 m via haversine — the threshold is exact in km (`≤ 0.2`), test comment explains this.
 2. **ETL join is O(stations × lakes):** ~100k lakes × N stations. Fine for one-shot ETL but a bounding-box pre-filter is recommended before production use.
 3. **MVM endpoint shape is placeholder:** `MvmStation`/`MvmSample` types and endpoint paths must be verified against real MVM API docs before ETL can run.
+
+---
+
+## Fix: Task 3.3 review findings
+
+### Finding 1 (CRITICAL) — MVM_TICKET must not crash the app at startup
+
+**What changed:** `src/shared/env.ts` — `MVM_TICKET: z.string().min(1)` → `z.string().min(1).optional()`. Added inline JSDoc note explaining it is optional because only the ETL (`scripts/etl/import-mvm.ts`) consumes it, reading `process.env.MVM_TICKET` directly with its own guard. The runtime app never references `MVM_TICKET` at all.
+
+The ETL script was not changed — it still reads `process.env.MVM_TICKET` directly (line ~147 with its own `if (!ticket)` guard) and does not import `env.ts`.
+
+`.env.example` was not changed (already has `MVM_TICKET=` with its comment).
+
+### Finding 2 (IMPORTANT) — Add the missing `colourFor` null-on-absence test
+
+**What changed:** `src/lib/water/colour.test.ts` — added:
+- `vi.mock("server-only")`, `vi.mock("@/shared/env")` header block (matching the pattern from `src/lib/lakes/resolve.test.ts`)
+- `vi.mock("@/shared/db/client")`, `vi.mock("@/shared/db/schema")`, `vi.mock("drizzle-orm")` to stub the lazy DB imports inside `colourFor`
+- A `describe("colourFor")` block with three tests:
+  1. **null-on-absence (required):** returns `null` when DB yields `[]` for an absent lakeId
+  2. **present-row shape:** returns correct `colour`, `sightDepthM`, `confidence` when row found
+  3. **null-on-absence variant:** second absent-id case confirming the same null path
+
+**Test command and output:**
+```
+pnpm test src/lib/water/colour.test.ts
+
+ Test Files  1 passed (1)
+      Tests  18 passed (18)
+   Start at  18:51:11
+   Duration  442ms
+```
+(15 pre-existing tests + 3 new `colourFor` tests = 18 total)
+
+### Finding 3 (MINOR) — Dynamic import inside ETL inner loop
+
+**What changed:** `scripts/etl/import-mvm.ts` — moved `const { haversine } = await import("@/lib/geo/haversine")` from inside the `for (const lake of lakeCandidates)` loop to the top-level lazy-import block alongside the other DB/lib imports (line ~165). The bare `const distKm = haversine(...)` call inside the loop is unchanged. Functional behavior is identical.
+
+### Quality checks
+
+| Check | Result |
+|---|---|
+| `pnpm test src/lib/water/colour.test.ts` | 18/18 passed |
+| `pnpm ts:check` | clean (no output) |
+| `biome check` (3 changed files only) | `Checked 3 files in 4ms. No fixes applied.` |
+
+Warnings shown by `pnpm biome` are pre-existing in `src/lib/analytics/events.test.ts` (noExplicitAny) and `src/lib/water/temp.test.ts` (noGlobalIsFinite) — not in any file touched by this fix.

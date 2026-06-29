@@ -15,8 +15,12 @@ const schema = z.object({
    * (https://accounts.artdatabanken.se), then activate the ticket under
    * "Mina sidor" in Miljödata-MVM (https://miljodata.slu.se/mvm/).
    * No approval is required; the ticket is issued immediately.
+   *
+   * Optional here because it is only consumed by `scripts/etl/import-mvm.ts`,
+   * which reads process.env.MVM_TICKET directly and guards its own absence.
+   * The runtime app must not require this or it will crash in production/CI.
    */
-  MVM_TICKET: z.string().min(1),
+  MVM_TICKET: z.string().min(1).optional(),
 });
 
 const parsed = schema.safeParse(process.env);
