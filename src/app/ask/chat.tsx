@@ -9,6 +9,11 @@ import gubbeImg from "@/assets/gubbe.png";
 // Types
 // ---------------------------------------------------------------------------
 
+// L-ui1: GateType / KNOWN_GATE_TYPES / PERSONA_GATES below mirror the server's
+// AskResult union (src/lib/chat/ask-handler.ts) plus the client-only "error"
+// state. There is no compile-time link, so when a gate type is added to
+// AskResult it MUST be added here too (and to asGateType / the GateBanner copy).
+// The asGateType() runtime guard fails safe to "error" for any unknown value.
 type GateType =
   | "register_to_continue"
   | "chat_limit"
@@ -279,8 +284,11 @@ export default function Chat() {
   const isDisabled = streaming || thinking || frozen;
 
   const handleSubmit = useCallback(
-    async (e: React.FormEvent) => {
-      e.preventDefault();
+    async (e?: React.FormEvent) => {
+      // L-ui1: the event is optional so the Enter-key handler can invoke the
+      // same submit core directly, without double-casting a KeyboardEvent to a
+      // FormEvent. Only the real form-submit path passes an event to prevent.
+      e?.preventDefault();
       const trimmed = input.trim();
       if (!trimmed || isDisabled) return;
 
@@ -477,7 +485,9 @@ export default function Chat() {
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      handleSubmit(e as unknown as React.FormEvent);
+      // L-ui1: call the submit core with no event (it already prevented the
+      // keydown default) — no FormEvent cast.
+      handleSubmit();
     }
   };
 
