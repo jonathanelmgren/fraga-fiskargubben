@@ -85,6 +85,13 @@
       "when": 1782754075905,
       "tag": "0011_hotpath_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1782754075906,
+      "tag": "0012_dashboard_indexes",
+      "breakpoints": true
     }
   ]
 }
