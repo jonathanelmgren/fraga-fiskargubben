@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { EXTRACTOR_MODEL } from "@/lib/claude/models";
+import { ExternalServiceError, TimeoutError } from "@/lib/errors";
 import { extract } from "./extractor";
 
 // ---------------------------------------------------------------------------
@@ -134,5 +135,66 @@ describe("extract()", () => {
     const messages = callArg.messages as Array<{ role: string }>;
     const lastMessage = messages[messages.length - 1];
     expect(lastMessage.role).not.toBe("assistant");
+  });
+
+  // H3c / M14: an API failure must throw a TYPED error so the route maps it to
+  // 503 — it must NOT be swallowed into an off-topic refusal (which would mask
+  // an extractor outage as the user being told they're off-topic).
+  it("rejects with ExternalServiceError when the API call fails generically", async () => {
+    const client = {
+      messages: {
+        parse: vi.fn().mockRejectedValue(new Error("boom")),
+      },
+    };
+
+    await expect(
+      // biome-ignore lint/suspicious/noExplicitAny: test fake
+      extract("fiska i Tolken", [], { client: client as any }),
+    ).rejects.toBeInstanceOf(ExternalServiceError);
+  });
+
+  it("tags the ExternalServiceError with service anthropic-extractor", async () => {
+    const client = {
+      messages: { parse: vi.fn().mockRejectedValue(new Error("boom")) },
+    };
+
+    try {
+      // biome-ignore lint/suspicious/noExplicitAny: test fake
+      await extract("fiska i Tolken", [], { client: client as any });
+      throw new Error("expected extract to throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ExternalServiceError);
+      expect((err as ExternalServiceError).service).toBe("anthropic-extractor");
+    }
+  });
+
+  it("threads the upstream status through ExternalServiceError (M12)", async () => {
+    const rateLimited = Object.assign(new Error("rate limited"), {
+      status: 429,
+    });
+    const client = {
+      messages: { parse: vi.fn().mockRejectedValue(rateLimited) },
+    };
+
+    try {
+      // biome-ignore lint/suspicious/noExplicitAny: test fake
+      await extract("fiska i Tolken", [], { client: client as any });
+      throw new Error("expected extract to throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ExternalServiceError);
+      expect((err as ExternalServiceError).status).toBe(429);
+    }
+  });
+
+  it("rejects with TimeoutError when the request times out", async () => {
+    const timeout = new DOMException("timed out", "TimeoutError");
+    const client = {
+      messages: { parse: vi.fn().mockRejectedValue(timeout) },
+    };
+
+    await expect(
+      // biome-ignore lint/suspicious/noExplicitAny: test fake
+      extract("fiska i Tolken", [], { client: client as any }),
+    ).rejects.toBeInstanceOf(TimeoutError);
   });
 });
