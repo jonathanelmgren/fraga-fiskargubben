@@ -54,8 +54,14 @@ export type ConversationRow = {
   frozen: boolean;
   signalsSnapshot?: Signals | null;
   lakeId?: string | null;
-  /** lakeName is the resolved name stored on the row (for lake-lock checks). */
-  lakeName?: string | null;
+  /**
+   * M9: the BARE lake name (e.g. "Tolken", not the "name (municipality,
+   * county)" label) used as the lake-lock key on follow-ups. It is NOT a
+   * column on the conversation row — the route digs it out of the frozen
+   * signalsSnapshot jsonb (snapshot.bareLakeName). null for legacy rows whose
+   * snapshot predates bareLakeName → the handler skips the lock entirely.
+   */
+  bareLakeName?: string | null;
 };
 
 /** Minimal user row for quota checks. */
@@ -129,12 +135,11 @@ export type AskHandlerDeps = {
     targetTime: Date | null;
     signalsSnapshot: Signals;
   }): Promise<string>;
-  persistMessage(opts: {
-    conversationId: string;
-    role: "user" | "assistant";
-    content: string;
-  }): Promise<void>;
-  updateLastActive(conversationId: string): Promise<void>;
+  // M8: persistMessage / updateLastActive are intentionally NOT on this
+  // interface. handleAsk never persists turns — that is the route's
+  // fire-and-forget post-stream job (route.ts after()/persistTurns), which
+  // holds its own DB writers. Keeping them off the orchestrator's deps stops a
+  // reader assuming handleAsk writes turns.
 
   // Analytics
   emit(event: AnalyticsEvent): Promise<void>;
@@ -204,6 +209,11 @@ export async function handleAsk(
   // ── Step 3: Follow-up path — load conversation ──────────────────────────
 
   let conversation: ConversationRow | null = null;
+  // M3: count the persisted user-message rows ONCE per follow-up. It feeds both
+  // the chat-turn gate (chatTurnAllowed) and turnIndex/windingDown; nothing is
+  // inserted between the two reads (the in-flight turn is persisted post-stream
+  // via route.ts after()), so a single query is correct and saves a round-trip.
+  let messageCount: number | null = null;
 
   if (conversationId) {
     conversation = await deps.getConversation(conversationId);
@@ -228,15 +238,20 @@ export async function handleAsk(
       }
     }
 
-    // Frozen check — return immediately, no Claude call
+    // Frozen check — return immediately, no Claude call.
+    // M6: emit chat_limit_RETRY here, NOT chat_limit_hit. chat_limit_hit is
+    // emitted exactly once, by freezeConversation on the actual transition (so
+    // a dashboard counting it measures "chats that hit the limit", per
+    // ADR-0005). Every later attempt against an already-frozen conversation is
+    // a retry — a distinct event so it doesn't over-count the transition.
     if (conversation?.frozen) {
-      await deps.emit({ type: "chat_limit_hit", conversationId });
+      await deps.emit({ type: "chat_limit_retry", conversationId });
       return { type: "chat_limit", text: CHAT_LIMIT_MESSAGE };
     }
 
     // Chat-turn limit
     if (conversation) {
-      const messageCount = await deps.countUserMessages(conversationId);
+      messageCount = await deps.countUserMessages(conversationId);
       if (!deps.chatTurnAllowed(messageCount)) {
         await deps.freezeConversation(conversationId);
         return { type: "chat_limit", text: CHAT_LIMIT_MESSAGE };
@@ -295,10 +310,19 @@ export async function handleAsk(
     // parsed date is invalid fall back to deps.now.  Proper Swedish relative-time
     // resolution (e.g. via a date-fns locale) is a follow-up task.
     const parsedTime = extraction.time ? new Date(extraction.time) : null;
-    const targetTime =
-      parsedTime !== null && !Number.isNaN(parsedTime.getTime())
-        ? parsedTime
-        : deps.now;
+    const timeParsed =
+      parsedTime !== null && !Number.isNaN(parsedTime.getTime());
+    const targetTime = timeParsed ? parsedTime : deps.now;
+    // L-ah1: the fallback to `now` was silent — every relative-time question
+    // ("ikväll", "på lördag") computed Signals for the current instant with no
+    // signal of how often this happens. Emit it (only when a time was actually
+    // given but didn't parse) so the prevalence is visible.
+    if (extraction.time && !timeParsed) {
+      await deps.emit({
+        type: "time_parse_fallback",
+        payload: { time: extraction.time },
+      });
+    }
 
     // I1 fix: use formatLabel for the full disambiguation label in Signals
     // ("name (municipality, county)" per CONTEXT.md / ADR-0002).  The bare
@@ -406,7 +430,7 @@ export async function handleAsk(
   // formatted label is present (legacy row without bareLakeName), comparing
   // the user's bare lake name against the full label would never match → a
   // false lock that blocks legitimate follow-ups.  Skip the lock in that case.
-  const lockKey = conversation.lakeName ?? null;
+  const lockKey = conversation.bareLakeName ?? null;
   if (lockKey !== null && deps.isLakeLockViolation(extraction, lockKey)) {
     const redirect = deps.getLakeLockRedirect(lockKey);
     // H7: emit so lake-lock redirects are visible in analytics.
@@ -414,12 +438,17 @@ export async function handleAsk(
     return { type: "lake_lock", text: redirect };
   }
 
-  // Count turns for windingDown.  M3: countUserMessages returns only the
-  // already-persisted user rows (the in-flight turn is persisted post-stream),
-  // so add 1 to make turnIndex INCLUSIVE of the current turn.  This makes
-  // windingDown (turnIndex >= 15 in advise.ts) flip exactly at turn 15 per
-  // CONTEXT, rather than one turn late.
-  const turnIndex = (await deps.countUserMessages(followConvId)) + 1;
+  // Count turns for windingDown.  M3: reuse the messageCount already read in
+  // Step 3 (a follow-up always passes through the chat-turn gate, which sets
+  // it) rather than re-querying — the value can't have changed since (nothing
+  // is inserted mid-request). Fall back to a fresh read only if it is somehow
+  // unset. countUserMessages returns only the already-persisted user rows (the
+  // in-flight turn is persisted post-stream), so add 1 to make turnIndex
+  // INCLUSIVE of the current turn — windingDown (turnIndex >= 15 in advise.ts)
+  // then flips exactly at turn 15 per CONTEXT, rather than one turn late.
+  const persistedUserCount =
+    messageCount ?? (await deps.countUserMessages(followConvId));
+  const turnIndex = persistedUserCount + 1;
 
   // Stream follow-up advice (Haiku)
   const followStream = deps.adviseFollowup({

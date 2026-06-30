@@ -102,8 +102,6 @@ function makeDeps(overrides: Partial<AskHandlerDeps> = {}): AskHandlerDeps {
     chatTurnAllowed: vi.fn().mockReturnValue(true),
     freezeConversation: vi.fn().mockResolvedValue(undefined),
     createConversation: vi.fn().mockResolvedValue("new-conv-id"),
-    persistMessage: vi.fn().mockResolvedValue(undefined),
-    updateLastActive: vi.fn().mockResolvedValue(undefined),
     emit: vi.fn().mockResolvedValue(undefined),
     now: new Date("2026-06-29T10:00:00Z"),
     ...overrides,
@@ -387,6 +385,52 @@ describe("case 6: new conversation, happy path", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L-ah2: follow-up with a snapshot-less conversation row
+// ---------------------------------------------------------------------------
+
+describe("L-ah2: follow-up with a missing signals snapshot", () => {
+  it("emits persistence_failure(missing_signals_snapshot) and returns a gate", async () => {
+    const deps = makeDeps({
+      getSession: vi.fn().mockResolvedValue({ user: { id: "user-1" } }),
+      getConversation: vi.fn().mockResolvedValue({
+        id: "conv-1",
+        userId: "user-1",
+        frozen: false,
+        // The lake WAS resolved on this conversation, but the frozen snapshot
+        // is absent (a write that never landed) — a data anomaly, not a lake
+        // that failed to resolve.
+        signalsSnapshot: null,
+        lakeId: "tolken-1",
+        bareLakeName: "Tolken",
+      }),
+      countUserMessages: vi.fn().mockResolvedValue(2),
+      extract: vi.fn().mockResolvedValue({ onTopic: true, lakeName: "Tolken" }),
+    });
+
+    const result = await handleAsk(
+      { message: "Vilket djup?", conversationId: "conv-1" },
+      deps,
+    );
+
+    // Degrades to a sensible gate (reuses lake_unresolved — no new gate type).
+    expect(result.type).toBe("lake_unresolved");
+    // The anomaly is observable rather than silently mislabeled.
+    expect(deps.emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "persistence_failure",
+        conversationId: "conv-1",
+        payload: expect.objectContaining({
+          reason: "missing_signals_snapshot",
+        }),
+      }),
+    );
+    // No Haiku call, no refetch.
+    expect(deps.adviseFollowup).not.toHaveBeenCalled();
+    expect(deps.buildSignals).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 7. Follow-up, lake-lock violation
 // ---------------------------------------------------------------------------
 
@@ -400,7 +444,7 @@ describe("case 7: follow-up, lake-lock violation", () => {
         frozen: false,
         signalsSnapshot: BASE_SIGNALS,
         lakeId: "tolken-1",
-        lakeName: "Tolken",
+        bareLakeName: "Tolken",
       }),
       countUserMessages: vi.fn().mockResolvedValue(2),
       extract: vi.fn().mockResolvedValue({
@@ -446,7 +490,7 @@ describe("case 8: follow-up, happy path", () => {
         frozen: false,
         signalsSnapshot: BASE_SIGNALS,
         lakeId: "tolken-1",
-        lakeName: "Tolken",
+        bareLakeName: "Tolken",
       }),
       countUserMessages: vi.fn().mockResolvedValue(3),
       extract: vi.fn().mockResolvedValue({
@@ -485,7 +529,7 @@ describe("case 8: follow-up, happy path", () => {
         frozen: false,
         signalsSnapshot: BASE_SIGNALS,
         lakeId: "tolken-1",
-        lakeName: "Tolken",
+        bareLakeName: "Tolken",
       }),
       countUserMessages: vi.fn().mockResolvedValue(5),
       isLakeLockViolation: vi.fn().mockReturnValue(false),
@@ -514,7 +558,7 @@ describe("C1: conversation-ownership enforcement", () => {
         frozen: false,
         signalsSnapshot: BASE_SIGNALS,
         lakeId: "tolken-1",
-        lakeName: "Tolken",
+        bareLakeName: "Tolken",
       }),
     });
 
@@ -544,7 +588,7 @@ describe("C1: conversation-ownership enforcement", () => {
         frozen: false,
         signalsSnapshot: BASE_SIGNALS,
         lakeId: "tolken-1",
-        lakeName: "Tolken",
+        bareLakeName: "Tolken",
       }),
     });
 
@@ -570,7 +614,7 @@ describe("C1: conversation-ownership enforcement", () => {
         frozen: false,
         signalsSnapshot: BASE_SIGNALS,
         lakeId: "tolken-1",
-        lakeName: "Tolken",
+        bareLakeName: "Tolken",
       }),
       countUserMessages: vi.fn().mockResolvedValue(2),
       isLakeLockViolation: vi.fn().mockReturnValue(false),
@@ -688,8 +732,8 @@ describe("I1: Signals.lake uses formatted label; lake-lock compares bare name", 
           bareLakeName: "Tolken",
         },
         lakeId: "tolken-1",
-        // lakeName is the bare name (as route.ts would derive from bareLakeName)
-        lakeName: "Tolken",
+        // bareLakeName is the bare name (as route.ts derives from the snapshot)
+        bareLakeName: "Tolken",
       }),
       countUserMessages: vi.fn().mockResolvedValue(2),
       extract: vi.fn().mockResolvedValue({
@@ -733,7 +777,7 @@ describe("I1: Signals.lake uses formatted label; lake-lock compares bare name", 
           bareLakeName: "Tolken",
         },
         lakeId: "tolken-1",
-        lakeName: "Tolken",
+        bareLakeName: "Tolken",
       }),
       countUserMessages: vi.fn().mockResolvedValue(2),
       extract: vi.fn().mockResolvedValue({
