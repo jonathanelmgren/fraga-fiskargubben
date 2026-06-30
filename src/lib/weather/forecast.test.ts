@@ -2,6 +2,14 @@
 import { vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
+// Mock the DB client so the cache helpers (cacheGet/cacheSet) can be driven
+// per-test without a real Postgres. Each test reconfigures db.select/db.insert.
+vi.mock("@/shared/db/client", () => ({
+  db: {
+    select: vi.fn(),
+    insert: vi.fn(),
+  },
+}));
 vi.mock("@/shared/env", () => ({
   env: {
     DATABASE_URL:
@@ -16,9 +24,17 @@ vi.mock("@/shared/env", () => ({
   },
 }));
 
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { ExternalServiceError, TimeoutError } from "@/lib/errors";
+import { db } from "@/shared/db/client";
 import fixtureRaw from "./__fixtures__/snow1g-sample.json";
-import { isFresh, pickEntry, type SmhiForecastDoc } from "./forecast";
+import {
+  fetchForecast,
+  getForecast,
+  isFresh,
+  pickEntry,
+  type SmhiForecastDoc,
+} from "./forecast";
 
 // Cast the JSON fixture to SmhiForecastDoc so TypeScript can verify the tuple
 // [lon, lat] constraint on geometry.coordinates at the call sites below.
@@ -130,5 +146,142 @@ describe("isFresh", () => {
   it("returns true when fetchedAt is exactly now", () => {
     const now = new Date("2024-06-15T12:00:00Z");
     expect(isFresh(now, now)).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// fetchForecast — typed errors (H3b)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("fetchForecast — typed errors", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("throws ExternalServiceError with status on a non-OK response", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response("upstream error", {
+        status: 500,
+        statusText: "Internal Server Error",
+      }),
+    );
+
+    try {
+      await fetchForecast(57.7, 13.0);
+      throw new Error("expected fetchForecast to throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ExternalServiceError);
+      expect((err as ExternalServiceError).status).toBe(500);
+      expect((err as ExternalServiceError).service).toBe("smhi-forecast");
+    }
+  });
+
+  it("throws TimeoutError when the fetch aborts with a TimeoutError DOMException", async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockRejectedValue(new DOMException("timed out", "TimeoutError"));
+
+    await expect(fetchForecast(57.7, 13.0)).rejects.toBeInstanceOf(
+      TimeoutError,
+    );
+  });
+
+  it("throws ExternalServiceError on a malformed shape (no timeSeries)", async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(Response.json({ geometry: {} }));
+
+    await expect(fetchForecast(57.7, 13.0)).rejects.toBeInstanceOf(
+      ExternalServiceError,
+    );
+  });
+
+  it("returns the doc on a well-formed response", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(Response.json(fixture));
+    const doc = await fetchForecast(57.7, 13.0);
+    expect(Array.isArray(doc.timeSeries)).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// getForecast — cache degradation (H3b / M2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Build a db.select(...).from(...).where(...).limit(...) chain. */
+function selectChain(impl: () => Promise<unknown[]>) {
+  return () => ({
+    from: () => ({
+      where: () => ({
+        limit: impl,
+      }),
+    }),
+  });
+}
+
+/** Build a db.insert(...).values(...).onConflictDoUpdate(...) chain. */
+function insertChain(impl: () => Promise<void>) {
+  return () => ({
+    values: () => ({
+      onConflictDoUpdate: impl,
+    }),
+  });
+}
+
+describe("getForecast — cache degradation", () => {
+  const realFetch = globalThis.fetch;
+  beforeEach(() => {
+    globalThis.fetch = vi.fn().mockResolvedValue(Response.json(fixture));
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("falls through to a live fetch when cacheGet throws (M2)", async () => {
+    // db.select rejects → cacheGet throws → must still fetch live, not reject.
+    vi.mocked(db.select).mockImplementation(
+      // biome-ignore lint/suspicious/noExplicitAny: drizzle chain stub
+      selectChain(() => Promise.reject(new Error("cache read down"))) as any,
+    );
+    vi.mocked(db.insert).mockImplementation(
+      // biome-ignore lint/suspicious/noExplicitAny: drizzle chain stub
+      insertChain(() => Promise.resolve()) as any,
+    );
+
+    const doc = await getForecast("lake-1", 57.7, 13.0);
+    expect(Array.isArray(doc.timeSeries)).toBe(true);
+    expect(globalThis.fetch).toHaveBeenCalledOnce();
+  });
+
+  it("still returns the live doc when cacheSet throws (M2)", async () => {
+    // cacheGet returns empty (miss) → fetch live → cacheSet rejects → must
+    // still return the fetched doc, not reject.
+    vi.mocked(db.select).mockImplementation(
+      // biome-ignore lint/suspicious/noExplicitAny: drizzle chain stub
+      selectChain(() => Promise.resolve([])) as any,
+    );
+    vi.mocked(db.insert).mockImplementation(
+      // biome-ignore lint/suspicious/noExplicitAny: drizzle chain stub
+      insertChain(() => Promise.reject(new Error("cache write down"))) as any,
+    );
+
+    const doc = await getForecast("lake-1", 57.7, 13.0);
+    expect(Array.isArray(doc.timeSeries)).toBe(true);
+    expect(globalThis.fetch).toHaveBeenCalledOnce();
+  });
+
+  it("returns the cached doc without fetching when the cache is fresh", async () => {
+    vi.mocked(db.select).mockImplementation(
+      selectChain(
+        () => Promise.resolve([{ fetchedAt: new Date(), doc: fixture }]),
+        // biome-ignore lint/suspicious/noExplicitAny: drizzle chain stub
+      ) as any,
+    );
+
+    const doc = await getForecast("lake-1", 57.7, 13.0);
+    expect(Array.isArray(doc.timeSeries)).toBe(true);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 });

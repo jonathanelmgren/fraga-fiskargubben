@@ -225,10 +225,25 @@ export async function getForecast(
   lat: number,
   lon: number,
 ): Promise<SmhiForecastDoc> {
-  const cached = await cacheGet(lakeId);
+  // M2 (Copilot #6): a transient Postgres cache read/write error must NOT sink
+  // the whole forecast when SMHI is reachable — the module's contract is "cache
+  // miss → live fetch". Guard both cache calls so a cache failure degrades to a
+  // live fetch (read) / a still-returned doc (write) instead of dropping the
+  // entire conditions Signal.
+  let cached: SmhiForecastDoc | null = null;
+  try {
+    cached = await cacheGet(lakeId);
+  } catch (err) {
+    console.warn("[forecast] cacheGet failed — falling through to live", err);
+  }
   if (cached) return cached;
 
   const doc = await fetchForecast(lat, lon);
-  await cacheSet(lakeId, doc);
+
+  try {
+    await cacheSet(lakeId, doc);
+  } catch (err) {
+    console.warn("[forecast] cacheSet failed — returning live doc", err);
+  }
   return doc;
 }
