@@ -2,7 +2,7 @@ import "server-only";
 import { sql } from "drizzle-orm";
 import { db } from "@/shared/db/client";
 import { lakes } from "@/shared/db/schema";
-import { formatLabel as _formatLabel } from "./resolve-helpers";
+import { formatLabel } from "./resolve-helpers";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -26,6 +26,8 @@ export type Lake = {
   areaHa: number;
 };
 
+// L-r1: re-export formatLabel (imported above) for call sites that reach for
+// it via the resolve module; no aliased second import.
 export { formatLabel } from "./resolve-helpers";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -82,7 +84,7 @@ export async function searchLakes(q: string): Promise<LakeHit[]> {
   return rows.map((row) => ({
     id: row.id,
     name: row.name,
-    label: _formatLabel({
+    label: formatLabel({
       name: row.name,
       municipality: row.municipality,
       county: row.county,
@@ -122,8 +124,13 @@ export async function resolveLake(
       area_ha
     FROM ${lakes}
     WHERE
-      lower(name) = lower(${name})
+      name IS NOT NULL
+      AND lower(name) = lower(${name})
       ${municipality ? sql`AND lower(municipality) = lower(${municipality})` : sql``}
+    -- M4: we only need to distinguish "exactly one" from "more than one", so
+    -- LIMIT 2 bounds the read on the /api/ask hot path. A common shared lake
+    -- name would otherwise load every match into memory just to count them.
+    LIMIT 2
   `);
 
   if (rows.length !== 1) {

@@ -81,14 +81,12 @@ export function chatTurnAllowed(messageCount: number): boolean {
 // Injectable deps types
 // ---------------------------------------------------------------------------
 
+// L-q1: spendCredit and freezeConversation take the same dependency shape
+// (`db.update` + `emit`), so they share one type. spendCredit additionally
+// relies on `.returning()` being available on the update builder — that is a
+// property of the concrete `db.update(...)` chain, not expressible by
+// `Pick<Db, "update">`, so it is documented rather than separately typed.
 interface QuotaDeps {
-  db: Pick<Db, "update">;
-  emit: (event: AnalyticsEvent) => Promise<void>;
-}
-
-interface SpendCreditDeps {
-  // spendCredit needs `.returning()` on the update to know whether the
-  // guarded conditional actually matched a row.
   db: Pick<Db, "update">;
   emit: (event: AnalyticsEvent) => Promise<void>;
 }
@@ -121,7 +119,7 @@ function defaultDeps(): QuotaDeps {
  */
 export async function spendCredit(
   userId: string,
-  deps: SpendCreditDeps = defaultDeps(),
+  deps: QuotaDeps = defaultDeps(),
 ): Promise<boolean> {
   const updated = await deps.db
     .update(users)
