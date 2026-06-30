@@ -19,7 +19,8 @@
  * - SW: [202.5°, 247.5°)   (blows from NE)
  * - W:  [247.5°, 292.5°)   (blows from E)
  * - NW: [292.5°, 337.5°)   (blows from SE)
- *
+ */
+
 /** 8-point compass label of the windward shore. */
 export type CompassPoint = "N" | "NE" | "E" | "SE" | "S" | "SW" | "W" | "NW";
 

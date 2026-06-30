@@ -29,6 +29,7 @@ import {
   nearestStation,
   observedConditions,
   pressureTrend24h,
+  tempConfidence,
 } from "@/lib/weather/metobs";
 import { lightWindow, sunTimes } from "./light";
 import { speciesComfort } from "./species-comfort";
@@ -112,11 +113,10 @@ function missFire(
   source: string,
   reason: "error" | "empty" | "no_row" = "error",
 ): void {
-  void Promise.resolve(
-    emit({ type: "source_miss", lakeId, payload: { source, reason } }),
-  ).catch(() => {
-    // analytics failures are always swallowed
-  });
+  // L-b1: emit() is contractually non-throwing (it catches its own insert
+  // failures internally), so no extra .catch() wrapper is needed — just fire
+  // and forget.
+  void emit({ type: "source_miss", lakeId, payload: { source, reason } });
 }
 
 /** Safely run an async producer; returns the result or undefined on any error. */
@@ -157,6 +157,10 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
     wind_speed?: number;
     wind_from_direction?: number;
     cloud_area_fraction?: number;
+    /** M1: forecast snap delta (set on the forecast branch). */
+    snapDeltaMinutes?: number;
+    /** M1: observed station distance in km (set on the observed branch). */
+    stationDistanceKm?: number;
   };
 
   let source: "forecast" | "observed";
@@ -175,26 +179,45 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
   // Each branch keeps its own safe() wrapper so the never-throws contract
   // (ADR-0002) holds.
 
+  // M5: resolve the nearest TEMP station ONCE and share it. Both the observed-
+  // conditions branch and the air-temp trend need it; the in-process cache in
+  // nearestStation doesn't help because in a single Promise.all both fire
+  // before either populates it — so without sharing we'd do two identical
+  // station scans + haversine sweeps per build. A single shared promise also
+  // exposes the station distanceKm to the conditions confidence flag (M1).
+  const tempStationPromise = safe(
+    () => nearestStation(lake, "temp"),
+    () => missFire(lake.id, "nearestStation.temp"),
+  );
+
   const conditionsPromise = safe<ConditionsResult>(
     async () => {
       if (source === "forecast") {
         const doc = await getForecast(lake.id, lake.lat, lake.lon);
-        const { params } = pickEntry(doc, targetUtc);
-        return params;
+        const { params, snapDeltaMinutes } = pickEntry(doc, targetUtc);
+        // M1: surface the forecast snap delta so the assemble step can mark
+        // point conditions low-confidence when the nearest entry is far off.
+        return { ...params, snapDeltaMinutes };
       }
-      // observed — need a temp station to find the nearest station
-      const tempStation = await nearestStation(lake, "temp");
+      // observed — reuse the shared temp station (M5)
+      const tempStation = await tempStationPromise;
       if (!tempStation) {
         // No station available — treat as missing
         throw new Error("no temp station for observed conditions");
       }
-      return observedConditions(tempStation.station.id, targetUtc);
+      const observed = await observedConditions(
+        tempStation.station.id,
+        targetUtc,
+      );
+      // M1: surface the observed station distance so the assemble step can mark
+      // point conditions low-confidence when the station is far from the lake.
+      return { ...observed, stationDistanceKm: tempStation.distanceKm };
     },
     () => missFire(lake.id, "conditions"),
   );
 
-  // Trend chain (station → trend) for pressure and temp, run concurrently with
-  // conditions and with the water-DB group below.
+  // ── Step 2: metobs trends (station → trend) for pressure and temp ──────────
+  // Run concurrently with conditions and with the water-DB group below.
   const pressureTrendPromise = (async () => {
     const station = await safe(
       () => nearestStation(lake, "pressure"),
@@ -208,10 +231,8 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
   })();
 
   const airTempTrendPromise = (async () => {
-    const station = await safe(
-      () => nearestStation(lake, "temp"),
-      () => missFire(lake.id, "nearestStation.temp"),
-    );
+    // M5: reuse the shared temp station instead of a second nearestStation call.
+    const station = await tempStationPromise;
     if (!station) return undefined;
     return safe(
       () => airTempTrend5d(station.station.id, station.distanceKm),
@@ -219,7 +240,7 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
     );
   })();
 
-  // ── Step: water DB lookups (independent — run concurrently) ────────────────
+  // ── Step 3: water DB lookups (independent — run concurrently) ──────────────
   const depthPromise = safe(
     () => depthFor(lake.id),
     () => missFire(lake.id, "depth"),
@@ -250,6 +271,26 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
     speciesPromise,
   ]);
 
+  // M1: derive the point-conditions confidence honestly instead of hardcoding
+  // "high". Forecast: a large snap delta (the nearest entry is far from the
+  // target time) → low. Observed: a far station (> 40 km, the metobs
+  // tempConfidence threshold) → low. Per CONTEXT.md Provenance, this lets the
+  // LLM hedge just as the trend path already does.
+  const FORECAST_SNAP_LOW_MINUTES = 90;
+  let conditionsConfidence: Provenance["confidence"] = "high";
+  if (
+    source === "forecast" &&
+    conditions?.snapDeltaMinutes !== undefined &&
+    conditions.snapDeltaMinutes > FORECAST_SNAP_LOW_MINUTES
+  ) {
+    conditionsConfidence = "low";
+  } else if (
+    source === "observed" &&
+    conditions?.stationDistanceKm !== undefined
+  ) {
+    conditionsConfidence = tempConfidence(conditions.stationDistanceKm);
+  }
+
   let pressureTrendSignal: Signals["pressureTrend"];
   if (pressureTrend !== undefined) {
     pressureTrendSignal = wp(pressureTrend, "observed", "high");
@@ -266,7 +307,7 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
     );
   }
 
-  // ── Step 2b: Water temp (depends on the air-temp trend — kept ordered) ─────
+  // ── Step 4: Water temp (depends on the air-temp trend — kept ordered) ──────
 
   const season = seasonFromDate(safeTargetTime);
   const waterTemp = await safe(
@@ -279,7 +320,7 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
     () => missFire(lake.id, "waterTemp"),
   );
 
-  // ── Step 7: Derived signals ───────────────────────────────────────────────
+  // ── Step 5: Derived signals ───────────────────────────────────────────────
 
   // Light window (pure — guarded because sunTimes/lightWindow can throw on edge inputs)
   let light: Signals["lightWindow"];
@@ -299,7 +340,13 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
   const windDir = conditions?.wind_from_direction;
   if (windDir !== undefined && Number.isFinite(windDir)) {
     try {
-      windwardShoreSignal = wp(windwardShore(windDir), source, "high");
+      // M1: windward shore is derived from the wind reading, so it inherits the
+      // same point-conditions confidence rather than a hardcoded "high".
+      windwardShoreSignal = wp(
+        windwardShore(windDir),
+        source,
+        conditionsConfidence,
+      );
     } catch {
       missFire(lake.id, "windward_shore");
     }
@@ -337,28 +384,34 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
     timeLocal: safeTargetTime.toISOString(),
   };
 
-  // Conditions fields
+  // Conditions fields (M1: confidence derived from snap-delta / station distance)
   assignFinite(
     signals,
     "airTempC",
     conditions?.air_temperature,
     source,
-    "high",
+    conditionsConfidence,
   );
   assignFinite(
     signals,
     "pressureHpa",
     conditions?.air_pressure_at_mean_sea_level,
     source,
-    "high",
+    conditionsConfidence,
   );
-  assignFinite(signals, "windMs", conditions?.wind_speed, source, "high");
+  assignFinite(
+    signals,
+    "windMs",
+    conditions?.wind_speed,
+    source,
+    conditionsConfidence,
+  );
   assignFinite(
     signals,
     "cloudPct",
     conditions?.cloud_area_fraction,
     source,
-    "high",
+    conditionsConfidence,
   );
 
   // Trends
@@ -421,11 +474,8 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
 
   // ── Analytics ─────────────────────────────────────────────────────────────
 
-  void Promise.resolve(emit({ type: "signals_built", lakeId: lake.id })).catch(
-    () => {
-      // analytics failures are swallowed
-    },
-  );
+  // L-b1: emit() never rejects (see missFire) — fire and forget.
+  void emit({ type: "signals_built", lakeId: lake.id });
 
   return signals;
 }

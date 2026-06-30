@@ -19,6 +19,10 @@ vi.mock("@/lib/weather/metobs", () => ({
   observedConditions: vi.fn(),
   pressureTrend24h: vi.fn(),
   airTempTrend5d: vi.fn(),
+  // tempConfidence is a pure threshold (distanceKm > 40 → "low"); keep the real
+  // behaviour so M1's confidence derivation is exercised, not stubbed away.
+  tempConfidence: (distanceKm: number): "high" | "low" =>
+    distanceKm > 40 ? "low" : "high",
 }));
 
 vi.mock("@/lib/water/temp", () => ({
@@ -347,6 +351,59 @@ describe("buildSignals", () => {
       });
 
       expect(signals.maxDepthM).toBeUndefined();
+    });
+
+    // L-b2: the source_miss `reason` discriminator distinguishes graceful
+    // absence (no_row / empty) from a thrown failure (error).
+    it("emits source_miss(reason: no_row) when depthFor returns null", async () => {
+      setupForecastOnly();
+      vi.mocked(depthFor).mockResolvedValue(null);
+
+      await buildSignals({ lake: LAKE, targetTime: FUTURE_TARGET, now: NOW });
+
+      expect(vi.mocked(emit)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "source_miss",
+          payload: expect.objectContaining({
+            source: "depth",
+            reason: "no_row",
+          }),
+        }),
+      );
+    });
+
+    it("emits source_miss(reason: no_row) when speciesFor returns null", async () => {
+      setupForecastOnly();
+      vi.mocked(speciesFor).mockResolvedValue(null);
+
+      await buildSignals({ lake: LAKE, targetTime: FUTURE_TARGET, now: NOW });
+
+      expect(vi.mocked(emit)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "source_miss",
+          payload: expect.objectContaining({
+            source: "species",
+            reason: "no_row",
+          }),
+        }),
+      );
+    });
+
+    it("emits source_miss(reason: empty) when speciesFor returns []", async () => {
+      setupForecastOnly();
+      vi.mocked(speciesFor).mockResolvedValue([]);
+
+      await buildSignals({ lake: LAKE, targetTime: FUTURE_TARGET, now: NOW });
+
+      expect(vi.mocked(emit)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "source_miss",
+          payload: expect.objectContaining({
+            source: "species",
+            reason: "empty",
+          }),
+        }),
+      );
     });
 
     it("does not throw when getForecast rejects (forecast path)", async () => {
