@@ -271,12 +271,14 @@ export async function nearestStation(
 // ─────────────────────────────────────────────────────────────────────────────
 // Observation fetch helpers
 //
-// PLACEHOLDER — the exact SMHI metobs observation endpoint URL has NOT been
-// confirmed. Set METOBS_OBS_URL to the verified path with {stationId} and
-// {period} placeholders; see scripts/etl/README.md for the base URL convention.
-//
-// Example (unverified): /api/version/1.0/parameter/{p}/station/{s}/period/{period}/data.json
-// Controlled by env var METOBS_OBS_URL (with METOBS_BASE as base).
+// VERIFIED against the live SMHI metobs API 2026-07-01.  The observation URL
+// pattern (from the api.json entry point) is:
+//   /api/version/{version}/parameter/{parameter}/station/{station}/period/{period}/data.json
+// Live-checked: GET .../parameter/1/station/{active}/period/latest-day/data.json
+//   → { ..., "value": [ { "date": <epoch ms>, "value": "8.9", "quality": "G" } ] }
+// Valid periods: latest-hour, latest-day, latest-months, corrected-archive.
+// Overridable via METOBS_OBS_URL ({p},{s},{period}) with METOBS_BASE as base.
+// Docs: https://opendata.smhi.se/apidocs/metobs/
 // ─────────────────────────────────────────────────────────────────────────────
 
 type ObsValue = { date: string; value: number };
@@ -347,6 +349,10 @@ export async function airTempTrend5d(
   trend: "warming" | "cooling" | "steady";
   confidence: "high" | "low";
 }> {
+  // metobs has no native "last 5 days" period: latest-day is only ~24h, and the
+  // next-widest, latest-months, returns the last full month(s).  So we fetch
+  // latest-months and narrow to the trailing 5-day window ourselves — otherwise
+  // the trend would span weeks, not the intended 5 days (spec §3).
   const obs = await fetchObservations(
     stationId,
     TEMP_PARAM_ID,
@@ -354,32 +360,36 @@ export async function airTempTrend5d(
   );
   const confidence = tempConfidence(distanceKm);
 
-  if (obs.length < 2) {
+  const FIVE_DAYS_MS = 5 * 24 * 60 * 60 * 1000;
+  const cutoff = Date.now() - FIVE_DAYS_MS;
+  const windowed = obs.filter((o) => Date.parse(o.date) >= cutoff);
+
+  if (windowed.length < 2) {
     return { trend: "steady", confidence };
   }
 
-  // Use oldest and newest within the ~5d window
-  const first = obs[0].value;
-  const last = obs[obs.length - 1].value;
+  // Use oldest and newest within the 5-day window.
+  const first = windowed[0].value;
+  const last = windowed[windowed.length - 1].value;
   return { trend: classifyTempTrend(last - first), confidence };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Observed conditions (past-time actuals path) — ADR-0002 dual source
 //
-// SMHI parameter ids for conditions fetch:
-//   1  = air temperature (°C)
-//   9  = air pressure at mean sea level (hPa)
-//   4  = wind speed (m/s)         [PLACEHOLDER: verify against SMHI docs]
-//   3  = wind direction (degrees) [PLACEHOLDER: verify against SMHI docs]
-//
-// The fetch uses the same PLACEHOLDER endpoint pattern as the trend fetch above.
-// Operator must confirm param ids + URL against https://opendata.smhi.se/apidocs/metobs/
+// SMHI parameter ids for conditions fetch — VERIFIED against the live API
+// 2026-07-01 (GET .../parameter/{id}.json → title/unit):
+//   1  = Lufttemperatur — air temperature (°C)
+//   9  = Lufttryck reducerat havsytans nivå — air pressure at mean sea level (hPa)
+//   4  = Vindhastighet — wind speed (m/s)
+//   3  = Vindriktning — wind direction (degrees)
+// (For reference: 21 = Byvind/gust, 25 = max of 10-min mean — not used here.)
+// Docs: https://opendata.smhi.se/apidocs/metobs/
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** SMHI parameter id for wind speed (PLACEHOLDER — verify against SMHI docs). */
+/** SMHI parameter id for wind speed (Vindhastighet, m/s) — verified 2026-07-01. */
 const WIND_SPEED_PARAM_ID = 4;
-/** SMHI parameter id for wind from direction (PLACEHOLDER — verify against SMHI docs). */
+/** SMHI parameter id for wind from direction (Vindriktning, degrees) — verified 2026-07-01. */
 const WIND_DIR_PARAM_ID = 3;
 
 /**
@@ -387,7 +397,7 @@ const WIND_DIR_PARAM_ID = 3;
  * single SMHI metobs parameter. Keeps the raw shape so mapObsToConditions can
  * do nearest-time picking without double-parsing.
  *
- * PLACEHOLDER: endpoint URL and parameter ids are unverified — see comment above.
+ * Endpoint verified against the live API 2026-07-01 (see module comment above).
  */
 async function fetchRawObs(
   stationId: string,
@@ -396,8 +406,7 @@ async function fetchRawObs(
 ): Promise<RawObsEntry[]> {
   const base =
     process.env.METOBS_BASE ?? "https://opendata-download-metobs.smhi.se";
-  // PLACEHOLDER: path pattern is unverified — operator must confirm against
-  // https://opendata.smhi.se/apidocs/metobs/ before relying on this.
+  // Verified path pattern (see module comment above); overridable via env.
   const pathTemplate =
     process.env.METOBS_OBS_URL ??
     "/api/version/1.0/parameter/{p}/station/{s}/period/{period}/data.json";

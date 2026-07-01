@@ -1,14 +1,40 @@
 /**
- * ETL stub: import water colour (humic/clear) and Secchi sight depth from
- * SLU Miljödata-MVM (SampleSites / FullSamples endpoints).
+ * ETL: import water colour (humic/clear) and Secchi sight depth from
+ * SLU Miljödata-MVM (Observations API v2).
  *
  * Run:  pnpm etl:mvm
  *
- * ## Status
- * STUB — MVM base URL and endpoint paths are placeholders.  The script
- * validates that MVM_TICKET and DATABASE_URL are set, then exits 1 with a
- * clear error if MVM endpoints are not yet confirmed.  Replace the TODO
- * constants once the actual endpoint paths are known from the MVM API docs.
+ * ## Source — endpoints VERIFIED against the OpenAPI spec 2026-07-01
+ * MVM exposes a REST v2 API documented at
+ *   https://miljodata.slu.se/api/docs/index.html
+ *   (spec: https://miljodata.slu.se/api/docs/mvm-api-v2/swagger.json)
+ * Base path: https://miljodata.slu.se/api/observations-service/v2
+ * The public ticket is passed as the query parameter `token` (NOT `ticket`).
+ * Relevant endpoints (all GET):
+ *   /sample-sites/ids        → list sample-site ids (filterable)
+ *   /sample-sites/{id}        → one SampleSite (coordinates + CRS)
+ *   /full-samples/query       → samples WITH observations (filterable)
+ *   /full-samples/{id}        → one Sample with observations
+ *   /all-full-samples/chemistry → pre-generated chemistry export (bulk)
+ *
+ * ## FLAG — structurally wired, live-verification pending (needs MVM_TICKET)
+ * Two structural facts differ from the previous stub and could NOT be confirmed
+ * live without a ticket; they are the main work remaining before a real run:
+ *
+ * 1. Coordinates are SWEREF99TM, not WGS84.  SampleSite carries
+ *    `sampleSiteCoordinateN/E` (or `X/Y`) plus `sampleSiteCoordinateSystem`.
+ *    They MUST be reprojected to WGS84 before the haversine/stationMatchesLake
+ *    join is meaningful.  (SWEREF99→WGS84 projection is still TODO — see below.)
+ *
+ * 2. Chemistry values are NESTED, not flat.  A Sample has an `observations[]`
+ *    array of SampleObservation, each identified by a `propertyCode`/
+ *    `propertyAbbrevName`, whose `observationValues[]` hold the `value`+`unit`.
+ *    Absorbance-420 / färgtal / Secchi are therefore looked up BY PROPERTY CODE,
+ *    not as top-level `absorbans420`/`fargtal`/`siktdjupM` keys.  The exact
+ *    property codes must be read from GET /common (or a sample response) with a
+ *    live ticket and wired into extractMvmSample() below.
+ *    Verify command (needs a ticket):
+ *      curl "https://miljodata.slu.se/api/observations-service/v2/full-samples/query?token=$MVM_TICKET" | jq '.[0].observations[].propertyAbbrevName'
  *
  * ## Architecture (ADR-0002)
  * - The MVM ticket (MVM_TICKET env var) is used HERE, at import time only.
@@ -16,6 +42,11 @@
  *   in `src/lib/water/station-match.ts`.
  * - The runtime path `src/lib/water/colour.ts#colourFor` is a pure table
  *   lookup — it does NOT import env.ts and never references MVM_TICKET.
+ *
+ * ## FLAG for issue #4 (station→lake join restructure)
+ * The join loop below is left as-is for #4.  The MVM Sample/SampleSite also
+ * expose `stationEUID` / `sampleSiteEUId` — if those carry the EU WFD code, #4
+ * can join directly on `lakes.id` instead of the coordinate match.
  *
  * ## Idempotency
  * Upserts on lake_id PK (ON CONFLICT DO UPDATE).  Re-runs are safe.
@@ -29,44 +60,94 @@
  */
 
 // ---------------------------------------------------------------------------
-// MVM endpoint placeholders
-// Verify actual paths against https://miljodata.slu.se/mvm/api/
+// MVM Observations API v2 — base path VERIFIED against the OpenAPI spec.
+// The ticket is a query parameter named `token`.
 // ---------------------------------------------------------------------------
 const MVM_BASE_URL =
   process.env.MVM_BASE_URL ??
-  "<TODO: MVM base URL — e.g. https://miljodata.slu.se/mvm/api/v1>";
+  "https://miljodata.slu.se/api/observations-service/v2";
 
 /** H8: chunk size keeps each INSERT well under Postgres' 65,535 bind-param cap. */
 const BATCH_SIZE = 1_000;
 
 /**
- * L: redact the MVM_TICKET secret before logging a URL. The ticket stays in the
+ * L: redact the MVM secret before logging a URL. The secret stays in the
  * request itself (the un-redacted URL is what we fetch) — only the log output is
  * sanitised so the secret never lands in CI logs / terminal scrollback.
+ * The v2 API passes the secret as `token=`; older paths used `ticket=` — redact
+ * both so a value can never leak regardless of which query key is in use.
  */
 function redactTicket(url: string): string {
-  return url.replace(/ticket=[^&]*/i, "ticket=***");
+  return url.replace(/(ticket|token)=[^&]*/gi, "$1=***");
 }
 
 // ---------------------------------------------------------------------------
-// Type definitions (shapes are placeholder — adapt to real MVM response)
+// Type definitions — raw MVM v2 shapes VERIFIED against the OpenAPI schema;
+// MvmStation/MvmSample are the flattened shapes the join loop consumes.
 // ---------------------------------------------------------------------------
 
-/** A sample station from the MVM SampleSites endpoint. */
+/** A sample station consumed by the join loop (from a raw MvmRawSampleSite). */
 export interface MvmStation {
-  /** MVM station identifier. */
+  /** MVM sample-site identifier (SampleSite.sampleSiteId, stringified). */
   stationId: string;
-  /** Station name. */
+  /** Station name (SampleSite.preferredName). */
   name?: string;
-  /** Latitude (WGS84). */
+  /**
+   * Latitude — MUST be WGS84 for the join.  MVM returns SWEREF99TM in
+   * `sampleSiteCoordinateN`; the fetch code is responsible for reprojection
+   * (still TODO — see the module FLAG).
+   */
   lat: number;
-  /** Longitude (WGS84). */
+  /** Longitude — WGS84 (reprojected from `sampleSiteCoordinateE`). */
   lon: number;
 }
 
-/** One measurement record from the MVM FullSamples endpoint. */
+/**
+ * Raw MVM v2 SampleSite (subset of fields this ETL reads).  VERIFIED against
+ * the OpenAPI schema 2026-07-01.  Coordinates carry an explicit CRS.
+ */
+export interface MvmRawSampleSite {
+  sampleSiteId?: number;
+  preferredName?: string | null;
+  /** EU WFD id, if populated (issue #4 could join directly on this). */
+  sampleSiteEUId?: string | null;
+  /** SWEREF99TM northing / easting. */
+  sampleSiteCoordinateN?: number | null;
+  sampleSiteCoordinateE?: number | null;
+  /** Coordinate reference system name, e.g. "SWEREF99TM". */
+  sampleSiteCoordinateSystem?: string | null;
+}
+
+/** One value inside a SampleObservation (VERIFIED — SampleObservationValue). */
+export interface MvmRawObservationValue {
+  value?: string | null;
+  unit?: string | null;
+}
+
+/** One observed property on a sample (VERIFIED — SampleObservation). */
+export interface MvmRawObservation {
+  /** Machine property code (used to identify absorbance / färgtal / Secchi). */
+  propertyCode?: string | null;
+  /** Abbreviated property name, e.g. "Abs_F 420". */
+  propertyAbbrevName?: string | null;
+  propertyName?: string | null;
+  observationValues?: MvmRawObservationValue[] | null;
+}
+
+/** Raw MVM v2 Sample (subset) — carries nested observations (VERIFIED). */
+export interface MvmRawSample {
+  sampleId?: number;
+  samplingSiteId?: number;
+  observations?: MvmRawObservation[] | null;
+}
+
+/**
+ * Flattened measurement extracted from a raw MvmRawSample by extractMvmSample()
+ * — the shape the (unchanged) join loop and mapMvmSample consume.  The three
+ * value fields are pulled out of the nested `observations[]` by property code.
+ */
 export interface MvmSample {
-  /** Station identifier — links back to MvmStation.stationId. */
+  /** Sample-site identifier — links back to MvmStation.stationId. */
   stationId: string;
   /**
    * Absorbance at 420 nm (A₄₂₀, m⁻¹).
@@ -139,6 +220,81 @@ export function mapMvmSample(
 }
 
 // ---------------------------------------------------------------------------
+// Raw-response adapters — bridge the real MVM v2 shapes to the flat shapes the
+// (issue-#4-owned) join loop consumes.
+// ---------------------------------------------------------------------------
+
+/**
+ * MVM property codes for the fields we read.  FLAG: these are the documented
+ * abbreviations but the exact `propertyCode`/`propertyAbbrevName` strings MUST
+ * be confirmed against a live response (needs MVM_TICKET) — see the module FLAG.
+ * Matching is done case-insensitively against both propertyCode and
+ * propertyAbbrevName so either identifier works.
+ */
+const MVM_PROPERTY_MATCH = {
+  /** Absorbance, filtered, 420 nm (A₄₂₀). */
+  absorbans420: ["abs_f 420", "abs_f420", "absorbans_420", "abs420"],
+  /** Färgtal (Pt colour number). */
+  fargtal: ["färg", "fargtal", "färgtal", "colour"],
+  /** Siktdjup (Secchi sight depth). */
+  siktdjup: ["siktdjup", "secchi"],
+} as const;
+
+function matchesProperty(obs: MvmRawObservation, needles: readonly string[]) {
+  const hay =
+    `${obs.propertyCode ?? ""} ${obs.propertyAbbrevName ?? ""} ${obs.propertyName ?? ""}`.toLowerCase();
+  return needles.some((n) => hay.includes(n));
+}
+
+function firstNumericValue(obs: MvmRawObservation): number | undefined {
+  for (const v of obs.observationValues ?? []) {
+    const num = Number.parseFloat((v.value ?? "").replace(",", "."));
+    if (Number.isFinite(num)) return num;
+  }
+  return undefined;
+}
+
+/**
+ * Flatten one raw MVM Sample into the MvmSample the join loop consumes, pulling
+ * absorbance / färgtal / Secchi out of the nested `observations[]` by property.
+ * FLAG: verify MVM_PROPERTY_MATCH against a live response before a real run.
+ */
+export function extractMvmSample(raw: MvmRawSample): MvmSample {
+  const out: MvmSample = {
+    stationId: String(raw.samplingSiteId ?? ""),
+  };
+  for (const obs of raw.observations ?? []) {
+    if (matchesProperty(obs, MVM_PROPERTY_MATCH.absorbans420)) {
+      out.absorbans420 = firstNumericValue(obs) ?? out.absorbans420;
+    } else if (matchesProperty(obs, MVM_PROPERTY_MATCH.fargtal)) {
+      out.fargtal = firstNumericValue(obs) ?? out.fargtal;
+    } else if (matchesProperty(obs, MVM_PROPERTY_MATCH.siktdjup)) {
+      out.siktdjupM = firstNumericValue(obs) ?? out.siktdjupM;
+    }
+  }
+  return out;
+}
+
+/**
+ * Convert a raw MVM SampleSite to the join-loop MvmStation.
+ * FLAG: MVM returns SWEREF99TM (`sampleSiteCoordinateN/E`).  Reprojection to
+ * WGS84 is still TODO — for now the raw SWEREF99 metres are passed through and
+ * the coordinate join will NOT be meaningful until a projection is added (or
+ * issue #4 switches to an EU-id join via `sampleSiteEUId`).
+ */
+export function adaptMvmStation(raw: MvmRawSampleSite): MvmStation | null {
+  const lat = raw.sampleSiteCoordinateN;
+  const lon = raw.sampleSiteCoordinateE;
+  if (typeof lat !== "number" || typeof lon !== "number") return null;
+  return {
+    stationId: String(raw.sampleSiteId ?? ""),
+    name: raw.preferredName ?? undefined,
+    lat, // TODO(#4): reproject SWEREF99TM → WGS84
+    lon,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Script body — runs only when executed directly (not when imported by tests)
 // ---------------------------------------------------------------------------
 
@@ -192,8 +348,11 @@ async function main(): Promise<void> {
 
   console.log(`Loaded ${lakeCandidates.length} lakes from DB.`);
 
-  // ── 2. Fetch MVM sample stations ─────────────────────────────────────────
-  const stationsUrl = `${MVM_BASE_URL}/SampleSites?ticket=${ticket}`;
+  // ── 2. Fetch MVM sample sites ────────────────────────────────────────────
+  // FLAG: /sample-sites/ids returns ids only; a full site list may require
+  // iterating /sample-sites/{id}.  Wired against the documented query shape;
+  // confirm the exact response envelope with a live ticket (see module FLAG).
+  const stationsUrl = `${MVM_BASE_URL}/sample-sites/ids?token=${encodeURIComponent(ticket)}`;
   console.log(`Fetching MVM sample sites from: ${redactTicket(stationsUrl)}`);
 
   const stationsRes = await fetch(stationsUrl);
@@ -202,11 +361,15 @@ async function main(): Promise<void> {
       `Failed to fetch MVM stations: ${stationsRes.status} ${stationsRes.statusText}`,
     );
   }
-  const stations: MvmStation[] = (await stationsRes.json()) as MvmStation[];
+  const rawSites = (await stationsRes.json()) as MvmRawSampleSite[];
+  const stations: MvmStation[] = rawSites.flatMap((s) => {
+    const adapted = adaptMvmStation(s);
+    return adapted ? [adapted] : [];
+  });
   console.log(`Fetched ${stations.length} MVM stations.`);
 
-  // ── 3. Fetch MVM measurements (FullSamples) ───────────────────────────────
-  const samplesUrl = `${MVM_BASE_URL}/FullSamples?ticket=${ticket}`;
+  // ── 3. Fetch MVM measurements (full samples with nested observations) ─────
+  const samplesUrl = `${MVM_BASE_URL}/full-samples/query?token=${encodeURIComponent(ticket)}`;
   console.log(`Fetching MVM samples from: ${redactTicket(samplesUrl)}`);
 
   const samplesRes = await fetch(samplesUrl);
@@ -215,7 +378,9 @@ async function main(): Promise<void> {
       `Failed to fetch MVM samples: ${samplesRes.status} ${samplesRes.statusText}`,
     );
   }
-  const samples: MvmSample[] = (await samplesRes.json()) as MvmSample[];
+  const rawSamples = (await samplesRes.json()) as MvmRawSample[];
+  // Flatten nested observations → the flat MvmSample the join loop consumes.
+  const samples: MvmSample[] = rawSamples.map(extractMvmSample);
   console.log(`Fetched ${samples.length} MVM samples.`);
 
   // ── 4. Index stations by id ───────────────────────────────────────────────
