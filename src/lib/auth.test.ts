@@ -1,0 +1,116 @@
+/**
+ * auth.test.ts — C2: verifies the anon→register claim wire in auth.ts.
+ *
+ * We verify that:
+ *  1. The auth config has a databaseHooks.user.create.after hook.
+ *  2. When the hook fires with a context that has a fiska_claim cookie,
+ *     it calls claimConversation with (userId, token).
+ *  3. When context is null (seeding / test) or the cookie is absent,
+ *     claimConversation is NOT called.
+ *  4. A claim failure (DB error) is swallowed — the hook never throws.
+ */
+
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("server-only", () => ({}));
+
+// Stub env so Zod parsing doesn't blow up in CI
+vi.mock("@/shared/env", () => ({
+  env: {
+    DATABASE_URL: "postgres://x:x@localhost:5432/x",
+    ANTHROPIC_API_KEY: "sk-test",
+    BETTER_AUTH_SECRET: "00000000000000000000000000000000",
+    BETTER_AUTH_URL: "http://localhost:3000",
+    GOOGLE_CLIENT_ID: "x",
+    GOOGLE_CLIENT_SECRET: "x",
+    MICROSOFT_CLIENT_ID: "x",
+    MICROSOFT_CLIENT_SECRET: "x",
+  },
+}));
+
+// Stub DB to prevent actual connection attempts
+vi.mock("@/shared/db/client", () => ({ db: {} }));
+
+// Mock claimConversation so we can assert it's called (or not)
+vi.mock("@/lib/chat/anon", () => ({
+  claimConversation: vi.fn().mockResolvedValue({ claimed: true }),
+}));
+
+// Stub betterAuth + adapters: we don't test their internals, only the hook
+vi.mock("better-auth", () => ({
+  betterAuth: (opts: unknown) => ({ _opts: opts }),
+}));
+vi.mock("better-auth/adapters/drizzle", () => ({
+  drizzleAdapter: vi.fn().mockReturnValue({}),
+}));
+vi.mock("better-auth/next-js", () => ({
+  nextCookies: vi.fn().mockReturnValue({}),
+}));
+
+import { claimConversation } from "@/lib/chat/anon";
+
+// Import auth AFTER all mocks are in place
+import { auth } from "./auth";
+
+// biome-ignore lint/suspicious/noExplicitAny: we need to introspect the stubbed auth config
+const opts = (auth as unknown as { _opts: any })._opts;
+const afterHook = opts?.databaseHooks?.user?.create?.after as
+  | ((
+      user: { id: string },
+      context: { getCookie: (k: string) => string | null } | null,
+    ) => Promise<void>)
+  | undefined;
+
+describe("C2: auth databaseHooks.user.create.after — claim wire", () => {
+  it("the auth config has databaseHooks.user.create.after defined", () => {
+    expect(typeof afterHook).toBe("function");
+  });
+
+  it("calls claimConversation(userId, token) when fiska_claim cookie is present", async () => {
+    vi.mocked(claimConversation).mockResolvedValue({ claimed: true });
+
+    const fakeContext = {
+      getCookie: vi.fn().mockReturnValue("test-claim-token-uuid"),
+    };
+
+    await afterHook?.({ id: "user-123" }, fakeContext);
+
+    expect(claimConversation).toHaveBeenCalledWith(
+      "user-123",
+      "test-claim-token-uuid",
+    );
+  });
+
+  it("does NOT call claimConversation when context is null (seed / non-request creation)", async () => {
+    vi.mocked(claimConversation).mockClear();
+
+    await afterHook?.({ id: "user-456" }, null);
+
+    expect(claimConversation).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call claimConversation when fiska_claim cookie is absent", async () => {
+    vi.mocked(claimConversation).mockClear();
+
+    const fakeContext = {
+      getCookie: vi.fn().mockReturnValue(null),
+    };
+
+    await afterHook?.({ id: "user-789" }, fakeContext);
+
+    expect(claimConversation).not.toHaveBeenCalled();
+  });
+
+  it("swallows claimConversation errors — the hook never throws", async () => {
+    vi.mocked(claimConversation).mockRejectedValue(new Error("DB down"));
+
+    const fakeContext = {
+      getCookie: vi.fn().mockReturnValue("some-token"),
+    };
+
+    // Must not throw
+    await expect(
+      afterHook?.({ id: "user-111" }, fakeContext),
+    ).resolves.toBeUndefined();
+  });
+});

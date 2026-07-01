@@ -97,3 +97,57 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* ─── Chat UI ──────────────────────────────────────────────────────────────── */
+
+/* Casting-line dot animation (thinking / streaming indicator) */
+@keyframes cast-pulse {
+  0%,
+  80%,
+  100% {
+    opacity: 0.2;
+    transform: scale(0.8);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.casting-dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background-color: currentColor;
+  animation: cast-pulse 1.2s infinite ease-in-out;
+}
+
+/* Chat message bubbles */
+.chat-bubble-user {
+  max-width: min(80%, 520px);
+  border-radius: 1rem 1rem 0.25rem 1rem;
+  padding: 0.625rem 0.875rem;
+  background-color: var(--primary);
+  color: var(--primary-foreground);
+  box-shadow: 0 1px 3px oklch(0 0 0 / 0.08);
+}
+
+.chat-bubble-assistant {
+  max-width: min(85%, 560px);
+  border-radius: 0.25rem 1rem 1rem 1rem;
+  padding: 0.625rem 0.875rem;
+  background-color: var(--card);
+  color: var(--card-foreground);
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 3px oklch(0 0 0 / 0.06);
+}
+
+/* Subtle water-ripple background for the ask page */
+.ask-page {
+  background-image: radial-gradient(
+    ellipse 120% 60% at 50% 0%,
+    oklch(0.87 0.04 200 / 0.18) 0%,
+    transparent 70%
+  );
+}

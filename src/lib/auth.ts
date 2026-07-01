@@ -2,9 +2,13 @@ import "server-only";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { nextCookies } from "better-auth/next-js";
+import { claimConversation } from "@/lib/chat/anon";
 import { db } from "@/shared/db/client";
 import { accounts, sessions, users, verifications } from "@/shared/db/schema";
 import { env } from "@/shared/env";
+
+/** Cookie name must stay in sync with CLAIM_TOKEN_COOKIE in app/api/ask/route.ts. */
+const CLAIM_TOKEN_COOKIE = "fiska_claim";
 
 export const auth = betterAuth({
   secret: env.BETTER_AUTH_SECRET,
@@ -41,6 +45,58 @@ export const auth = betterAuth({
     },
   },
   plugins: [nextCookies()],
+  // C2: claim the anon conversation on registration so the credit carry-over
+  // (ADR-0001/ADR-0004) is applied for every registration path (email+password,
+  // Google SSO, Microsoft SSO).
+  //
+  // Implementation choice: databaseHooks.user.create.after is the correct hook
+  // because it fires *after* the user row exists in the DB (so claimConversation
+  // can write userId to the conversation) and it receives the request context
+  // which exposes getCookie() — no need for next/headers, no async context
+  // issues, and it covers all registration flows in one place.
+  //
+  // The hook is fire-and-forget (no throw on failure): a claim failure is
+  // non-fatal — the user account is already created and the conversation row
+  // remains unclaimed (will be GC'd by gcUnclaimedAnon).  A failed claim does
+  // NOT prevent sign-in.
+  databaseHooks: {
+    user: {
+      create: {
+        async after(user, context) {
+          // context is null when the user is created outside of a request
+          // (e.g. tests, seed scripts) — skip the claim in that case.
+          if (!context) return;
+
+          const token = context.getCookie(CLAIM_TOKEN_COOKIE);
+          if (!token) return;
+
+          try {
+            const { claimed } = await claimConversation(user.id, token);
+            // M7: expire the claim cookie after a successful claim so a stale
+            // token can't be replayed and the anon-quota gate doesn't keep
+            // tripping for the now-registered user.
+            if (claimed) {
+              try {
+                const { cookies } = await import("next/headers");
+                (await cookies()).delete(CLAIM_TOKEN_COOKIE);
+              } catch {
+                // Cookie store unavailable outside a request context — ignore.
+              }
+            }
+          } catch (err) {
+            // Claim failures are non-fatal: the user account was created
+            // successfully; the unclaimed conversation will be GC'd by TTL.
+            // L: log (don't swallow silently) so a lost carry-over credit is
+            // debuggable rather than vanishing without a trace.
+            console.warn(
+              `[auth] claimConversation failed for user ${user.id} — carry-over credit not applied:`,
+              err,
+            );
+          }
+        },
+      },
+    },
+  },
 });
 
 export type Auth = typeof auth;

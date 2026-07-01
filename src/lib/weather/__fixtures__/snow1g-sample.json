@@ -1,0 +1,56 @@
+{
+  "geometry": {
+    "type": "Point",
+    "coordinates": [18.0686, 59.3293]
+  },
+  "timeSeries": [
+    {
+      "time": "2024-06-15T10:00:00Z",
+      "data": {
+        "air_temperature": 14.5,
+        "air_pressure_at_mean_sea_level": 1013.2,
+        "wind_speed": 3.2,
+        "wind_from_direction": 270,
+        "cloud_area_fraction": 50,
+        "symbol_code": 3,
+        "precipitation_amount_mean": 0.0
+      }
+    },
+    {
+      "time": "2024-06-15T11:00:00Z",
+      "data": {
+        "air_temperature": 15.1,
+        "air_pressure_at_mean_sea_level": 1012.8,
+        "wind_speed": 9999,
+        "wind_from_direction": 9999,
+        "cloud_area_fraction": 75,
+        "symbol_code": 4,
+        "precipitation_amount_mean": 0.5
+      }
+    },
+    {
+      "time": "2024-06-15T12:00:00Z",
+      "data": {
+        "air_temperature": 16.0,
+        "air_pressure_at_mean_sea_level": 1012.0,
+        "wind_speed": 4.1,
+        "wind_from_direction": 260,
+        "cloud_area_fraction": 60,
+        "symbol_code": 2,
+        "precipitation_amount_mean": 0.0
+      }
+    },
+    {
+      "time": "2024-06-15T14:00:00Z",
+      "data": {
+        "air_temperature": 17.2,
+        "air_pressure_at_mean_sea_level": 1011.5,
+        "wind_speed": 5.0,
+        "wind_from_direction": 255,
+        "cloud_area_fraction": 40,
+        "symbol_code": 1,
+        "precipitation_amount_mean": 0.0
+      }
+    }
+  ]
+}

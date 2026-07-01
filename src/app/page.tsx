@@ -11,6 +11,12 @@ export default async function Home() {
       <h1 className="text-3xl font-semibold tracking-tight">
         Hi {name ?? "anon"}
       </h1>
+      <Link
+        href="/ask"
+        className="rounded-md bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90"
+      >
+        Fråga Fiskargubben
+      </Link>
       {session ? (
         <SignOutButton />
       ) : (

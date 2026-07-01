@@ -1,0 +1,467 @@
+/**
+ * POST /api/ask — Task 5.7
+ *
+ * Thin route handler that wires real deps into handleAsk (the testable
+ * orchestrator in src/lib/chat/ask-handler.ts) and maps the result to a
+ * Next.js Response.
+ *
+ * Streaming pattern: the Anthropic SDK's MessageStream exposes `.toReadableStream()`
+ * which returns a standard Web API ReadableStream.  We pass that directly to
+ * `new Response(stream)` — the pattern documented in Next.js route.md.
+ *
+ * Cookie signing: the claimToken is stored in a plain HttpOnly, SameSite=Lax,
+ * Secure cookie.  Full cryptographic signing (HMAC/JWE) is deferred — see TODO
+ * below.  The token itself is a UUID v4 (128-bit entropy), which is unguessable
+ * in practice, but a signed cookie would prevent server-side DB reads on every
+ * request to verify the token hasn't been tampered with.
+ *
+ * TODO (DONE_WITH_CONCERNS: cookie signing):
+ *   The claimToken cookie is currently stored unsigned.  It is HttpOnly + Secure
+ *   so it cannot be read by client JS and is sent only over HTTPS, but it is not
+ *   cryptographically signed.  Add HMAC signing (e.g. `iron-session` or a custom
+ *   HMAC-SHA256 with a server secret) before production.  The UUID entropy makes
+ *   guessing infeasible; the main risk is log/debug exposure of the raw token.
+ */
+
+import "server-only";
+
+import { randomUUID } from "node:crypto";
+import { and, asc, count, eq } from "drizzle-orm";
+import { cookies } from "next/headers";
+import { after } from "next/server";
+import { emit } from "@/lib/analytics/events";
+import {
+  adviseFirst,
+  adviseFollowup,
+  getLakeLockRedirect,
+  isLakeLockViolation,
+} from "@/lib/chat/advise";
+import type { AskHandlerDeps, AskResult } from "@/lib/chat/ask-handler";
+import { handleAsk } from "@/lib/chat/ask-handler";
+import { extract } from "@/lib/chat/extractor";
+import { type PersistTurnsDeps, persistTurns } from "@/lib/chat/persist-turns";
+import {
+  canSpendCredit,
+  chatTurnAllowed,
+  freezeConversation,
+  spendCredit,
+} from "@/lib/chat/quota";
+import { ExternalServiceError, TimeoutError } from "@/lib/errors";
+import { getSession } from "@/lib/get-session";
+import { resolveLake } from "@/lib/lakes/resolve";
+import { buildSignals } from "@/lib/signals/build";
+import { db } from "@/shared/db/client";
+import { conversations, messages, users } from "@/shared/db/schema";
+import { env } from "@/shared/env";
+
+const CLAIM_TOKEN_COOKIE = "fiska_claim";
+
+/** L1: max accepted user message length (bytes ≈ chars for typical input). */
+const MAX_MESSAGE_LENGTH = 4096;
+
+/**
+ * M7: hard ceiling on the raw request body, checked via Content-Length BEFORE
+ * reading/parsing. The only legitimate body is `{ message, conversationId? }`;
+ * the message itself is capped at MAX_MESSAGE_LENGTH, so 8 KB is generous for
+ * JSON overhead. Rejecting on Content-Length stops a multi-MB body from being
+ * buffered + parsed (a cheap DoS amplifier) before the post-parse length check.
+ */
+const MAX_BODY_BYTES = 8 * 1024;
+
+/** L1: UUID v4-ish shape for conversationId boundary validation. */
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * M13: same-origin / CSRF guard for this cookie-authed, state-changing POST.
+ * /api/ask creates conversations, spends credits and freezes chats authed by
+ * the Better Auth session cookie, so a cross-site form/fetch could drive it.
+ *
+ * Strategy (defense-in-depth, alongside SameSite=Lax on the session cookie):
+ *  - If Sec-Fetch-Site is present (all modern browsers send it), require it to
+ *    be "same-origin" or "same-site"; reject "cross-site".
+ *  - Else fall back to comparing the Origin header against the app origin.
+ *  - If neither header is present (non-browser caller / server-to-server),
+ *    allow — there is no browser ambient authority to abuse.
+ *
+ * Returns true when the request is allowed.
+ */
+export function isSameOriginRequest(
+  headers: Headers,
+  appOrigin: string,
+): boolean {
+  const secFetchSite = headers.get("sec-fetch-site");
+  if (secFetchSite) {
+    return secFetchSite === "same-origin" || secFetchSite === "same-site";
+  }
+  const origin = headers.get("origin");
+  if (origin) {
+    try {
+      return new URL(origin).origin === new URL(appOrigin).origin;
+    } catch {
+      return false;
+    }
+  }
+  // No Origin and no Sec-Fetch-Site → not a browser-initiated cross-site POST.
+  return true;
+}
+
+/**
+ * H2: serialize the claim cookie as an explicit Set-Cookie header value.
+ * Mirrors the prior cookieStore.set options: HttpOnly, SameSite=Lax, Path=/,
+ * and Secure only in production (L3 — so the gate cookie works over
+ * http://localhost in dev). The value is a UUID v4 (no escaping needed).
+ */
+export function serializeClaimCookie(name: string, value: string): string {
+  const parts = [`${name}=${value}`, "Path=/", "HttpOnly", "SameSite=Lax"];
+  if (process.env.NODE_ENV === "production") {
+    parts.push("Secure");
+  }
+  return parts.join("; ");
+}
+
+/** H1: in-persona Swedish fallback the chat UI renders as a generic error. */
+const GENERIC_ERROR_MESSAGE =
+  "Något krånglar i tacklingen just nu, hörru — kasta igen om en stund.";
+
+/**
+ * H1: classify an unexpected error from handleAsk into a stable in-persona
+ * gate JSON the chat UI already handles, instead of leaking a raw 500.
+ *
+ * Without @mysterylane/errors available (not in the registry — see findings
+ * H1), we classify on the error shape we can observe: an Anthropic 429 →
+ * rate-limited (503), everything else → generic upstream/internal error (500).
+ * The body shape `{ type, text }` matches the gate contract chat.tsx renders.
+ */
+export function classifyError(err: unknown): Response {
+  // M12: classify a rate-limit on the TYPED error. The extractor/forecast wrap
+  // upstream failures as ExternalServiceError and now thread the upstream
+  // `status` through the constructor, so `err.status === 429` is reachable
+  // (previously the raw status was lost in the re-wrap → this branch was dead
+  // → every 429 fell through to a generic 503/500).
+  const status =
+    err instanceof ExternalServiceError
+      ? err.status
+      : (err as { status?: number } | null)?.status;
+  if (status === 429) {
+    return Response.json(
+      {
+        type: "lake_unresolved",
+        text: "Det är fullt på sjön just nu — vänta en stund och kasta igen.",
+      },
+      { status: 503 },
+    );
+  }
+  // M14: a typed upstream failure (Anthropic/SMHI outage or timeout) maps to
+  // 503 — a transient "try again" — rather than a generic 500 (and crucially,
+  // an extractor outage is NOT silently rendered as an off-topic refusal).
+  if (err instanceof ExternalServiceError || err instanceof TimeoutError) {
+    return Response.json(
+      { type: "lake_unresolved", text: GENERIC_ERROR_MESSAGE },
+      { status: 503 },
+    );
+  }
+  return Response.json(
+    { type: "lake_unresolved", text: GENERIC_ERROR_MESSAGE },
+    { status: 500 },
+  );
+}
+
+function buildDeps(): AskHandlerDeps {
+  return {
+    // ── Identity ──────────────────────────────────────────────────────────
+    // H2: surface an IdP-supplied gender to the handler when present.  Better
+    // Auth's user row currently has no gender column, so this is undefined in
+    // practice → neutral tilltal (the common case per CONTEXT.md).  The param
+    // is threaded end-to-end here so the gendered-tilltal path is reachable the
+    // moment a gender field is added to the session/account.
+    // [~] deferred: IdP gender field not yet on the Better Auth session.
+    getSession: async () => {
+      const session = await getSession();
+      if (!session) return null;
+      const gender = (session.user as { gender?: string | null }).gender;
+      return { user: { id: session.user.id, gender } };
+    },
+
+    // ── DB reads ──────────────────────────────────────────────────────────
+    getConversation: async (id) => {
+      const rows = await db
+        .select()
+        .from(conversations)
+        .where(eq(conversations.id, id))
+        .limit(1);
+      if (rows.length === 0) return null;
+      const row = rows[0];
+      return {
+        id: row.id,
+        userId: row.userId,
+        claimToken: row.claimToken,
+        frozen: row.frozen,
+        signalsSnapshot: row.signalsSnapshot ?? null,
+        lakeId: row.lakeId,
+        // I1 + M1 + M9: use ONLY the bare lake name ("Tolken") as the lake-lock
+        // key, dug out of the frozen signalsSnapshot jsonb (not a row column).
+        // Never fall back to the formatted label ("Tolken (Borås, …)"): a bare
+        // user lake name can never equal the label, so a label fallback yields
+        // a false lock that blocks legitimate follow-ups (M1).  Legacy rows
+        // without bareLakeName → null → the handler skips the lock entirely
+        // (degrades to no-lock rather than a false block).
+        bareLakeName: row.signalsSnapshot?.bareLakeName ?? null,
+      };
+    },
+
+    countUserMessages: async (conversationId) => {
+      const rows = await db
+        .select({ n: count() })
+        .from(messages)
+        .where(
+          and(
+            eq(messages.conversationId, conversationId),
+            eq(messages.role, "user"),
+          ),
+        );
+      return rows[0]?.n ?? 0;
+    },
+
+    getHistoryMessages: async (conversationId) => {
+      // H3: order by createdAt so history reaches the extractor / adviseFollowup
+      // in sequence.  Without ORDER BY, Postgres returns rows in arbitrary
+      // order → shuffled history → degraded advice.  createdAt is the stable
+      // ordering minimum the schema supports (no separate sequence column;
+      // timestamps are sub-second so true ties are unlikely on inserts).
+      const rows = await db
+        .select({ role: messages.role, content: messages.content })
+        .from(messages)
+        .where(eq(messages.conversationId, conversationId))
+        .orderBy(asc(messages.createdAt));
+      return rows.map((r) => ({
+        role: r.role as "user" | "assistant",
+        content: r.content,
+      }));
+    },
+
+    getUserRow: async (userId) => {
+      const rows = await db
+        .select({ isPaid: users.isPaid, creditsUsed: users.creditsUsed })
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    // ── Leaf modules ──────────────────────────────────────────────────────
+    extract: (message, history) => extract(message, history),
+    resolveLake: (name, municipality) => resolveLake(name, municipality),
+    buildSignals: ({ lake, targetTime, now }) =>
+      buildSignals({
+        lake: { ...lake, name: lake.name ?? lake.id },
+        targetTime,
+        now,
+      }),
+    adviseFirst: ({ signals, message, history, gender }) =>
+      adviseFirst({ signals, message, history: history ?? [], gender }),
+    adviseFollowup: ({ snapshot, message, history, turnIndex, gender }) =>
+      adviseFollowup({
+        snapshot,
+        message,
+        history: history ?? [],
+        turnIndex,
+        gender,
+      }),
+    isLakeLockViolation,
+    getLakeLockRedirect,
+    canSpendCredit,
+    spendCredit: (userId) => spendCredit(userId),
+    chatTurnAllowed,
+    freezeConversation: (id) => freezeConversation(id),
+
+    // ── DB writes ─────────────────────────────────────────────────────────
+    createConversation: async ({
+      userId,
+      claimToken,
+      lakeId,
+      targetTime,
+      signalsSnapshot,
+    }) => {
+      const id = randomUUID();
+      await db.insert(conversations).values({
+        id,
+        userId: userId ?? null,
+        claimToken: claimToken ?? null,
+        lakeId,
+        targetTime: targetTime ?? null,
+        signalsSnapshot,
+      });
+      return id;
+    },
+
+    // ── Analytics ─────────────────────────────────────────────────────────
+    emit: (event) => emit(event),
+
+    // ── Clock ─────────────────────────────────────────────────────────────
+    now: new Date(),
+  };
+}
+
+/**
+ * M8: the post-stream turn writers live with the route (their only caller),
+ * not on AskHandlerDeps — handleAsk never persists turns. persistTurns
+ * (src/lib/chat/persist-turns.ts) closes over these.
+ */
+function buildPersistDeps(): PersistTurnsDeps {
+  return {
+    persistMessage: async ({ conversationId, role, content }) => {
+      await db.insert(messages).values({
+        id: randomUUID(),
+        conversationId,
+        role,
+        content,
+      });
+    },
+    updateLastActive: async (conversationId) => {
+      await db
+        .update(conversations)
+        .set({ lastActiveAt: new Date() })
+        .where(eq(conversations.id, conversationId));
+    },
+    emit: (event) => emit(event),
+  };
+}
+
+export async function POST(request: Request): Promise<Response> {
+  // M13: reject cross-site requests before doing any work. /api/ask is a
+  // cookie-authed, state-changing endpoint; an Origin/Sec-Fetch-Site check
+  // closes the CSRF gap that Content-Type: application/json alone does not.
+  if (!isSameOriginRequest(request.headers, env.BETTER_AUTH_URL)) {
+    return Response.json(
+      { error: "cross-site request rejected" },
+      {
+        status: 403,
+      },
+    );
+  }
+
+  // M7: reject an oversized body via Content-Length BEFORE buffering/parsing it,
+  // so a multi-MB payload can't be fully read just to be rejected by the
+  // post-parse length check. The post-parse MAX_MESSAGE_LENGTH check below
+  // stays as defense-in-depth (Content-Length can be absent or spoofed).
+  const contentLength = Number(request.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
+    return Response.json({ error: "request body too large" }, { status: 413 });
+  }
+
+  // Parse request body
+  let body: { message?: unknown; conversationId?: unknown };
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const message = typeof body.message === "string" ? body.message.trim() : null;
+  if (!message) {
+    return Response.json({ error: "message is required" }, { status: 400 });
+  }
+  // L1: cap message length (cost amplification — every char is billed to the
+  // extractor + advisor). ~4 KB is generous for a fishing question.
+  if (message.length > MAX_MESSAGE_LENGTH) {
+    return Response.json({ error: "message too long" }, { status: 413 });
+  }
+
+  // L1: validate conversationId is a UUID at the boundary before any Claude
+  // call (it is surfaced to clients via X-Conversation-Id, so it is attacker-
+  // controlled). A malformed id can never own a conversation anyway.
+  const rawConversationId =
+    typeof body.conversationId === "string" ? body.conversationId : undefined;
+  if (rawConversationId !== undefined && !UUID_RE.test(rawConversationId)) {
+    return Response.json({ error: "invalid conversationId" }, { status: 400 });
+  }
+  const conversationId = rawConversationId;
+
+  // Pre-read the claim token cookie (cookies() is async in Next.js 16)
+  const cookieStore = await cookies();
+  const claimToken = cookieStore.get(CLAIM_TOKEN_COOKIE)?.value ?? null;
+
+  // H6: pass the pre-read claimToken into handleAsk on the input rather than
+  // mutating a built deps object (the old `deps.getClaimToken = …` hack).
+  const deps = buildDeps();
+
+  // H1: wrap the orchestrator in a try/catch error boundary.  Any Haiku/DB/
+  // buildSignals rejection would otherwise become a raw Next 500 (stack leak
+  // in dev, no in-persona body the chat UI can render).  Classify and return a
+  // stable in-persona Swedish gate the existing chat UI already handles.
+  let result: AskResult;
+  try {
+    result = await handleAsk({ message, conversationId, claimToken }, deps);
+  } catch (err) {
+    // L-rt1: emit a queryable pipeline_error so a failure escaping handleAsk is
+    // visible in analytics (previously the catch returned a classified Response
+    // with zero observability). Best-effort — never block the error response.
+    await emit({
+      type: "pipeline_error",
+      ...(conversationId ? { conversationId } : {}),
+      payload: { reason: err instanceof Error ? err.message : String(err) },
+    }).catch(() => {});
+    return classifyError(err);
+  }
+
+  // ── Map result to Response ──────────────────────────────────────────────
+
+  if (result.type === "stream") {
+    // Stream Anthropic text deltas to the client
+    // Using Anthropic SDK's .toReadableStream() → standard Web ReadableStream
+    const readable = result.stream.toReadableStream();
+    const { conversationId: streamConvId, stream } = result;
+
+    // H4: persist turns with Next 16's after() so the work survives the
+    // response close on serverless (uses waitUntil under the hood) instead of
+    // a detached IIFE that can be reclaimed. after() is valid in Route Handlers
+    // and runs after the response is finished. The persistence logic lives in
+    // the testable persistTurns helper (H3a / M11): it persists user+assistant
+    // turns together after finalMessage() resolves and always rolls
+    // lastActiveAt forward, emitting `persistence_failure` instead of throwing.
+    after(() =>
+      persistTurns(buildPersistDeps(), {
+        conversationId: streamConvId,
+        message,
+        stream,
+      }),
+    );
+
+    // Build the response headers up front so we can attach Set-Cookie directly.
+    const headers = new Headers({
+      "Content-Type": "text/plain; charset=utf-8",
+      "Transfer-Encoding": "chunked",
+      "X-Conversation-Id": result.conversationId,
+    });
+
+    // Set claim token cookie for new anon conversations.
+    // handleAsk returns claimToken on the stream result when it created a new
+    // anon conversation. Without this cookie the anon quota gate (isAnon &&
+    // claimToken !== null) can never trip, giving anon users unlimited prompts.
+    //
+    // H2: in Next 16 a cookies().set() mutation is NOT guaranteed to be applied
+    // to a hand-built `new Response(readable, …)` (only to a framework-owned or
+    // NextResponse response). If it were dropped, the anon gate would never trip
+    // → unlimited anonymous Sonnet first-prompts. So we write the Set-Cookie
+    // header EXPLICITLY onto this Response's headers (verified by route.test.ts)
+    // rather than relying on the mutation propagating.
+    if (result.claimToken) {
+      headers.append(
+        "Set-Cookie",
+        serializeClaimCookie(CLAIM_TOKEN_COOKIE, result.claimToken),
+      );
+    }
+
+    return new Response(readable, { headers });
+  }
+
+  // Non-stream gate responses — structured JSON
+  const { type, text } = result;
+  return Response.json(
+    { type, text },
+    {
+      status: type === "out_of_credits" ? 402 : 200,
+    },
+  );
+}
