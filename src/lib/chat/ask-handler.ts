@@ -30,6 +30,7 @@ import {
   LAKE_UNRESOLVED_MESSAGE,
   OUT_OF_CREDITS_MESSAGE,
 } from "./gate-messages";
+import { resolveSwedishTime } from "./swedish-time";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -305,19 +306,22 @@ export async function handleAsk(
     }
 
     // Build signals
-    // C1 fix: the Extractor returns Swedish free-text time ("ikväll", "imorgon",
-    // "på lördag") which new Date() cannot parse → Invalid Date.  Guard: if the
-    // parsed date is invalid fall back to deps.now.  Proper Swedish relative-time
-    // resolution (e.g. via a date-fns locale) is a follow-up task.
-    const parsedTime = extraction.time ? new Date(extraction.time) : null;
-    const timeParsed =
-      parsedTime !== null && !Number.isNaN(parsedTime.getTime());
-    const targetTime = timeParsed ? parsedTime : deps.now;
-    // L-ah1: the fallback to `now` was silent — every relative-time question
-    // ("ikväll", "på lördag") computed Signals for the current instant with no
-    // signal of how often this happens. Emit it (only when a time was actually
-    // given but didn't parse) so the prevalence is visible.
-    if (extraction.time && !timeParsed) {
+    // Issue #7: the Extractor returns Swedish free-text time ("ikväll",
+    // "imorgon", "imorgon kväll", "på lördag", "kl 19") which new Date() cannot
+    // parse → Invalid Date → silently NOW (forecast computed for the wrong
+    // moment).  resolveSwedishTime resolves those relative expressions against
+    // the injected clock (deps.now).  Anything it can't understand returns null;
+    // we then still tolerate a genuine ISO string via new Date() before
+    // defaulting to deps.now — preserving the original valid-or-now fallback.
+    const resolvedTime = resolveSwedishTime(extraction.time, deps.now);
+    const isoTime = extraction.time ? new Date(extraction.time) : null;
+    const isoParsed = isoTime !== null && !Number.isNaN(isoTime.getTime());
+    const targetTime = resolvedTime ?? (isoParsed ? isoTime : deps.now);
+    // L-ah1: even with the Swedish parser, a time we still can't resolve falls
+    // back to `now` silently.  Emit it (only when a time was actually given but
+    // neither the Swedish parser nor ISO parsing understood it) so the residual
+    // fallback rate stays visible in analytics.
+    if (extraction.time && resolvedTime === null && !isoParsed) {
       await deps.emit({
         type: "time_parse_fallback",
         payload: { time: extraction.time },
