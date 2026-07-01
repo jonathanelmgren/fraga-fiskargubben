@@ -159,6 +159,22 @@ async function cacheSet(lakeId: string, doc: SmhiForecastDoc): Promise<void> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Singleflight — dedupe concurrent cache-miss fetches (issue #9)
+//
+// cacheGet + fetch is a TOCTOU: two requests for the same lake can both miss the
+// 1h cache and each fire an SMHI round-trip. This in-process map collapses
+// concurrent misses onto a single in-flight fetch, keyed by lakeId. The final
+// cached state is already correct (idempotent upsert) — this only saves the
+// wasted upstream call.
+//
+// Scope caveat (mirrors the cache note above): the map is per-process, so it
+// dedupes within one instance, not across pods/restarts. That's the same
+// containerized-deploy caveat as the cache and is the intended trade-off here.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const inFlight = new Map<string, Promise<SmhiForecastDoc>>();
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Public API
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -238,12 +254,26 @@ export async function getForecast(
   }
   if (cached) return cached;
 
-  const doc = await fetchForecast(lat, lon);
+  // Singleflight: on a concurrent miss for the same lake, join the in-flight
+  // fetch instead of firing a second SMHI round-trip. The promise covers the
+  // fetch and the cache write so all joiners resolve with the same doc.
+  const existing = inFlight.get(lakeId);
+  if (existing) return existing;
 
-  try {
-    await cacheSet(lakeId, doc);
-  } catch (err) {
-    console.warn("[forecast] cacheSet failed — returning live doc", err);
-  }
-  return doc;
+  const pending = (async () => {
+    const doc = await fetchForecast(lat, lon);
+    // M2: a transient cache-write error must not sink the fetched doc — the
+    // contract is "cache miss → live fetch"; degrade to returning the live doc.
+    try {
+      await cacheSet(lakeId, doc);
+    } catch (err) {
+      console.warn("[forecast] cacheSet failed — returning live doc", err);
+    }
+    return doc;
+  })().finally(() => {
+    inFlight.delete(lakeId);
+  });
+
+  inFlight.set(lakeId, pending);
+  return pending;
 }
