@@ -222,4 +222,45 @@ describe("mapObsToConditions", () => {
     // 10:30 is 1800000 ms from both; first wins
     expect(result.air_temperature).toBe(14.7);
   });
+
+  // #8: staleness offset (snapDeltaMinutes) — the largest offset across params.
+  it("reports snapDeltaMinutes ≈ 0 when target is inside the obs window", () => {
+    // Target 12:00 matches the last fixture entry exactly for every param.
+    const result = mapObsToConditions(obsSet, targetTimeUtc);
+    expect(result.snapDeltaMinutes).toBe(0);
+  });
+
+  it("reports the largest offset (minutes) when target is far from the obs", () => {
+    // Target one full day before the window → nearest obs is the 10:00 entry,
+    // 26 h earlier (1560 min) for every param; max across params is the same.
+    const result = mapObsToConditions(obsSet, "2024-06-14T08:00:00Z");
+    // 2024-06-15T10:00Z − 2024-06-14T08:00Z = 26 h = 1560 min
+    expect(result.snapDeltaMinutes).toBe(1560);
+  });
+
+  it("takes the MAX offset across params, not the min", () => {
+    // temp has an entry AT the target; pressure's nearest is 2 h away.
+    const mixed: RawObsSet = {
+      temp: [{ date: new Date("2024-06-15T12:00:00Z").getTime(), value: "16" }],
+      pressure: [
+        { date: new Date("2024-06-15T10:00:00Z").getTime(), value: "1010" },
+      ],
+      windSpeed: [],
+      windDir: [],
+    };
+    const result = mapObsToConditions(mixed, targetTimeUtc);
+    // temp offset 0, pressure offset 120 min → max = 120
+    expect(result.snapDeltaMinutes).toBe(120);
+  });
+
+  it("leaves snapDeltaMinutes undefined when no param has data", () => {
+    const empty: RawObsSet = {
+      temp: [],
+      pressure: [],
+      windSpeed: [],
+      windDir: [],
+    };
+    const result = mapObsToConditions(empty, targetTimeUtc);
+    expect(result.snapDeltaMinutes).toBeUndefined();
+  });
 });
