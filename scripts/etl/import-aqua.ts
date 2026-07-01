@@ -28,16 +28,15 @@
  * - Species per lake are collected from all matching survey records, then
  *   deduplicated and normalized via `normalizeSpecies` from `species.ts`.
  *
- * ## FLAG for issue #4 (station→lake join restructure)
+ * ## Station→lake join (issue #4)
  * The NORS aggregated record already carries `eU_CD` (the lake PK) DIRECTLY, so
- * the coordinate-based `stationMatchesLake` join below is NOT needed for the
- * ~94% of rows that have an eU_CD — those can join straight on `lakes.id`.
- * To keep this change scoped to URLs/params/field-shapes (issue #3), the
- * aggregated record is adapted into the existing station+catch maps so the
- * O(rows × lakes) join loop is left BYTE-IDENTICAL for #4 to restructure.
- * #4 should: (a) join on eU_CD when present (high confidence, no haversine),
- * (b) fall back to the SWEREF99→WGS84-projected coordinate match only for
- * blank-eU_CD rows.  The SWEREF99→WGS84 projection is still TODO (see below).
+ * the ~94% of rows with an eU_CD join straight on `lakes.id` (O(1), high
+ * confidence, no haversine).  Only blank-eU_CD rows fall back to the
+ * `stationMatchesLake` centroid match, which is now bounding-box pre-filtered
+ * and memoized per station (see `joinStationToLake` in §6) so it is
+ * O(fallback-rows × local-lakes) rather than O(rows × lakes).
+ * TODO: blank-eU_CD coordinates are still SWEREF99TM metres, not WGS84 — the
+ * fallback only matches once those are reprojected (see below).
  *
  * ## Idempotency
  * Upserts on lake_id PK (ON CONFLICT DO UPDATE).  Re-runs are safe.
@@ -232,18 +231,46 @@ async function main(): Promise<void> {
   let skipped = 0;
   let noMatch = 0;
 
-  for (const [stationId, station] of stationMap) {
-    const rawSpeciesForStation = catchesByStation.get(stationId);
-    if (!rawSpeciesForStation || rawSpeciesForStation.length === 0) {
-      continue;
+  // #4: two-tier join.
+  //   (a) DIRECT — most NORS rows carry `eU_CD` (the lake PK), so join straight
+  //       on `lakes.id` in O(1) with no haversine.  This is the ~94% path.
+  //   (b) COORDINATE FALLBACK — only blank-eU_CD rows fall through to the
+  //       centroid join, now with a bounding-box pre-filter + per-station memo
+  //       (mirrors import-mvm.ts) so it is O(fallback-stations × local-lakes)
+  //       instead of O(stations × lakes).  [~] deferred: PostGIS spatial join.
+  const lakeById = new Map(lakeCandidates.map((lake) => [lake.id, lake]));
+
+  /** ~degrees of latitude per km; lakes farther than the area radius can't match. */
+  const BBOX_DEG = 0.6; // ~66 km half-window — generous vs largest area radii
+
+  type StationMatch = { lakeId: string; confidence: "high" | "low" } | null;
+  const matchByStation = new Map<string, StationMatch>();
+
+  function joinStationToLake(station: AquaStation): StationMatch {
+    // (a) Direct eU_CD join — no coordinate math when the lake PK is present.
+    if (station.euCd) {
+      const lake = lakeById.get(station.euCd);
+      if (lake) return { lakeId: lake.id, confidence: "high" };
+      // eU_CD present but not in our lakes table → fall through to coordinates.
     }
 
-    // Find the best-matching lake for this station.
+    // (b) Coordinate fallback, memoized per unique station id.
+    const cached = matchByStation.get(station.stationId);
+    if (cached !== undefined) return cached;
+
     let bestLakeId: string | null = null;
     let bestConfidence: "high" | "low" | null = null;
     let bestDistKm = Number.POSITIVE_INFINITY;
 
     for (const lake of lakeCandidates) {
+      // Cheap bounding-box reject before the trig-heavy haversine.
+      if (
+        Math.abs(lake.lat - station.lat) > BBOX_DEG ||
+        Math.abs(lake.lon - station.lon) > BBOX_DEG
+      ) {
+        continue;
+      }
+
       const match = stationMatchesLake(
         { lat: station.lat, lon: station.lon },
         { lat: lake.lat, lon: lake.lon, areaHa: lake.areaHa },
@@ -268,10 +295,26 @@ async function main(): Promise<void> {
       }
     }
 
-    if (bestLakeId === null || bestConfidence === null) {
+    const result: StationMatch =
+      bestLakeId !== null && bestConfidence !== null
+        ? { lakeId: bestLakeId, confidence: bestConfidence }
+        : null;
+    matchByStation.set(station.stationId, result);
+    return result;
+  }
+
+  for (const [stationId, station] of stationMap) {
+    const rawSpeciesForStation = catchesByStation.get(stationId);
+    if (!rawSpeciesForStation || rawSpeciesForStation.length === 0) {
+      continue;
+    }
+
+    const joined = joinStationToLake(station);
+    if (joined === null) {
       noMatch++;
       continue;
     }
+    const { lakeId: bestLakeId, confidence: bestConfidence } = joined;
 
     // Accumulate species for this lake; prefer high confidence.
     const existing = speciesByLake.get(bestLakeId);
