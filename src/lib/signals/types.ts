@@ -12,6 +12,16 @@ export type Signals = {
    */
   bareLakeName?: string;
   timeLocal: string; // ISO local Target time
+  /**
+   * #8: when conditions come from OBSERVED data (past target) and the nearest
+   * available observation is far from the requested time, this holds that
+   * offset in minutes.  The observed condition Signals (airTempC/pressureHpa/
+   * windMs) are additionally downgraded to "low" confidence.  Absent when
+   * conditions are from the forecast path or the nearest obs is close to
+   * target — the LLM should hedge ("närmaste mätning var N h från …") only
+   * when this is present.
+   */
+  conditionsStaleMinutes?: number;
   airTempC?: WithProvenance<number>;
   pressureHpa?: WithProvenance<number>;
   pressureTrend?: WithProvenance<"rising" | "falling" | "stable">;

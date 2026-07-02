@@ -498,6 +498,78 @@ describe("buildSignals", () => {
     });
   });
 
+  // #8: observed-data staleness — flag + confidence downgrade when the nearest
+  // observation is far from the requested target time.
+  describe("observed staleness (#8)", () => {
+    function setupObserved(snapDeltaMinutes: number | undefined) {
+      vi.mocked(conditionsSource).mockReturnValue("observed");
+      vi.mocked(nearestStation).mockImplementation((_lake, param) =>
+        Promise.resolve(
+          param === "pressure"
+            ? NEAREST_PRESSURE_STATION
+            : NEAREST_TEMP_STATION,
+        ),
+      );
+      vi.mocked(observedConditions).mockResolvedValue({
+        air_temperature: 15,
+        air_pressure_at_mean_sea_level: 1010,
+        wind_speed: 3,
+        wind_from_direction: 90,
+        source: "observed",
+        snapDeltaMinutes,
+      });
+      vi.mocked(pressureTrend24h).mockResolvedValue("falling");
+      vi.mocked(airTempTrend5d).mockResolvedValue({
+        trend: "cooling",
+        confidence: "high",
+      });
+      vi.mocked(waterTempFor).mockResolvedValue(WATER_TEMP_WITH_PROV);
+      vi.mocked(depthFor).mockResolvedValue(null);
+      vi.mocked(colourFor).mockResolvedValue(null);
+      vi.mocked(speciesFor).mockResolvedValue(null);
+    }
+
+    it("downgrades observed conditions to low confidence when stale (>180min)", async () => {
+      setupObserved(600); // 10 h off → stale
+      const signals = await buildSignals({
+        lake: LAKE,
+        targetTime: PAST_TARGET,
+        now: NOW,
+      });
+      expect(signals.conditionsStaleMinutes).toBe(600);
+      expect(signals.airTempC?.provenance.confidence).toBe("low");
+      expect(signals.pressureHpa?.provenance.confidence).toBe("low");
+      expect(signals.windMs?.provenance.confidence).toBe("low");
+      // derived windward shore inherits the downgrade
+      expect(signals.windwardShore?.provenance.confidence).toBe("low");
+      // source is still observed
+      expect(signals.airTempC?.provenance.source).toBe("observed");
+    });
+
+    it("keeps high confidence and omits the marker when obs is fresh (≤180min)", async () => {
+      setupObserved(30); // 30 min off → fresh
+      const signals = await buildSignals({
+        lake: LAKE,
+        targetTime: PAST_TARGET,
+        now: NOW,
+      });
+      expect(signals.conditionsStaleMinutes).toBeUndefined();
+      expect(signals.airTempC?.provenance.confidence).toBe("high");
+      expect(signals.windwardShore?.provenance.confidence).toBe("high");
+    });
+
+    it("does not flag staleness on the forecast path even with a large snap", async () => {
+      setupForecastOnly();
+      const signals = await buildSignals({
+        lake: LAKE,
+        targetTime: FUTURE_TARGET,
+        now: NOW,
+      });
+      expect(signals.conditionsStaleMinutes).toBeUndefined();
+      expect(signals.airTempC?.provenance.confidence).toBe("high");
+    });
+  });
+
   describe("provenance", () => {
     it("forecast conditions carry source=forecast", async () => {
       setupForecastOnly();

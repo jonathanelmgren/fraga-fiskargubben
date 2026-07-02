@@ -157,7 +157,10 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
     wind_speed?: number;
     wind_from_direction?: number;
     cloud_area_fraction?: number;
-    /** M1: forecast snap delta (set on the forecast branch). */
+    /**
+     * snapDeltaMinutes: on the forecast branch, the forecast snap delta (M1);
+     * on the observed branch, how far the nearest obs is from target (#8).
+     */
     snapDeltaMinutes?: number;
     /** M1: observed station distance in km (set on the observed branch). */
     stationDistanceKm?: number;
@@ -291,6 +294,24 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
     conditionsConfidence = tempConfidence(conditions.stationDistanceKm);
   }
 
+  // #8: observed-data staleness. On the observed (past-target) path the nearest
+  // available observation can be far from the requested TIME (distinct from M1's
+  // station DISTANCE) — outside "latest-day" it may be many hours off with no
+  // marker. When the offset exceeds the threshold, surface it on the Signals so
+  // the LLM can hedge, and additionally force the conditions confidence to low
+  // (staleness compounds any station-distance downgrade M1 already applied). The
+  // forecast path is unaffected.
+  const OBS_STALE_THRESHOLD_MIN = 180; // 3 h — beyond this the snapshot is "stale"
+  const conditionsStaleMinutes =
+    source === "observed" &&
+    conditions?.snapDeltaMinutes !== undefined &&
+    conditions.snapDeltaMinutes > OBS_STALE_THRESHOLD_MIN
+      ? conditions.snapDeltaMinutes
+      : undefined;
+  if (conditionsStaleMinutes !== undefined) {
+    conditionsConfidence = "low";
+  }
+
   let pressureTrendSignal: Signals["pressureTrend"];
   if (pressureTrend !== undefined) {
     pressureTrendSignal = wp(pressureTrend, "observed", "high");
@@ -340,8 +361,9 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
   const windDir = conditions?.wind_from_direction;
   if (windDir !== undefined && Number.isFinite(windDir)) {
     try {
-      // M1: windward shore is derived from the wind reading, so it inherits the
-      // same point-conditions confidence rather than a hardcoded "high".
+      // M1/#8: windward shore is derived from the wind reading, so it inherits
+      // the same point-conditions confidence (station-distance M1 + staleness #8)
+      // rather than a hardcoded "high".
       windwardShoreSignal = wp(
         windwardShore(windDir),
         source,
@@ -384,7 +406,13 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
     timeLocal: safeTargetTime.toISOString(),
   };
 
-  // Conditions fields (M1: confidence derived from snap-delta / station distance)
+  // #8: flag observed staleness so the LLM can hedge on the observed snapshot.
+  if (conditionsStaleMinutes !== undefined) {
+    signals.conditionsStaleMinutes = conditionsStaleMinutes;
+  }
+
+  // Conditions fields (M1: confidence derived from snap-delta / station distance;
+  // #8: additionally downgraded when the observed snapshot is stale).
   assignFinite(
     signals,
     "airTempC",

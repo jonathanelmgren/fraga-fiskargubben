@@ -51,6 +51,16 @@ export type ObservedConditions = {
   wind_speed?: number;
   wind_from_direction?: number;
   source: "observed";
+  /**
+   * #8: how far (minutes) the nearest populated observation is from the
+   * requested target time — the largest offset across the populated params.
+   * Analogous to the forecast path's `snapDeltaMinutes`.  For a target time
+   * well within the fetched window this is small; for a target > ~24h in the
+   * past (outside "latest-day") the nearest obs can be many hours off, and
+   * buildSignals uses this to downgrade confidence + flag staleness so the
+   * LLM can hedge.  undefined when no parameter had any observation.
+   */
+  snapDeltaMinutes?: number;
 };
 
 export type MetobsStation = {
@@ -143,7 +153,7 @@ export function conditionsSource(
 function pickNearestObs(
   obs: RawObsEntry[],
   targetTimeUtc: string,
-): number | undefined {
+): { value: number; offsetMs: number } | undefined {
   if (obs.length === 0) return undefined;
 
   const targetMs = new Date(targetTimeUtc).getTime();
@@ -159,7 +169,8 @@ function pickNearestObs(
   }
 
   const num = Number.parseFloat(best.value);
-  return Number.isNaN(num) ? undefined : num;
+  // #8: carry the offset so the caller can flag how stale the nearest obs is.
+  return Number.isNaN(num) ? undefined : { value: num, offsetMs: bestDiff };
 }
 
 /**
@@ -174,12 +185,27 @@ export function mapObsToConditions(
   obs: RawObsSet,
   targetTimeUtc: string,
 ): ObservedConditions {
+  const temp = pickNearestObs(obs.temp, targetTimeUtc);
+  const pressure = pickNearestObs(obs.pressure, targetTimeUtc);
+  const windSpeed = pickNearestObs(obs.windSpeed, targetTimeUtc);
+  const windDir = pickNearestObs(obs.windDir, targetTimeUtc);
+
+  // #8: staleness = the LARGEST offset across the populated params.  Taking the
+  // max (not min) is the honest choice — if any field the LLM will use is far
+  // from the target, the whole observed snapshot should be treated as stale.
+  const offsets = [temp, pressure, windSpeed, windDir]
+    .filter((p): p is { value: number; offsetMs: number } => p !== undefined)
+    .map((p) => p.offsetMs);
+  const snapDeltaMinutes =
+    offsets.length > 0 ? Math.round(Math.max(...offsets) / 60_000) : undefined;
+
   return {
-    air_temperature: pickNearestObs(obs.temp, targetTimeUtc),
-    air_pressure_at_mean_sea_level: pickNearestObs(obs.pressure, targetTimeUtc),
-    wind_speed: pickNearestObs(obs.windSpeed, targetTimeUtc),
-    wind_from_direction: pickNearestObs(obs.windDir, targetTimeUtc),
+    air_temperature: temp?.value,
+    air_pressure_at_mean_sea_level: pressure?.value,
+    wind_speed: windSpeed?.value,
+    wind_from_direction: windDir?.value,
     source: "observed",
+    snapDeltaMinutes,
   };
 }
 
