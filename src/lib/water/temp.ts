@@ -1,12 +1,14 @@
 /**
- * Water-temperature estimation (estimate-first) + S-HYPE override.
+ * Water-temperature estimation.
+ *
+ * The code-computed estimate is the SOLE water-temperature source (ADR-0006):
+ * there is no live lake-water-temperature API, and a static modeled import would
+ * go stale while still reading high-confidence.  The estimate is always current
+ * and honestly low-confidence, so the LLM hedges.
  *
  * ## Estimate formula
  *
- * Primary water-temp model — used for ALL lakes by default because most Swedish
- * lakes have no modeled data.  The estimate is a rough proxy, not science.
- *
- * Formula:
+ * A rough proxy, not science:
  *   1. Season baseline (°C): winter=2, spring=9, summer=19, autumn=11
  *   2. Air-temp trend nudge: +1.5 (warming) / -1.5 (cooling) / 0 (steady)
  *      — scaled by lake-responsiveness factor (see step 3).
@@ -18,13 +20,6 @@
  *      Defaults to 0.8 when areaHa is unknown (a medium-sized lake assumption).
  *
  * Result is clamped to [0, 30] — the realistic Swedish freshwater range.
- *
- * ## S-HYPE override
- *
- * WHERE the operator has seeded the `water_temp` table from the Vattenwebb
- * S-HYPE export, `waterTempFor()` replaces the estimate with the modeled value
- * (source "modeled", confidence "high").  The pure decision function
- * `chooseWaterTemp()` is also exported for unit testing without a DB.
  */
 
 import type { WithProvenance } from "@/lib/signals/types";
@@ -43,11 +38,6 @@ export interface WaterTempInput {
   airTempTrend5d?: AirTempTrend;
   /** Lake surface area in hectares. Optional — defaults to medium-lake assumption. */
   areaHa?: number;
-}
-
-/** A seeded S-HYPE row from the `water_temp` table (only the fields we use). */
-export interface WaterTempRow {
-  tempC: number;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -116,60 +106,19 @@ export function estimateWaterTemp(
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Override decision — pure, unit-testable
+// Public lookup
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
- * Choose between a seeded S-HYPE row and the estimate fallback.
+ * Water temperature for a lake — the code-computed estimate (ADR-0006).
  *
- * - If `modeledRow` is non-null: return the modeled value with high confidence.
- * - Otherwise: return the estimate as-is.
- *
- * This function is pure — it never touches the DB.  It is exported so the
- * override logic can be unit-tested without a database connection.
- */
-export function chooseWaterTemp(
-  modeledRow: WaterTempRow | null,
-  estimate: WithProvenance<number>,
-): WithProvenance<number> {
-  if (modeledRow !== null) {
-    return {
-      value: modeledRow.tempC,
-      provenance: { source: "modeled", confidence: "high" },
-    };
-  }
-  return estimate;
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// DB-backed lookup
-// ────────────────────────────────────────────────────────────────────────────
-
-/**
- * Look up water temperature for a lake.
- *
- * 1. Computes the estimate from `estimateInput` (always — used as fallback).
- * 2. Queries the `water_temp` table for a seeded S-HYPE row by `lakeId`.
- * 3. Delegates to `chooseWaterTemp` — returns modeled if present, else estimate.
- *
- * Requires `DATABASE_URL` at runtime; never called during tests (use
- * `chooseWaterTemp` for unit tests instead).
+ * `lakeId` is accepted (and unused) so the signature matches the other water
+ * lookups called from buildSignals; there is no per-lake modeled override to
+ * fetch, so no DB access happens here.  Kept async for a uniform call site.
  */
 export async function waterTempFor(
-  lakeId: string,
+  _lakeId: string,
   estimateInput: WaterTempInput,
 ): Promise<WithProvenance<number>> {
-  const estimate = estimateWaterTemp(estimateInput);
-
-  // H12: shared lazy single-row-by-lakeId lookup (keeps DB out of test scope).
-  const { waterTemp } = await import("@/shared/db/schema");
-  const { selectOneByLakeId } = await import("./select-one");
-
-  const row = (await selectOneByLakeId(
-    waterTemp,
-    waterTemp.lakeId,
-    { tempC: waterTemp.tempC },
-    lakeId,
-  )) as WaterTempRow | null;
-  return chooseWaterTemp(row, estimate);
+  return estimateWaterTemp(estimateInput);
 }

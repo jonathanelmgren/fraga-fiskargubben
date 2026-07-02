@@ -1,0 +1,1 @@
+DROP TABLE "water_temp" CASCADE;

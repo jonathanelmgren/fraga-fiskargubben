@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  chooseWaterTemp,
-  estimateWaterTemp,
-  type WaterTempInput,
-} from "./temp";
+import { estimateWaterTemp, type WaterTempInput } from "./temp";
 
 // ────────────────────────────────────────────────────────────────────────────
 // estimateWaterTemp — pure formula tests
@@ -129,39 +125,5 @@ describe("estimateWaterTemp", () => {
     });
     expect(autumn.value).toBeGreaterThan(winter.value);
     expect(autumn.value).toBeLessThan(summer.value);
-  });
-});
-
-// ────────────────────────────────────────────────────────────────────────────
-// chooseWaterTemp — pure override-decision function
-// ────────────────────────────────────────────────────────────────────────────
-
-describe("chooseWaterTemp", () => {
-  const estimatedFallback = estimateWaterTemp({
-    season: "summer",
-    airTempTrend5d: "steady",
-  });
-
-  it("returns the estimate when no modeled row is present (null)", () => {
-    const result = chooseWaterTemp(null, estimatedFallback);
-    expect(result.provenance.source).toBe("estimated");
-    expect(result.provenance.confidence).toBe("low");
-    expect(result.value).toBe(estimatedFallback.value);
-  });
-
-  it("returns modeled data with source=modeled and confidence=high when row present", () => {
-    const modeledRow = { tempC: 18.5 };
-    const result = chooseWaterTemp(modeledRow, estimatedFallback);
-    expect(result.value).toBe(18.5);
-    expect(result.provenance.source).toBe("modeled");
-    expect(result.provenance.confidence).toBe("high");
-  });
-
-  it("modeled overrides even when estimate is higher", () => {
-    const modeledRow = { tempC: 5.0 };
-    const warmEstimate = estimateWaterTemp({ season: "summer" });
-    const result = chooseWaterTemp(modeledRow, warmEstimate);
-    expect(result.value).toBe(5.0);
-    expect(result.provenance.source).toBe("modeled");
   });
 });
