@@ -38,12 +38,12 @@ jobs:
     runs-on: ubuntu-latest
 
     # Postgres service container for the DB-gated integration tests
-    # (src/lib/lakes/resolve.test.ts). pg_trgm + the trigram/expression
-    # indexes are created by the Drizzle migrations (0003_pg_trgm,
-    # 0011_hotpath_indexes), so no image customisation is needed here.
+    # (src/lib/lakes/resolve.test.ts). Uses the PostGIS image because migration
+    # 0015 runs `CREATE EXTENSION postgis` (needed by the Lantmäteriet lake ETL);
+    # pg_trgm + the trigram/expression indexes come from the other migrations.
     services:
       postgres:
-        image: postgres:16
+        image: postgis/postgis:16-3.4
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres

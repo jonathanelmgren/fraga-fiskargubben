@@ -92,6 +92,20 @@ export const lakes = pgTable("lakes", {
   lat: doublePrecision("lat").notNull(),
   lon: doublePrecision("lon").notNull(),
   areaHa: doublePrecision("area_ha").notNull(),
+  /**
+   * EU WFD water-body code (VISS EU_CD), when this lake maps to a VISS-classified
+   * body. The MVM/NORS environmental datasets join on this — they carry EU_CD,
+   * not the lake id. NULL for lakes outside the VISS register (the majority once
+   * the Lantmäteriet universe lands). During the VISS-only era, eu_cd === id.
+   * See docs/plans/2026-07-02-lantmateriet-full-lake-coverage.md.
+   */
+  euCd: text("eu_cd"),
+  /**
+   * Provenance of the lake row: 'viss' (WFD register) or 'lantmateriet'
+   * (Topografi vektor — the full ~100k universe). Defaults to 'viss' for the
+   * existing rows.
+   */
+  source: text("source").default("viss").notNull(),
 });
 
 export const analyticsEvents = pgTable("analytics_event", {

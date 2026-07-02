@@ -1,0 +1,39 @@
+# Local dev database — PostGIS-enabled Postgres.
+#
+# PostGIS is required by the Lantmäteriet lake ETL (ogr2ogr loads the Topografi
+# GeoPackage into a PostGIS staging table; centroid + reproject in SQL).
+# See docs/plans/2026-07-02-lantmateriet-full-lake-coverage.md.
+#
+# Runs on host port 5433 (not the default 5432) to avoid clashing with other
+# local Postgres instances. Point DATABASE_URL at localhost:5433.
+#
+#   docker compose up -d        # start
+#   docker compose down         # stop (data persists in the named volume)
+#   pnpm db:migrate             # apply schema (incl. CREATE EXTENSION postgis)
+services:
+  db:
+    # imresamu/postgis is a multi-arch (incl. arm64) rebuild of the official
+    # postgis/postgis image — the official one is amd64-only, which needs slow
+    # emulation on Apple Silicon. Same PostGIS, native on all hosts.
+    image: imresamu/postgis:18-3.6
+    container_name: fiskargubben-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      # Dev-only default; override in a .env or your shell for anything shared.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: fiskargubben
+    ports:
+      - "5433:5432"
+    volumes:
+      # Postgres 18 places data in a subdir of this mount (not .../data) so
+      # pg_upgrade --link works without mount-boundary issues.
+      - fiskargubben-db-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d fiskargubben"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  fiskargubben-db-data:

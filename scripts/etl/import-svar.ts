@@ -102,6 +102,9 @@ export interface LakeRow {
   lat: number;
   lon: number;
   areaHa: number;
+  /** VISS EU_CD = the lake id; set so MVM/NORS can join even before the LM ETL. */
+  euCd: string;
+  source: "viss";
 }
 
 // ---------------------------------------------------------------------------
@@ -169,6 +172,8 @@ export function mapWaterToLake(
     lat: coord.lat,
     lon: coord.lon,
     areaHa: areaKm2 * 100, // km² → hectares
+    euCd: id, // VISS id IS the EU WFD code
+    source: "viss",
   };
 }
 
@@ -288,6 +293,8 @@ async function main(): Promise<void> {
             lat: sql`excluded.lat`,
             lon: sql`excluded.lon`,
             areaHa: sql`excluded.area_ha`,
+            euCd: sql`excluded.eu_cd`,
+            source: sql`excluded.source`,
           },
         });
       imported += rows.length;
