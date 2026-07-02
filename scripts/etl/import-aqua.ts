@@ -143,7 +143,7 @@ async function main(): Promise<void> {
   const { stationMatchesLake } = await import("@/lib/water/station-match");
   const { haversine } = await import("@/lib/geo/haversine");
   const { sweref99ToWgs84 } = await import("@/lib/geo/sweref99");
-  const { normalizeSpecies } = await import("@/lib/water/species");
+  const { normalizeSpecies } = await import("@/lib/water/species-normalize");
 
   const pg = postgres(databaseUrl);
   const db = drizzle(pg);
