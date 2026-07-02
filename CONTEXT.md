@@ -105,7 +105,7 @@ _Avoid_: "timeout", "cooldown".
 **Analytics event**:
 A row in the append-only `analytics_events` table (type, lake_id?, payload jsonb, ts) emitted inline
 from the pipeline. The event taxonomy is defined up front so emit-sites exist everywhere from day
-one: e.g. `lake_resolved`, `lake_unresolved`, `source_miss` (which of forecast/metobs/S-HYPE/SLU
+one: e.g. `lake_resolved`, `lake_unresolved`, `source_miss` (which of forecast/metobs/SLU
 returned nothing), `credit_spent`, `topic_refused`, `chat_limit_hit`, `signals_built`. Dashboards
 and any external analytics are a deferred phase; the raw events are captured now.
 _Avoid_: "log", "metric" (these are structured domain events, not app logs).
@@ -137,7 +137,8 @@ _Avoid_: "fish mood", "activity" (too vague).
 **Provenance**:
 Per-Signal metadata describing where a value came from and how much to trust it: `source`
 (`forecast` | `observed` | `modeled` | `estimated`) and a confidence flag. E.g. air-temp from a
-station >40 km away, or water temp estimated rather than modeled, is marked low-confidence so the
+station >40 km away, or water temp (always `estimated`/`low` — there is no live lake-temp source,
+[ADR-0006](docs/adr/0006-no-live-lake-water-temperature-source.md)), is marked low-confidence so the
 LLM hedges its **Advice**. Missing values degrade gracefully (the Signal is simply absent).
 _Avoid_: "metadata", "quality" — be specific: source + confidence.
 

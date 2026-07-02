@@ -13,10 +13,14 @@ Seed in this order (later sources join against the `lakes` table created first):
 |---|---------|-------|---------------|
 | 1 | `pnpm etl:svar` | `lakes` (all water bodies) | **VERIFIED live** — VISS API (`VISS_APIKEY`). Run first; later sources join `lakes`. |
 | 2 | `pnpm etl:metobs-stations` | `metobs_station` (pressure=9, temp=1) | **VERIFIED live** — SMHI metobs. |
-| 3 | `pnpm etl:shype` | `water_temp` (modeled override) | **FLAGGED** — no open bulk endpoint (per-area Excel only). Optional. |
-| 4 | `pnpm etl:depth` | `lake_depth` (max) | **VERIFIED live** — NORS `maxDjup` (mean depth unavailable). |
-| 5 | `pnpm etl:mvm` | `water_colour` + sight depth | **VERIFIED live** — bulk chemistry export (`MVM_TICKET`). |
-| 6 | `pnpm etl:aqua` | `lake_species` | **VERIFIED live** — NORS aggregated report. |
+| 3 | `pnpm etl:depth` | `lake_depth` (max) | **VERIFIED live** — NORS `maxDjup` (mean depth unavailable). |
+| 4 | `pnpm etl:mvm` | `water_colour` + sight depth | **VERIFIED live** — bulk chemistry export (`MVM_TICKET`). |
+| 5 | `pnpm etl:aqua` | `lake_species` | **VERIFIED live** — NORS aggregated report. |
+
+There is **no ETL for water temperature** — it is computed at request time by the estimate in
+`src/lib/water/temp.ts` (season + air-temp trend + lake size), always `estimated`/`low`. No live
+lake-water-temp API exists; [ADR-0006](../../docs/adr/0006-no-live-lake-water-temperature-source.md)
+records why.
 
 Apply migrations first: `pnpm db:migrate`. The `pg_trgm` extension (migration 0003) is required
 for lake typeahead.
@@ -69,9 +73,10 @@ the exact remaining step.
   municipality/county names). Coordinates come from the `LatLong` entry in each water's
   `Coordinates[]` (WGS84 — no reprojection). Needs a free apikey (`VISS_APIKEY`). Verified:
   **7252/7267 lakes map**.
-- **S-HYPE** (`SHYPE_URL`) — 🚩 **FLAGGED**. No open bulk endpoint; water-temperature is only a
-  per-area Excel/CSV download and is keyed by **SUBID**, not EU_CD — a SUBID→EU_CD crosswalk plus a
-  CSV/XLSX parser are required. Remains a stub.
+- **water temperature** — 🚫 **no live source, no ETL**. There is no open API for lake water
+  temperature (S-HYPE is manual per-SUBID Excel only), so water temp is computed by the estimate in
+  `src/lib/water/temp.ts` (`estimated`/`low`), not seeded. See
+  [ADR-0006](../../docs/adr/0006-no-live-lake-water-temperature-source.md).
 
 The runtime app does **not** require any of these (the MVM ticket is `.optional()` in the env
 schema); a missing source simply omits its Signal (graceful degradation, ADR-0002).
@@ -185,77 +190,14 @@ composite key handles this correctly.
 
 ---
 
-# S-HYPE ETL — seed modeled water temperatures (STUB)
+# Water temperature — no ETL (computed estimate only)
 
-One-time (re-runnable) script that seeds the `water_temp` table from the SMHI
-Vattenwebb S-HYPE sub-catchment water-temperature export.
-
-## Status — STUB (no open bulk endpoint; FLAGGED 2026-07-01)
-
-SMHI Vattenwebb publishes S-HYPE modeled water temperature at the outlet of each
-sub-catchment, but **only via the interactive "Modelldata per område" viewer**
-(<https://vattenwebb.smhi.se/modelarea/>) as a per-area Excel/CSV download —
-there is **no documented open bulk REST/WFS endpoint** (SMHI staff confirm the
-only API-available hydrology product today is water discharge, not temperature).
-
-Two further gaps before a real run:
-
-1. **Join-key mismatch** — the series are keyed by **SUBID** (sub-catchment id),
-   not the EU WFD code used as `lakes.id`. A SUBID→EU_CD crosswalk is required
-   (`mapRecordToWaterTemp` assumes `lakeId` already matches `lakes.id`).
-2. **Format** — the export is Excel/CSV, not JSON. The fetch still assumes JSON;
-   add a parser or pre-convert to the `ShypeRecord` JSON shape.
-
-The script exits with a clear error if `SHYPE_URL` is not set. The rest of the
-system degrades gracefully: `waterTempFor()` falls back to the code-computed
-estimate (`source: "estimated"`, `confidence: "low"`) when no `water_temp` row
-exists for a lake.
-
-## Prerequisites
-
-- `DATABASE_URL` environment variable pointing to the target Postgres database.
-- `SHYPE_URL` set to a `file://` path of a manually-exported, pre-shaped
-  `ShypeRecord` JSON array (with `lakeId` already mapped from SUBID to EU_CD).
-
-## Running
-
-```bash
-pnpm etl:shype
-```
-
-`DATABASE_URL` and `SHYPE_URL` are read from the repo's `.env`. S-HYPE remains a
-stub: set `SHYPE_URL` in `.env` to a `file://` path of a pre-shaped `ShypeRecord`
-JSON array (with `lakeId` already mapped from SUBID to EU_CD).
-
-## Obtaining the dataset
-
-Reference: **Vattentemperatur- och isberäkningar i S-HYPE**
-(<https://www.smhi.se/data/sjoar-och-vattendrag/vattenwebb/om-data-i-vattenwebb/vattentemperatur--och-isberakningar-i-s-hype>).
-Download the per-area temperature series from "Modelldata per område", convert to
-the `ShypeRecord` shape below, store locally, and pass the `file://` path to
-`SHYPE_URL`. Do **not** hit the service at request time.
-
-## Field-name assumptions (placeholder)
-
-The mapper (`mapRecordToWaterTemp` in `import-shype.ts`) currently assumes the
-following record shape (to be verified against the real export):
-
-| Field    | Type     | Description                                          |
-| -------- | -------- | ---------------------------------------------------- |
-| `lakeId` | `string` | Sub-catchment / lake id matching `lakes.id`          |
-| `tempC`  | `number` | Modeled water temperature in °C                      |
-| `asOf`   | `string` | ISO-8601 timestamp of the model output               |
-
-Update `ShypeRecord` in `import-shype.ts` once the real field names are known.
-
-## Architecture
-
-Per ADR-0002: ETL runs once (or on-demand by an operator), never at request
-time.  The script creates its own `postgres` + `drizzle` connection using only
-`DATABASE_URL` (does not use `@/shared/db/client`).
-
-The `water_temp` table acts as an optional override layer.  Lakes without a row
-get the estimate fallback in `src/lib/water/temp.ts#waterTempFor()`.
+Water temperature has **no seed script**. It is computed at request time by
+`src/lib/water/temp.ts` (season baseline + 5-day air-temp trend + lake-size
+responsiveness), always tagged `source: "estimated"`, `confidence: "low"`. No live
+lake-water-temperature API exists, so there is nothing to import;
+[ADR-0006](../../docs/adr/0006-no-live-lake-water-temperature-source.md) records the
+investigation and decision.
 
 ---
 
