@@ -21,6 +21,14 @@ const schema = z.object({
    * The runtime app must not require this or it will crash in production/CI.
    */
   MVM_TICKET: z.string().min(1).optional(),
+  /**
+   * Comma-separated allowlist of admin email addresses.  Gates the
+   * `/admin/analytics` dashboard (ADR-0005 read-side).  Minimal by design:
+   * the schema has no admin/role column yet, so authorization is an env
+   * allowlist rather than a DB flag.  Optional (empty = no admins → the
+   * dashboard denies everyone) so the app still boots in dev/CI without it.
+   */
+  ADMIN_EMAILS: z.string().optional(),
 });
 
 const parsed = schema.safeParse(process.env);
