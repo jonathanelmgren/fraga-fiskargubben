@@ -9,16 +9,26 @@ the same data.
 ## Language
 
 **Lake**:
-A Swedish lake the user can ask about. Resolved from the national lake register (SVAR) — the
-**single source of truth**; all ~100k water bodies are pre-imported, so there is no runtime
-geocoding fallback. A lake that won't resolve gets an in-persona reprompt ("kände inte igen den
-sjön — stava annorlunda?"), not a second geocoder. Carries an official **Lake id**, centroid
-coordinates, and a municipality label for disambiguation.
+A Swedish lake the user can ask about. Resolved from the national lake register (SVAR/VISS) — the
+**single source of truth**. It holds the **~7,250 WFD-classified lake water bodies** returned by
+the VISS API (`waters&watercategory=LW`: 7,267 returned, 7,252 with a mappable centroid) — **not**
+all of Sweden's ~100k lakes; small tarns are absent (full ~100k coverage via Lantmäteriet
+Topografi is planned future work). Whatever is imported is the whole universe: there is **no
+runtime geocoding fallback**. A lake that won't resolve gets an in-persona Swedish reprompt
+(`LAKE_UNRESOLVED_MESSAGE` — asks to clarify the name or add a municipality), never a second
+geocoder. A name matching **multiple** lakes also returns null (`resolveLake` LIMIT-2s to detect
+ambiguity) and triggers the same reprompt — it does **not** auto-pick or show a picker. Carries an
+official **Lake id**, centroid coordinates, and a municipality label for disambiguation.
 _Avoid_: pond, water (when meaning a specific named lake).
 
 **Lake id**:
-The official SVAR identifier for a **Lake**. The join key used to look up water chemistry and
-species in the SLU datasets.
+The official **VISS EU_CD** (EU WFD water-body code) identifier for a **Lake** — the `lakes.id`
+column *is* this code. The single canonical join key: MVM (`stationEUID`) and NORS/Aqua (`eU_CD`)
+both carry it directly, so water chemistry, depth, and species bind to the same identity by a
+**direct O(1) join** — not a fuzzy match. Only rows lacking an EU_CD fall back to a haversine
+coordinate match at import time (≤200 m centroid = high confidence, ≤ equal-area radius = low),
+reprojecting SWEREF99TM→WGS84; the confidence is stored per row. See
+[`scripts/etl/README.md`](scripts/etl/README.md).
 _Avoid_: "lake code" in prose.
 
 **Signals**:
@@ -71,35 +81,42 @@ _Avoid_: "cache" (the snapshot is not invalidated by the 1h forecast cache).
 
 **Context** (conversation context):
 The resolved `(Lake, Target time)` pair a conversation is about, **locked** at its first prompt —
-one lake per conversation, immutable. If a **follow-up** names a different lake (or clearly
-different time), the conversation does **not** re-fetch or escalate; Haiku declines in persona
-("Jag känner bara till {lake}, hörru — dra igång en ny chatt för ett annat vatten") with no
-answer and no **Credit** spent. A different lake means a new conversation.
+one lake per conversation, immutable. The lock is on the **bare lake name only** (time is not
+separately enforced — YAGNI). If a **follow-up** names a **different lake**, the conversation does
+**not** re-fetch or escalate; Haiku declines in persona ("Jag känner bara till {lake}, hörru — dra
+igång en ny chatt för ett annat vatten") with no answer and no **Credit** spent. Switching lakes
+therefore requires a **new conversation = a new Credit**; follow-ups on the same lake stay free
+(Haiku over the frozen **Signals snapshot**).
 _Avoid_: "topic", "scope".
 
 **Credit**:
-The unit of the free quota: one **Credit** = one fresh data fetch + one Sonnet first-prompt = one
-new **Conversation**. Free tier = **3 Credits, lifetime** (not per day). Follow-up Haiku turns and
-in-persona off-topic refusals cost nothing. A paid tier (~49 SEK/year) lifts the cap — stubbed for
-now behind an `isPaid` flag the quota gate reads; real payment is a future phase. **Carry-over:**
-an anonymous user's single prompt is a spent Credit; when they register and **Claim** that
-conversation, the spend transfers — the new account starts with 1 of 3 used (2 left), not a fresh 3.
+The unit of the free quota: one **Credit** = one fresh data fetch + one **successful** Sonnet
+first-prompt = one new **Conversation**. Free tier = **`FREE_CREDITS` = 3 Credits, lifetime** (not
+per day). Follow-up Haiku turns and in-persona off-topic refusals cost nothing. **Spend-then-refund
+on failure:** the credit is spent *before* the stream starts (atomic DB write); if the Sonnet
+stream then fails, the credit is **refunded** (`refundCredit` in `quota.ts`, wired via
+`persistTurns` on `finalMessage()` rejection, emitting a `credit_refunded` event) — a failed answer
+never costs the user. A paid tier (~49 SEK/year) lifts the cap — stubbed for now behind an `isPaid`
+flag the quota gate reads; real payment is a future phase. **Carry-over:** an anonymous user's
+single prompt is a spent Credit; when they register and **Claim** that conversation, the spend
+transfers — the new account starts with 1 of 3 used (2 left), not a fresh 3.
 _Avoid_: "token", "prompt" (a follow-up is a prompt but not a Credit).
 
 **Chat turn limit**:
-A hard ceiling (~20 turns) on follow-up messages within a single **Conversation**, separate from
-the **Credit** quota — Credits cap fresh fetches across chats; this caps Haiku follow-ups inside one
-chat. On hit there is **no answer and no persona**: a plain system alert ("Starta en ny chatt")
-replaces the reply and the chat is frozen to further input. A real angler never reaches it; it stops
-loops and abuse.
+A hard ceiling — **`MAX_CHAT_TURNS` = 20** turns (`src/lib/chat/quota.ts`) — on follow-up messages
+within a single **Conversation**, separate from the **Credit** quota — Credits cap fresh fetches
+across chats; this caps Haiku follow-ups inside one chat. On hit there is **no answer and no
+persona**: a plain system alert ("Starta en ny chatt") replaces the reply and the chat is frozen to
+further input. A real angler never reaches it; it stops loops and abuse.
 _Avoid_: "rate limit" (it's per-conversation, not per-time).
 
 **Wind-down**:
-A soft taper before the hard **Chat turn limit**. A `windingDown` flag flips at turn **15** and is
-passed into the Haiku **follow-up** call; the persona then keeps replies short and starts signing
-off in character ("nu har vi vänt på det mesta, lycka till där ute"). Turns 1–15 reply normally,
-16–20 wind down, turn ~20 hits the hard freeze. In persona (unlike the chat-limit alert), because
-Gubben is choosing to round off, not the system blocking him.
+A soft taper before the hard **Chat turn limit**. A `windingDown` flag flips at
+**`WINDING_DOWN_TURN` = 15** (`src/lib/chat/quota.ts`) and is passed into the Haiku **follow-up**
+call; the persona then keeps replies short and starts signing off in character ("nu har vi vänt på
+det mesta, lycka till där ute"). Turns 1–15 reply normally, 16–20 wind down, turn 20 hits the hard
+freeze. In persona (unlike the chat-limit alert), because Gubben is choosing to round off, not the
+system blocking him.
 _Avoid_: "timeout", "cooldown".
 
 **Analytics event**:

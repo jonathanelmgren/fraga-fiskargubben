@@ -15,8 +15,13 @@ function makeDeps(overrides: Partial<PersistTurnsDeps> = {}): PersistTurnsDeps {
     persistMessage: vi.fn().mockResolvedValue(undefined),
     updateLastActive: vi.fn().mockResolvedValue(undefined),
     emit: vi.fn().mockResolvedValue(undefined),
+    refundCredit: vi.fn().mockResolvedValue(true),
     ...overrides,
   };
+}
+
+function streamRejecting(err = new Error("stream boom")) {
+  return { finalMessage: vi.fn().mockRejectedValue(err) };
 }
 
 function streamReturning(text: string) {
@@ -127,6 +132,67 @@ describe("persistTurns", () => {
       expect.objectContaining({
         type: "persistence_failure",
         payload: expect.objectContaining({ reason: "db down" }),
+      }),
+    );
+  });
+
+  // C-refund: a failed first-turn Sonnet answer must not consume a credit.
+  it("refunds the credit when the stream fails and refundUserId is set", async () => {
+    const deps = makeDeps();
+
+    await persistTurns(deps, {
+      conversationId: "conv-1",
+      message: "Vad biter?",
+      stream: streamRejecting(),
+      refundUserId: "user-42",
+    });
+
+    expect(deps.refundCredit).toHaveBeenCalledWith("user-42");
+  });
+
+  it("does NOT refund when the stream SUCCEEDS", async () => {
+    const deps = makeDeps();
+
+    await persistTurns(deps, {
+      conversationId: "conv-1",
+      message: "Vad biter?",
+      stream: streamReturning("Prova maskkroken."),
+      refundUserId: "user-42",
+    });
+
+    expect(deps.refundCredit).not.toHaveBeenCalled();
+  });
+
+  it("does NOT refund when refundUserId is absent (follow-up / free turn)", async () => {
+    const deps = makeDeps();
+
+    await persistTurns(deps, {
+      conversationId: "conv-1",
+      message: "Vad biter?",
+      stream: streamRejecting(),
+    });
+
+    expect(deps.refundCredit).not.toHaveBeenCalled();
+  });
+
+  it("does not throw when refundCredit itself rejects; emits persistence_failure", async () => {
+    const deps = makeDeps({
+      refundCredit: vi.fn().mockRejectedValue(new Error("refund down")),
+    });
+
+    await persistTurns(deps, {
+      conversationId: "conv-1",
+      message: "Vad biter?",
+      stream: streamRejecting(),
+      refundUserId: "user-42",
+    });
+
+    expect(deps.emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "persistence_failure",
+        payload: expect.objectContaining({
+          reason: expect.stringContaining("refundCredit"),
+        }),
       }),
     );
   });

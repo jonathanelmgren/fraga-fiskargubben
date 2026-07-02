@@ -10,6 +10,7 @@ import {
   FREE_CREDITS,
   freezeConversation,
   MAX_CHAT_TURNS,
+  refundCredit,
   spendCredit,
 } from "./quota";
 
@@ -158,6 +159,59 @@ describe("spendCredit", () => {
 
     expect(spent).toBe(false);
     expect(mockReturning).toHaveBeenCalledTimes(1);
+    expect(mockEmit).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// refundCredit — guarded DB decrement + analytics emit (inverse of spendCredit)
+// ---------------------------------------------------------------------------
+
+describe("refundCredit", () => {
+  it("issues a guarded decrement, returns true, and emits credit_refunded when a row is affected", async () => {
+    const mockReturning = vi.fn().mockResolvedValue([{ id: "user-abc" }]);
+    const mockWhere = vi.fn().mockReturnValue({ returning: mockReturning });
+    const mockSet = vi.fn().mockReturnValue({ where: mockWhere });
+    const mockUpdate = vi.fn().mockReturnValue({ set: mockSet });
+    const mockDb = { update: mockUpdate } as unknown as Pick<
+      import("@/shared/db/client").Db,
+      "update"
+    >;
+    const mockEmit = vi.fn().mockResolvedValue(undefined);
+
+    const refunded = await refundCredit("user-abc", {
+      db: mockDb,
+      emit: mockEmit,
+    });
+
+    expect(refunded).toBe(true);
+    expect(mockUpdate).toHaveBeenCalledTimes(1);
+    expect(mockReturning).toHaveBeenCalledTimes(1);
+    const emitted = mockEmit.mock.calls[0][0] as {
+      type: string;
+      payload: Record<string, unknown>;
+    };
+    expect(emitted.type).toBe("credit_refunded");
+    expect(emitted.payload).toMatchObject({ userId: "user-abc" });
+  });
+
+  it("returns false and does NOT emit when the guard affects 0 rows (nothing to refund)", async () => {
+    const mockReturning = vi.fn().mockResolvedValue([]);
+    const mockWhere = vi.fn().mockReturnValue({ returning: mockReturning });
+    const mockSet = vi.fn().mockReturnValue({ where: mockWhere });
+    const mockUpdate = vi.fn().mockReturnValue({ set: mockSet });
+    const mockDb = { update: mockUpdate } as unknown as Pick<
+      import("@/shared/db/client").Db,
+      "update"
+    >;
+    const mockEmit = vi.fn().mockResolvedValue(undefined);
+
+    const refunded = await refundCredit("user-zero", {
+      db: mockDb,
+      emit: mockEmit,
+    });
+
+    expect(refunded).toBe(false);
     expect(mockEmit).not.toHaveBeenCalled();
   });
 });
