@@ -41,6 +41,12 @@ importers:
       server-only:
         specifier: ^0.0.1
         version: 0.0.1
+      stream-chain:
+        specifier: ^4.2.5
+        version: 4.2.5
+      stream-json:
+        specifier: ^3.4.0
+        version: 3.4.0
       tailwind-merge:
         specifier: ^3.6.0
         version: 3.6.0
@@ -2264,6 +2270,14 @@ packages:
   std-env@4.1.0:
     resolution: {integrity: sha512-Rq7ybcX2RuC55r9oaPVEW7/xu3tj8u4GeBYHBWCychFtzMIr86A7e3PPEBPT37sHStKX3+TiX/Fr/ACmJLVlLQ==}
 
+  stream-chain@4.2.5:
+    resolution: {integrity: sha512-Wtyq3bNE3ggLR0v2vftqvuhltym3WbZAkZpfIrkr5F/6vpeUmWmwTgXa16zD87gpahwJ/Qulq3zVfUlgIc0J2A==}
+    engines: {node: '>=22'}
+
+  stream-json@3.4.0:
+    resolution: {integrity: sha512-7NEiOhtS0W7ZrwnqJc/fugsGQMdpNJng+v1s2xLTrmfBN2vcYDyBglCK2+eITif0VkHLXnTdALgQI9TnZMBhYA==}
+    engines: {node: '>=22'}
+
   string-width@7.2.0:
     resolution: {integrity: sha512-tsaTIkKW9b4N+AEj+SVA+WhJzV7/zMhcSu78mLKWSk7cXMOSHsBKFWUs0fWwq8QyK3MgJBQRX6Gbi4kYbdvGkQ==}
     engines: {node: '>=18'}
@@ -4144,6 +4158,12 @@ snapshots:
       fast-sha256: 1.3.0
 
   std-env@4.1.0: {}
+
+  stream-chain@4.2.5: {}
+
+  stream-json@3.4.0:
+    dependencies:
+      stream-chain: 4.2.5
 
   string-width@7.2.0:
     dependencies:

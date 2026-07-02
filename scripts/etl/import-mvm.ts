@@ -62,13 +62,13 @@
  * Threshold references: EEA humic classification and Naturvårdsverket
  * water colour guidelines for Swedish national lake monitoring.
  *
- * ## [~] Remaining caveat — 500MB single-response memory
- * The bulk export is ~500MB / ~1.15M samples.  No streaming-JSON dependency is
- * present (checked package.json: no stream-json / clarinet / oboe), so the
- * default path does a plain `await res.json()`, which buffers the whole body and
- * CAN OOM on a real run.  A `--limit N` flag / MVM_MAX_SAMPLES env caps the
- * adapted sample count so a real run can be bounded until a streaming parser is
- * added (do not add a new npm dep without checking it is already present).
+ * ## Memory — streamed, no OOM
+ * The bulk export is ~500MB / ~1.15M samples, so the response body is parsed as a
+ * STREAM (stream-json + stream-chain): the `samples[]` array is consumed
+ * element-by-element and each sample is adapted on the fly, so the raw JSON is
+ * never fully buffered.  A complete seed needs no memory tuning and processes
+ * every sample.  `--limit N` / MVM_MAX_SAMPLES is an OPTIONAL early-stop for a
+ * quick/dev run only — it is never required for a full, gap-free seed.
  */
 
 // Pure geo util (no server-only deps) — safe to import at module scope so the
@@ -390,9 +390,10 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // [~] 500MB memory guard: cap the number of adapted samples so a real run can
-  // be bounded until a streaming JSON parser is added.  --limit N (CLI) or
-  // MVM_MAX_SAMPLES (env); 0/absent = no cap.
+  // Optional early-stop for a quick/dev run: `--limit N` (CLI) or MVM_MAX_SAMPLES
+  // (env) stops parsing after N samples.  Absent/0 = process EVERY sample (the
+  // response is streamed, so there is no memory reason to cap — this is only for
+  // a fast partial run, never needed for a complete seed).
   const limitArg = process.argv
     .find((a) => a.startsWith("--limit="))
     ?.slice("--limit=".length);
@@ -406,6 +407,14 @@ async function main(): Promise<void> {
   const { waterColour, lakes } = await import("@/shared/db/schema");
   const { stationMatchesLake } = await import("@/lib/water/station-match");
   const { haversine } = await import("@/lib/geo/haversine");
+  // Streaming JSON parser: the chemistry export is ~500MB, so we parse the
+  // `samples[]` array element-by-element off the response stream instead of
+  // buffering the whole body with res.json() (which OOMs). No sample is skipped.
+  const { Readable } = await import("node:stream");
+  const { chain } = await import("stream-chain");
+  const { parser } = await import("stream-json");
+  const { pick } = await import("stream-json/filters/pick.js");
+  const { streamArray } = await import("stream-json/streamers/stream-array.js");
 
   const pg = postgres(databaseUrl);
   const db = drizzle(pg);
@@ -422,49 +431,54 @@ async function main(): Promise<void> {
 
   console.log(`Loaded ${lakeCandidates.length} lakes from DB.`);
 
-  // ── 2. Fetch the bulk chemistry export (single endpoint, flat samples) ─────
-  // [~] WARNING: this response is ~500MB / ~1.15M samples.  No streaming-JSON
-  // dependency is present (checked package.json), so `await res.json()` buffers
-  // the WHOLE body and CAN OOM.  Run node with a larger heap (e.g.
-  // NODE_OPTIONS=--max-old-space-size=8192) and/or use --limit / MVM_MAX_SAMPLES
-  // to cap the adapted sample count until a streaming parser is wired in.
+  // ── 2. Stream the bulk chemistry export + adapt each sample on the fly ─────
+  //   The response is ~500MB / ~1.15M samples, so we parse the `samples[]` array
+  //   element-by-element off the response stream (stream-json) and adapt+extract
+  //   each as it arrives — the raw JSON is never buffered, so nothing OOMs and no
+  //   sample is skipped.  The kept structures (samples[] + stationMap) hold only
+  //   the small extracted fields, not the raw payload.
+  //
+  //   One flat sample = one station (by stationEUID) + one measurement.  The
+  //   station is only needed for the coordinate fallback (blank-EUID rows); the
+  //   extracted MvmSample carries the EUID directly for the O(1) join.
   const samplesUrl = `${MVM_BASE_URL}${MVM_CHEMISTRY_PATH}?token=${encodeURIComponent(ticket)}`;
   console.log(
-    `Fetching MVM chemistry bulk export from: ${redactTicket(samplesUrl)}`,
+    `Streaming MVM chemistry bulk export from: ${redactTicket(samplesUrl)}`,
   );
 
   const samplesRes = await fetch(samplesUrl);
-  if (!samplesRes.ok) {
+  if (!samplesRes.ok || samplesRes.body === null) {
     throw new Error(
       `Failed to fetch MVM chemistry export: ${samplesRes.status} ${samplesRes.statusText}`,
     );
   }
-  const body = (await samplesRes.json()) as MvmChemistryResponse;
-  let rawSamples = body.samples ?? [];
-  console.log(
-    `Fetched ${body.numberOfSamples ?? rawSamples.length} MVM chemistry samples (envelope count).`,
-  );
-  if (maxSamples > 0 && rawSamples.length > maxSamples) {
-    console.log(
-      `Capping to first ${maxSamples} samples (--limit/MVM_MAX_SAMPLES).`,
-    );
-    rawSamples = rawSamples.slice(0, maxSamples);
-  }
 
-  // ── 3. Adapt + extract each flat sample ────────────────────────────────────
-  //   One flat sample = one station (by stationEUID) + one measurement.  The
-  //   station is only needed for the coordinate fallback (blank-EUID rows); the
-  //   extracted MvmSample carries the EUID directly for the O(1) join.
   const samples: MvmSample[] = [];
   const stationMap = new Map<string, MvmStation>();
-  for (const raw of rawSamples) {
-    const sample = extractMvmSample(raw);
+
+  // web ReadableStream (fetch body) → Node Readable → stream-json chain: parse
+  // JSON tokens → pick the `samples` array → assemble one { key, value } per
+  // element.  stream-json v3 composes via stream-chain's chain([...]); the chain
+  // is an async-iterable Node stream, so we consume it with for-await.
+  const nodeStream = Readable.fromWeb(
+    samplesRes.body as Parameters<typeof Readable.fromWeb>[0],
+  );
+  const pipeline = chain([
+    nodeStream,
+    parser(),
+    pick({ filter: "samples" }),
+    streamArray(),
+  ]);
+
+  let seen = 0;
+  for await (const { value } of pipeline as AsyncIterable<{
+    value: MvmRawChemistrySample;
+  }>) {
+    const sample = extractMvmSample(value);
     samples.push(sample);
-    // Index the station for the coordinate fallback, keyed by stationId (EUID
-    // or the reprojected coordinates for blank-EUID rows).  A blank-EUID sample
-    // still gets a station keyed by "" — but those need coordinates to join, so
-    // give each blank-EUID row a synthetic key from its coordinates below.
-    const station = adaptMvmStation(raw);
+    // Index the station for the coordinate fallback, keyed by stationId (EUID or
+    // the reprojected coordinates for blank-EUID rows).
+    const station = adaptMvmStation(value);
     if (station) {
       const key =
         station.stationId || `mvm-coord-${station.lat},${station.lon}`;
@@ -472,8 +486,14 @@ async function main(): Promise<void> {
       sample.stationId = sample.stationId || key;
       if (!stationMap.has(key)) stationMap.set(key, station);
     }
+    seen++;
+    if (maxSamples > 0 && seen >= maxSamples) {
+      console.log(`Stopping early at ${maxSamples} samples (--limit).`);
+      nodeStream.destroy();
+      break;
+    }
   }
-  console.log(`Adapted ${samples.length} MVM samples.`);
+  console.log(`Adapted ${samples.length} MVM samples (streamed).`);
 
   // ── 4. Join station → lake at import time (ADR-0002) ─────────────────────
   const rows: ColourRow[] = [];
