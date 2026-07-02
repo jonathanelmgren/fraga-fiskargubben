@@ -7,7 +7,15 @@ rosters rarely) — **never on the request path**.
 
 ## Run order
 
-Seed in this order (later sources join against the `lakes` table created first):
+**Seed everything at once:** `pnpm seed:all` runs all five in the correct order.
+`svar` is treated as a hard prerequisite — if it fails the run aborts (a missing
+`lakes` table makes every downstream join meaningless); the other four are
+independent, so a failure in one does not stop the rest. The command exits
+non-zero if any step failed, and prints an ok/failed summary. All ETL writes are
+idempotent upserts, so re-running is safe.
+
+To run a single source instead, seed in this order (later sources join against
+the `lakes` table created first):
 
 | # | Command | Seeds | Source status |
 |---|---------|-------|---------------|
