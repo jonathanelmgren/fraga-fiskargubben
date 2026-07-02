@@ -182,50 +182,62 @@ describe.skipIf(!hasDb)("searchLakes + resolveLake (integration)", () => {
   });
 
   describe("resolveLake", () => {
-    it("returns the unique lake when municipality pins it", async () => {
+    it("resolves the unique lake when municipality pins it", async () => {
       const { resolveLake } = await import("./resolve");
-      const lake = await resolveLake("Tolken", "Ulricehamn");
-      expect(lake).not.toBeNull();
-      expect(lake?.id).toBe("TEST_TOLKEN_ULRICE");
+      const r = await resolveLake("Tolken", "Ulricehamn");
+      expect(r.kind).toBe("resolved");
+      if (r.kind === "resolved") expect(r.lake.id).toBe("TEST_TOLKEN_ULRICE");
     });
 
-    it("returns null when no lake matches the name+municipality", async () => {
+    it("returns none when no lake matches the name+municipality", async () => {
       const { resolveLake } = await import("./resolve");
-      const lake = await resolveLake("Tolken", "Stockholm");
-      expect(lake).toBeNull();
+      const r = await resolveLake("Tolken", "Stockholm");
+      expect(r.kind).toBe("none");
     });
 
-    it("returns null when municipality is ambiguous (multiple matches)", async () => {
+    it("returns ambiguous with candidates when the name matches several lakes", async () => {
       const { resolveLake } = await import("./resolve");
-      // Without a municipality, "Tolken" matches 3 lakes → ambiguous → null.
-      const lake = await resolveLake("Tolken");
-      expect(lake).toBeNull();
+      // Without a municipality, "Tolken" matches multiple lakes → ambiguous.
+      const r = await resolveLake("Tolken");
+      expect(r.kind).toBe("ambiguous");
+      if (r.kind === "ambiguous") {
+        expect(r.candidates.length).toBeGreaterThan(1);
+        // Candidates carry the municipality so the caller can ask "which one?".
+        for (const c of r.candidates) {
+          expect(c.name.toLowerCase()).toBe("tolken");
+          expect(typeof c.municipality).toBe("string");
+        }
+      }
     });
 
-    it("returns the single lake when municipality narrows to one", async () => {
+    it("resolves the single lake when municipality narrows to one", async () => {
       const { resolveLake } = await import("./resolve");
-      const lake = await resolveLake("Tolkabad", "Marks");
-      expect(lake?.id).toBe("TEST_TOLKABAD");
+      const r = await resolveLake("Tolkabad", "Marks");
+      expect(r.kind).toBe("resolved");
+      if (r.kind === "resolved") expect(r.lake.id).toBe("TEST_TOLKABAD");
     });
 
-    it("returns null for unknown lake name", async () => {
+    it("returns none for unknown lake name", async () => {
       const { resolveLake } = await import("./resolve");
-      const lake = await resolveLake("XxNonexistentLakeXx");
-      expect(lake).toBeNull();
+      const r = await resolveLake("XxNonexistentLakeXx");
+      expect(r.kind).toBe("none");
     });
 
-    it("includes full lake fields on the returned lake", async () => {
+    it("includes full lake fields on the resolved lake", async () => {
       const { resolveLake } = await import("./resolve");
-      const lake = await resolveLake("Tolkabad", "Marks");
+      const r = await resolveLake("Tolkabad", "Marks");
+      expect(r.kind).toBe("resolved");
+      if (r.kind !== "resolved") return;
+      const lake = r.lake;
       expect(lake).toMatchObject({
         id: "TEST_TOLKABAD",
         name: "Tolkabad",
         municipality: "Marks",
         county: "Västra Götaland",
       });
-      expect(typeof lake?.lat).toBe("number");
-      expect(typeof lake?.lon).toBe("number");
-      expect(typeof lake?.areaHa).toBe("number");
+      expect(typeof lake.lat).toBe("number");
+      expect(typeof lake.lon).toBe("number");
+      expect(typeof lake.areaHa).toBe("number");
     });
   });
 });

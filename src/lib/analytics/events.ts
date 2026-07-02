@@ -4,6 +4,10 @@ import { analyticsEvents } from "@/shared/db/schema";
 export type AnalyticsEventType =
   | "lake_resolved"
   | "lake_unresolved"
+  // Several real lakes share the named body — we asked which municipality
+  // instead of guessing. Distinct from lake_unresolved (no match at all) so the
+  // "ambiguous name" reprompt rate is queryable on its own.
+  | "lake_ambiguous"
   | "source_miss"
   | "signals_built"
   | "credit_spent"

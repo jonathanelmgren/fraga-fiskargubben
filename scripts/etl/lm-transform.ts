@@ -139,16 +139,22 @@ export async function transformLmLakes(opts: {
       SELECT COUNT(*)::int named FROM lm_lake_named WHERE name IS NOT NULL`;
     console.log(`  ${named} lakes carry a name.`);
 
-    // ── 4–5. Upsert named lakes ≥ minAreaHa into `lakes` (source lantmateriet),
-    // carrying the crosswalked eu_cd so MVM/NORS keep joining.
+    // ── 4a. Insert ONLY the NEW lakes — those with no VISS crosswalk (eu_cd
+    // NULL). A crosswalked LM lake IS the same body as its VISS row, which
+    // already exists in `lakes` (carrying the curated name, kommun/län, and the
+    // eu_cd that MVM/NORS join on). Inserting a second lantmateriet row for it
+    // created the name-collision bug ("Tolken, Borås" resolved to 2 rows). So we
+    // only add the tarns/lakes VISS never had. Their id is the LM vattenytaid
+    // (a UUID) — no collision with the SE… VISS ids.
     console.log(
-      `Upserting named lakes with area ≥ ${opts.minAreaHa} ha into lakes…`,
+      `Inserting NEW (non-VISS) named lakes with area ≥ ${opts.minAreaHa} ha…`,
     );
-    const upserted = await sql`
+    const inserted = await sql`
       INSERT INTO lakes (id, name, municipality, county, lat, lon, area_ha, eu_cd, source)
-      SELECT id, name, municipality, county, lat, lon, area_ha, eu_cd, 'lantmateriet'
+      SELECT id, name, municipality, county, lat, lon, area_ha, NULL, 'lantmateriet'
       FROM lm_lake_named
       WHERE name IS NOT NULL
+        AND eu_cd IS NULL                         -- NEW lakes only (no VISS match)
         AND area_ha >= ${opts.minAreaHa}
         AND lat IS NOT NULL AND lon IS NOT NULL
       ON CONFLICT (id) DO UPDATE SET
@@ -158,11 +164,26 @@ export async function transformLmLakes(opts: {
         lat = excluded.lat,
         lon = excluded.lon,
         area_ha = excluded.area_ha,
-        eu_cd = excluded.eu_cd,
         source = 'lantmateriet'
       RETURNING 1
     `;
-    console.log(`  upserted ${upserted.count} Lantmäteriet lakes.`);
+    console.log(`  inserted ${inserted.count} new Lantmäteriet-only lakes.`);
+
+    // ── 4b. For crosswalked lakes, upgrade the existing VISS row's coords/area
+    // with Lantmäteriet's more-precise polygon centroid (keep the VISS id + name
+    // + eu_cd + kommun/län). One canonical row per lake — no duplicate.
+    console.log("Refining crosswalked VISS lakes with LM geometry…");
+    const refined = await sql`
+      UPDATE lakes v
+      SET lat = n.lat, lon = n.lon, area_ha = n.area_ha
+      FROM lm_lake_named n
+      WHERE n.eu_cd = v.eu_cd
+        AND v.source = 'viss'
+        AND n.eu_cd IS NOT NULL
+        AND n.lat IS NOT NULL AND n.lon IS NOT NULL
+      RETURNING 1
+    `;
+    console.log(`  refined ${refined.count} crosswalked VISS lakes.`);
 
     // Tidy the derived staging tables (keep lm_mark/lm_text for re-runs).
     await sql`DROP TABLE IF EXISTS lm_lake_agg, lm_lake_named, lm_text_hydro, lm_cross`;
