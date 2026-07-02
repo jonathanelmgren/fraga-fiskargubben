@@ -3,6 +3,7 @@ import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { nextCookies } from "better-auth/next-js";
 import { claimConversation } from "@/lib/chat/anon";
+import { verifyClaimToken } from "@/lib/chat/claim-cookie";
 import { db } from "@/shared/db/client";
 import { accounts, sessions, users, verifications } from "@/shared/db/schema";
 import { env } from "@/shared/env";
@@ -67,7 +68,13 @@ export const auth = betterAuth({
           // (e.g. tests, seed scripts) — skip the claim in that case.
           if (!context) return;
 
-          const token = context.getCookie(CLAIM_TOKEN_COOKIE);
+          // The fiska_claim cookie is HMAC-signed on the set side (ADR-0001,
+          // src/lib/chat/claim-cookie.ts).  verifyClaimToken returns the raw
+          // token only if the signature checks out; a missing, malformed, or
+          // tampered cookie yields null → treated as "no claim to carry over"
+          // (no throw — the OAuth/registration flow proceeds normally).
+          const signed = context.getCookie(CLAIM_TOKEN_COOKIE);
+          const token = verifyClaimToken(signed);
           if (!token) return;
 
           try {

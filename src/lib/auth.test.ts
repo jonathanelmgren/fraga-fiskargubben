@@ -3,18 +3,22 @@
  *
  * We verify that:
  *  1. The auth config has a databaseHooks.user.create.after hook.
- *  2. When the hook fires with a context that has a fiska_claim cookie,
- *     it calls claimConversation with (userId, token).
+ *  2. When the hook fires with a context that has a VALID SIGNED fiska_claim
+ *     cookie, it calls claimConversation with (userId, rawToken).
  *  3. When context is null (seeding / test) or the cookie is absent,
  *     claimConversation is NOT called.
- *  4. A claim failure (DB error) is swallowed — the hook never throws.
+ *  4. When the cookie is present but its signature is INVALID (tampered /
+ *     unsigned), claimConversation is NOT called — the hook treats it as
+ *     "no claim" and never throws (Issue #5 — signed cookie).
+ *  5. A claim failure (DB error) is swallowed — the hook never throws.
  */
 
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-// Stub env so Zod parsing doesn't blow up in CI
+// Stub env so Zod parsing doesn't blow up in CI.  claim-cookie.ts reads the
+// same BETTER_AUTH_SECRET, so signing below uses this exact value.
 vi.mock("@/shared/env", () => ({
   env: {
     DATABASE_URL: "postgres://x:x@localhost:5432/x",
@@ -48,6 +52,10 @@ vi.mock("better-auth/next-js", () => ({
 }));
 
 import { claimConversation } from "@/lib/chat/anon";
+// The REAL signer — the hook uses the real verifier, so we sign with the real
+// signer (both keyed on the stubbed BETTER_AUTH_SECRET) to exercise the true
+// sign→verify roundtrip through the auth hook.
+import { signClaimToken } from "@/lib/chat/claim-cookie";
 
 // Import auth AFTER all mocks are in place
 import { auth } from "./auth";
@@ -66,19 +74,19 @@ describe("C2: auth databaseHooks.user.create.after — claim wire", () => {
     expect(typeof afterHook).toBe("function");
   });
 
-  it("calls claimConversation(userId, token) when fiska_claim cookie is present", async () => {
+  it("calls claimConversation(userId, token) when a VALID SIGNED fiska_claim cookie is present", async () => {
+    vi.mocked(claimConversation).mockClear();
     vi.mocked(claimConversation).mockResolvedValue({ claimed: true });
 
+    const rawToken = "test-claim-token-uuid";
     const fakeContext = {
-      getCookie: vi.fn().mockReturnValue("test-claim-token-uuid"),
+      getCookie: vi.fn().mockReturnValue(signClaimToken(rawToken)),
     };
 
     await afterHook?.({ id: "user-123" }, fakeContext);
 
-    expect(claimConversation).toHaveBeenCalledWith(
-      "user-123",
-      "test-claim-token-uuid",
-    );
+    // The hook must unwrap the signature and pass the RAW token downstream.
+    expect(claimConversation).toHaveBeenCalledWith("user-123", rawToken);
   });
 
   it("does NOT call claimConversation when context is null (seed / non-request creation)", async () => {
@@ -101,11 +109,46 @@ describe("C2: auth databaseHooks.user.create.after — claim wire", () => {
     expect(claimConversation).not.toHaveBeenCalled();
   });
 
+  it("does NOT call claimConversation when the cookie signature is INVALID (tampered / unsigned)", async () => {
+    vi.mocked(claimConversation).mockClear();
+
+    // A raw, UNSIGNED token (no `.signature`) — the old pre-Issue-#5 format.
+    // The signed-cookie verifier must reject it as "no valid claim".
+    const fakeContext = {
+      getCookie: vi.fn().mockReturnValue("unsigned-raw-token"),
+    };
+
+    await expect(
+      afterHook?.({ id: "user-222" }, fakeContext),
+    ).resolves.toBeUndefined();
+    expect(claimConversation).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call claimConversation when the signature is present but wrong (tampered token)", async () => {
+    vi.mocked(claimConversation).mockClear();
+
+    // Sign one token, then swap the token half — the signature no longer
+    // matches the (attacker-chosen) token, so verification must fail.
+    const signed = signClaimToken("original-token");
+    const sig = signed.slice(signed.lastIndexOf(".") + 1);
+    const tampered = `attacker-token.${sig}`;
+
+    const fakeContext = {
+      getCookie: vi.fn().mockReturnValue(tampered),
+    };
+
+    await expect(
+      afterHook?.({ id: "user-333" }, fakeContext),
+    ).resolves.toBeUndefined();
+    expect(claimConversation).not.toHaveBeenCalled();
+  });
+
   it("swallows claimConversation errors — the hook never throws", async () => {
+    vi.mocked(claimConversation).mockClear();
     vi.mocked(claimConversation).mockRejectedValue(new Error("DB down"));
 
     const fakeContext = {
-      getCookie: vi.fn().mockReturnValue("some-token"),
+      getCookie: vi.fn().mockReturnValue(signClaimToken("some-token")),
     };
 
     // Must not throw

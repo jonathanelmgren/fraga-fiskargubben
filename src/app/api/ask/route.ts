@@ -9,18 +9,11 @@
  * which returns a standard Web API ReadableStream.  We pass that directly to
  * `new Response(stream)` — the pattern documented in Next.js route.md.
  *
- * Cookie signing: the claimToken is stored in a plain HttpOnly, SameSite=Lax,
- * Secure cookie.  Full cryptographic signing (HMAC/JWE) is deferred — see TODO
- * below.  The token itself is a UUID v4 (128-bit entropy), which is unguessable
- * in practice, but a signed cookie would prevent server-side DB reads on every
- * request to verify the token hasn't been tampered with.
- *
- * TODO (DONE_WITH_CONCERNS: cookie signing):
- *   The claimToken cookie is currently stored unsigned.  It is HttpOnly + Secure
- *   so it cannot be read by client JS and is sent only over HTTPS, but it is not
- *   cryptographically signed.  Add HMAC signing (e.g. `iron-session` or a custom
- *   HMAC-SHA256 with a server secret) before production.  The UUID entropy makes
- *   guessing infeasible; the main risk is log/debug exposure of the raw token.
+ * Cookie signing: the claimToken cookie (fiska_claim) is HMAC-SHA256 signed with
+ * BETTER_AUTH_SECRET before it is set, and its signature is verified on read (see
+ * src/lib/chat/claim-cookie.ts, ADR-0001).  The cookie stays HttpOnly + Secure +
+ * SameSite=Lax; the signature lets the server reject a tampered/forged token
+ * without a DB round-trip.  A missing or invalid signature reads as "no claim".
  */
 
 import "server-only";
@@ -38,6 +31,7 @@ import {
 } from "@/lib/chat/advise";
 import type { AskHandlerDeps, AskResult } from "@/lib/chat/ask-handler";
 import { handleAsk } from "@/lib/chat/ask-handler";
+import { signClaimToken, verifyClaimToken } from "@/lib/chat/claim-cookie";
 import { extract } from "@/lib/chat/extractor";
 import { type PersistTurnsDeps, persistTurns } from "@/lib/chat/persist-turns";
 import {
@@ -378,9 +372,13 @@ export async function POST(request: Request): Promise<Response> {
   }
   const conversationId = rawConversationId;
 
-  // Pre-read the claim token cookie (cookies() is async in Next.js 16)
+  // Pre-read the claim token cookie (cookies() is async in Next.js 16) and
+  // verify its HMAC signature.  A missing, malformed, or tampered signature
+  // yields null → treated exactly like "no claim cookie" (see claim-cookie.ts).
   const cookieStore = await cookies();
-  const claimToken = cookieStore.get(CLAIM_TOKEN_COOKIE)?.value ?? null;
+  const claimToken = verifyClaimToken(
+    cookieStore.get(CLAIM_TOKEN_COOKIE)?.value,
+  );
 
   // H6: pass the pre-read claimToken into handleAsk on the input rather than
   // mutating a built deps object (the old `deps.getClaimToken = …` hack).
@@ -446,10 +444,18 @@ export async function POST(request: Request): Promise<Response> {
     // → unlimited anonymous Sonnet first-prompts. So we write the Set-Cookie
     // header EXPLICITLY onto this Response's headers (verified by route.test.ts)
     // rather than relying on the mutation propagating.
+    //
+    // #5: the raw token is HMAC-signed (signClaimToken) before it goes on the
+    // wire so the read side can reject a tampered value without a DB read
+    // (ADR-0001). serializeClaimCookie applies the HttpOnly/SameSite/Secure/Path
+    // flags on the explicit header.
     if (result.claimToken) {
       headers.append(
         "Set-Cookie",
-        serializeClaimCookie(CLAIM_TOKEN_COOKIE, result.claimToken),
+        serializeClaimCookie(
+          CLAIM_TOKEN_COOKIE,
+          signClaimToken(result.claimToken),
+        ),
       );
     }
 
