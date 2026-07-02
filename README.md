@@ -60,7 +60,7 @@ Anthropic SDK (Claude) · Vitest · Biome · pnpm
      │        COMPUTED→ water-temp estimate, light window, windward shore,   │
      │                  pressure/temp trends, species comfort                │
      │      └──────────────────────────────────────────────────────────────┘
-     ├─ 5. Spend credit          (DB write, atomic)
+     ├─ 5. Spend credit          (DB write, atomic; refunded if the stream fails)
      └─ 6. Advise  (Claude Sonnet, streamed)   → follow-ups reuse frozen Signals via Haiku
 ```
 
@@ -84,6 +84,41 @@ comfort. Each value carries provenance (`forecast|observed|modeled|estimated` ×
 > ("vattnet är 18°" ) and use that over the estimate — the extractor doesn't capture
 > it yet.
 
+### Data model & join key
+
+Every lake and every SLU dataset binds to one canonical identity: the **VISS EU_CD**
+(EU WFD water-body code) — the `lakes.id` column *is* that code. MVM (`stationEUID`)
+and NORS/Aqua (`eU_CD`) carry it directly, so colour/depth/species join to a lake by a
+**direct O(1) match**, not a fuzzy one. Only the minority of source rows with a blank
+EU_CD fall back to a haversine coordinate match at import time (≤200 m centroid = high
+confidence, ≤ equal-area radius = low), reprojecting SWEREF99TM→WGS84. Match confidence
+is stored per row. Full detail: [`scripts/etl/README.md`](scripts/etl/README.md).
+
+### Coverage (be realistic)
+
+- The `lakes` table holds the **~7,250 WFD-classified lake water bodies** the VISS API
+  returns (`waters&watercategory=LW`: 7,267 returned, 7,252 with a mappable centroid) —
+  **not** all of Sweden's ~100,000 lakes. Small tarns are absent. Full ~100k coverage via
+  **Lantmäteriet Topografi** (CC0) is planned future work (separate spec).
+- **Per-source coverage is thinner still.** MVM water colour and NORS depth/species only
+  exist for lakes that were actually **measured/surveyed** — a fraction of even the 7,250.
+  Most lakes will have **no** colour/depth/species row; that is **by design**. A missing
+  source just omits its Signal (graceful degradation) — it is not a bug when ~80% of lakes
+  lack colour data.
+- There is **no runtime geocoding fallback** for lakes outside the register. An unresolved
+  name (or one matching *multiple* lakes) triggers an in-persona Swedish reprompt asking the
+  user to clarify the name / add a municipality — never an auto-pick, picker, or second
+  geocoder.
+
+> **Forecast endpoint:** SMHI **snow1g version 1**
+> (`.../api/category/snow1g/version/1/geotype/point`). The older `pmp3g/v2` product is
+> **dead** (the endpoint moved once) — do not revert to it.
+>
+> **Time zones:** user times are **local Swedish** ("ikväll 20:00"); `resolveSwedishTime`
+> yields a local `Date`, and `buildSignals` converts it to **UTC** via `toISOString()`
+> before `pickEntry` matches SMHI's UTC `timeSeries`. This is correct — don't "fix" it into
+> a 1-hour offset bug.
+
 ## The Claudes
 
 | Model | Role | When | Cost |
@@ -105,6 +140,10 @@ pnpm dev                      # http://localhost:3000
 ETL scripts auto-load `.env`. `svar` must run first — every other source joins the
 `lakes` table it seeds. Details: [`scripts/etl/README.md`](scripts/etl/README.md).
 
+> The `pnpm etl:svar` name is **historical**: SVAR (SMHI's register) was the original
+> intended source, but its geometries are Lantmäteriet-derived and **not open**, so the
+> script actually reads the **VISS API**. The command name was kept to avoid churn.
+
 ## Commands
 
 `pnpm dev` · `pnpm build` · `pnpm test` · `pnpm ts:check` · `pnpm biome` ·
@@ -118,3 +157,18 @@ ETL scripts auto-load `.env`. `svar` must run first — every other source joins
   no-live-water-temp ([0006](docs/adr/0006-no-live-lake-water-temperature-source.md)).
 - Domain model + terminology: [`CONTEXT.md`](CONTEXT.md)
 - ETL runbook: [`scripts/etl/README.md`](scripts/etl/README.md)
+
+## Data sources & licenses
+
+This app is built on Swedish open data. Attribution is required where the license says so —
+notably **SMHI is CC-BY 4.0 and must name the source**.
+
+| Source | Used for | License | Required attribution |
+|---|---|---|---|
+| **SMHI open data** (metfcst forecast, metobs observations) | live weather | **CC-BY 4.0** | **"© SMHI"** (attribution is mandatory) |
+| **VISS** (Vatteninformationssystem Sverige, Länsstyrelserna) | lake register / join key | check VISS terms | "Vatteninformationssystem Sverige (VISS), Länsstyrelserna" |
+| **SLU** — NORS (`dvfisk.slu.se`), MVM (`miljödata.slu.se`) | depth, species, water colour / sight depth | check SLU terms | "SLU Aqua / SLU Miljödata (MVM)" |
+| **Lantmäteriet Topografi** *(planned)* | future full lake coverage | **CC0** | none required |
+
+If you redistribute or display this data, keep the **"© SMHI"** attribution visible; the
+CC-BY 4.0 license requires naming the source.
