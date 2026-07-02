@@ -28,6 +28,7 @@
     "etl:depth": "tsx --env-file-if-exists=.env scripts/etl/import-depth.ts",
     "etl:mvm": "tsx --env-file-if-exists=.env scripts/etl/import-mvm.ts",
     "etl:aqua": "tsx --env-file-if-exists=.env scripts/etl/import-aqua.ts",
+    "etl:lm-download": "tsx --env-file-if-exists=.env scripts/etl/lm-download.ts",
     "seed:all": "tsx --env-file-if-exists=.env scripts/etl/seed-all.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",

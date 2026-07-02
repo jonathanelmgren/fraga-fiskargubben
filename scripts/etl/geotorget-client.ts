@@ -174,6 +174,7 @@ export class GeotorgetClient {
   /**
    * 5. Download one file's bytes, given its `path` from listFiles (relative,
    * with the ?q= token). Returns raw bytes; the caller unzips / writes to disk.
+   * For multi-GB files use rawDownload() and stream the body to disk instead.
    */
   async downloadPath(path: string): Promise<Uint8Array> {
     const res = await this.fetchImpl(`${this.orderRoot()}${path}`, {
@@ -185,6 +186,17 @@ export class GeotorgetClient {
       );
     }
     return new Uint8Array(await res.arrayBuffer());
+  }
+
+  /**
+   * Like downloadPath but returns the raw Response so the caller can STREAM the
+   * body to disk (res.body) — required for the multi-GB Topografi zips, which
+   * must not be buffered into memory.
+   */
+  rawDownload(path: string): Promise<Response> {
+    return this.fetchImpl(`${this.orderRoot()}${path}`, {
+      headers: { Authorization: this.auth },
+    });
   }
 
   /**
