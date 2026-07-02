@@ -9,10 +9,11 @@
  *  - Pure & deterministic: `now` is a required parameter — we never call
  *    Date.now() / new Date() with no args here, so every phrasing is unit-
  *    testable against a fixed clock.
- *  - Local wall-clock: day-part hours (kväll → 19:00, morgon → 07:00, …) are
- *    written with the Date's LOCAL setters (setHours), matching the rest of the
- *    signals pipeline which reasons in local time (see build.ts seasonFromDate,
- *    which uses getMonth() not getUTCMonth()).
+ *  - Swedish wall-clock: day-part hours (kväll → 19:00, morgon → 07:00, …) are
+ *    resolved in Europe/Stockholm (via the stockholm.ts helpers), NOT the
+ *    server's local zone. "kl 19" therefore means 19:00 in Sweden on any host,
+ *    including a UTC production server. Matches build.ts, which also reasons in
+ *    the Stockholm wall-clock.
  *  - Valid-or-null contract: anything we cannot confidently resolve returns
  *    null, so the caller keeps its existing "valid-or-now" fallback (the C1
  *    guard in ask-handler) unchanged. We never throw and never return an
@@ -22,6 +23,8 @@
  * every Swedish phrase ("imorgon kväll") as Invalid Date → silently NOW, so
  * the forecast / light-window was computed for the wrong moment.
  */
+
+import { stockholmParts, stockholmWallClockToUtc } from "@/lib/time/stockholm";
 
 // ---------------------------------------------------------------------------
 // Day-part → hour-of-day mapping (local time)
@@ -117,19 +120,37 @@ export function resolveSwedishTime(
     return null;
   }
 
-  // Base the result on `now`, shifted by the resolved day offset (default 0 =
-  // today when only a time-of-day / clock was given).
-  const result = new Date(now.getTime());
-  result.setDate(result.getDate() + (dayOffset ?? 0));
+  // Resolve against the SWEDISH wall-clock of `now`, not the server's local
+  // zone: take now's Stockholm calendar day, shift by the day offset, set the
+  // target hour/minute, then convert that Swedish wall-clock back to a UTC
+  // instant (DST-correct). On a UTC server this is what makes "kl 19" mean
+  // 19:00 in Sweden rather than 19:00 UTC.
+  const base = stockholmParts(now);
 
+  let hour: number;
+  let minute = 0;
   if (clock !== null) {
-    result.setHours(clock.hour, clock.minute, 0, 0);
+    hour = clock.hour;
+    minute = clock.minute;
   } else if (part !== null) {
-    result.setHours(part, 0, 0, 0);
+    hour = part;
   } else {
     // A bare day ("imorgon", "på lördag") with no time → sensible default hour.
-    result.setHours(DEFAULT_HOUR, 0, 0, 0);
+    hour = DEFAULT_HOUR;
   }
+
+  // Apply the day offset on the calendar via a UTC-noon anchor (avoids any DST
+  // hour-shift changing the date), then read the shifted Y/M/D back out.
+  const shifted = new Date(
+    Date.UTC(base.year, base.month - 1, base.day + (dayOffset ?? 0), 12, 0, 0),
+  );
+  const result = stockholmWallClockToUtc({
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate(),
+    hour,
+    minute,
+  });
 
   return Number.isNaN(result.getTime()) ? null : result;
 }
@@ -184,7 +205,12 @@ function resolveDayOffset(text: string, now: Date): number | null {
   // Weekday: "på lördag", "nästa fredag", or a bare weekday name.
   const weekday = matchWeekday(text);
   if (weekday !== null) {
-    return weekdayOffset(now.getDay(), weekday, /\bnästa\b/.test(text));
+    // Swedish weekday of `now`, not the server-local one.
+    return weekdayOffset(
+      stockholmParts(now).weekday,
+      weekday,
+      /\bnästa\b/.test(text),
+    );
   }
 
   return null;
