@@ -631,10 +631,11 @@ describe("C1: conversation-ownership enforcement", () => {
 });
 
 // ---------------------------------------------------------------------------
-// C1: Swedish free-text time ("ikväll") must not throw a 500
+// C1 / issue #7: Swedish free-text time resolves to a real Date; unparseable
+// phrasings still fall back to deps.now (and never throw a 500).
 // ---------------------------------------------------------------------------
 
-describe("C1: unparseable extraction.time falls back to deps.now (never throws)", () => {
+describe("Swedish free-text extraction.time (issue #7)", () => {
   it("does NOT throw when extraction.time is a Swedish free-text string like 'ikväll'", async () => {
     const deps = makeDeps({
       getSession: vi.fn().mockResolvedValue({ user: { id: "user-1" } }),
@@ -653,7 +654,8 @@ describe("C1: unparseable extraction.time falls back to deps.now (never throws)"
     ).resolves.toBeDefined();
   });
 
-  it("calls buildSignals with deps.now when extraction.time is unparseable", async () => {
+  it("resolves 'på lördag' to the next Saturday relative to deps.now", async () => {
+    // deps.now = 2026-06-29 (a Monday); next Saturday is 2026-07-04.
     const now = new Date("2026-06-29T10:00:00Z");
     const deps = makeDeps({
       getSession: vi.fn().mockResolvedValue({ user: { id: "user-1" } }),
@@ -661,12 +663,37 @@ describe("C1: unparseable extraction.time falls back to deps.now (never throws)"
       extract: vi.fn().mockResolvedValue({
         onTopic: true,
         lakeName: "Tolken",
-        time: "på lördag", // another typical unparseable Swedish time
+        time: "på lördag",
       }),
       now,
     });
 
     await handleAsk({ message: "Vad biter på lördag?" }, deps);
+
+    // biome-ignore lint/suspicious/noExplicitAny: accessing vi.Mock internals
+    const [signalsInput] = (deps.buildSignals as any).mock.calls[0];
+    const target: Date = signalsInput.targetTime;
+    // Resolved to Saturday (getDay() === 6), a different day than `now`, valid.
+    expect(Number.isNaN(target.getTime())).toBe(false);
+    expect(target.getDay()).toBe(6);
+    expect(target.getDate()).toBe(4);
+    expect(target.getTime()).not.toBe(now.getTime());
+  });
+
+  it("calls buildSignals with deps.now when extraction.time is genuinely unparseable", async () => {
+    const now = new Date("2026-06-29T10:00:00Z");
+    const deps = makeDeps({
+      getSession: vi.fn().mockResolvedValue({ user: { id: "user-1" } }),
+      getConversation: vi.fn().mockResolvedValue(null),
+      extract: vi.fn().mockResolvedValue({
+        onTopic: true,
+        lakeName: "Tolken",
+        time: "någon gång snart", // no day anchor / clock / part-of-day → null
+      }),
+      now,
+    });
+
+    await handleAsk({ message: "Vad biter snart?" }, deps);
 
     // biome-ignore lint/suspicious/noExplicitAny: accessing vi.Mock internals
     const [signalsInput] = (deps.buildSignals as any).mock.calls[0];
