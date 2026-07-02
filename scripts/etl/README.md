@@ -11,15 +11,23 @@ Seed in this order (later sources join against the `lakes` table created first):
 
 | # | Command | Seeds | Source status |
 |---|---------|-------|---------------|
-| 1 | `pnpm etl:svar` | `lakes` (all water bodies) | **FLAGGED** — no open SMHI WFS; use VISS API (needs apikey). Run first. |
+| 1 | `pnpm etl:svar` | `lakes` (all water bodies) | **VERIFIED live** — VISS API (`VISS_APIKEY`). Run first; later sources join `lakes`. |
 | 2 | `pnpm etl:metobs-stations` | `metobs_station` (pressure=9, temp=1) | **VERIFIED live** — SMHI metobs. |
 | 3 | `pnpm etl:shype` | `water_temp` (modeled override) | **FLAGGED** — no open bulk endpoint (per-area Excel only). Optional. |
 | 4 | `pnpm etl:depth` | `lake_depth` (max) | **VERIFIED live** — NORS `maxDjup` (mean depth unavailable). |
-| 5 | `pnpm etl:mvm` | `water_colour` + sight depth | **PARTLY VERIFIED** — endpoints verified; needs **MVM ticket** to confirm shapes. |
+| 5 | `pnpm etl:mvm` | `water_colour` + sight depth | **VERIFIED live** — bulk chemistry export (`MVM_TICKET`). |
 | 6 | `pnpm etl:aqua` | `lake_species` | **VERIFIED live** — NORS aggregated report. |
 
 Apply migrations first: `pnpm db:migrate`. The `pg_trgm` extension (migration 0003) is required
 for lake typeahead.
+
+**SVAR (lakes) must run first** — every other source joins against the `lakes` table it seeds.
+
+**Env loading.** The `etl:*` package.json scripts run
+`tsx --env-file-if-exists=.env scripts/etl/import-X.ts`, so each script **auto-loads the repo's
+`.env`** (which holds `DATABASE_URL` plus the ETL credentials `VISS_APIKEY` and `MVM_TICKET`). The
+run command is therefore just `pnpm etl:<name>` — no inline env prefixes. Each section below still
+lists the env vars its script reads; put them in `.env`.
 
 ## Source verification status (issue #3, checked 2026-07-01)
 
@@ -39,24 +47,28 @@ the exact remaining step.
   **filters to the trailing 5-day window in code** (there is no native 5-day period).
 - **Aqua / NORS** (`AQUA_BASE_URL`) — ✅ **VERIFIED live**. `GET https://dvfisk.slu.se/api/v1/nors/
   data-aggregerad/rapport` returns a flat array (~4250 lakes) with `eU_CD` (matches `lakes.id`),
-  `fångadeArter` (comma-separated species), `sweref99N/E` (SWEREF99TM), `area`, `maxDjup`.
+  `fångadeArter` (comma-separated species), `sweref99N/E` (SWEREF99TM), `area`, `maxDjup`. The
+  blank-`eU_CD` (~6%) coordinate fallback now **reprojects SWEREF99TM→WGS84** (via
+  `src/lib/geo/sweref99.ts`) before matching; the direct `eU_CD` join is unchanged.
 - **depth** (`DEPTH_URL`) — ✅ **VERIFIED live** for max depth (reuses the NORS `maxDjup` field).
   ⚠️ **mean depth is unavailable from NORS** and is always `null`; SMHI's medeldjup/maxdjup is only
   in the interactive "Modelldata per område" viewer (no open bulk endpoint). Supply a custom export
   (`DEPTH_SOURCE=custom`, `DEPTH_URL=file://…`) if mean depth is required.
-- **MVM** (`MVM_BASE_URL`, `MVM_TICKET`) — ⚠️ **endpoints VERIFIED, shapes FLAGGED**. Base
+- **MVM** (`MVM_BASE_URL`, `MVM_TICKET`) — ✅ **VERIFIED live**. Base
   `https://miljodata.slu.se/api/observations-service/v2`; ticket is query param **`token`** (not
-  `ticket`). Two facts need a live ticket to confirm: (1) coordinates are **SWEREF99TM** and need
-  reprojection to WGS84; (2) chemistry values are **nested** in `observations[]` keyed by
-  `propertyCode`/`propertyAbbrevName` — the exact codes for absorbance-420 / färgtal / Secchi must be
-  confirmed and wired into `MVM_PROPERTY_MATCH` in `import-mvm.ts`.
-  Verify: `curl "$MVM_BASE_URL/full-samples/query?token=$MVM_TICKET" | jq '.[0].observations[].propertyAbbrevName'`
-- **SVAR** (`SVAR_WFS_URL`) — 🚩 **FLAGGED**. SMHI's SVAR lake geometries are Lantmäteriet-derived and
-  **not open data** (viewing service only — no open WFS/GeoJSON). Use **VISS** instead
-  (`https://viss.lansstyrelsen.se/api?method=waters&watercategory=LW&coordinateformat=WGS84&format=json&apikey=<KEY>`);
-  `coordinateformat=WGS84` satisfies the EPSG:4326 requirement directly. Needs a free apikey; the
-  VISS response field names differ from the current GeoJSON mapper and must be confirmed with a key.
-  Alternatively supply a one-off SVAR GeoJSON via a `file://` path (request WGS84/CRS84).
+  `ticket`). The bulk chemistry export `GET /all-full-samples/chemistry?token=<MVM_TICKET>`
+  (~500 MB / 1.15M samples) is the source. Confirmed property codes: `Abs_F420` (absorbance, unit
+  is /5cm → multiplied ×20 to per-metre), `Farg` (färgtal), `Siktdjup` (Secchi). Coordinates are
+  **SWEREF99TM**, reprojected to WGS84 via `src/lib/geo/sweref99.ts`; the station→lake join is on
+  `stationEUID` (EU WFD code → `lakes.id`) with a reprojected-coordinate fallback. ⚠️ The 500 MB
+  response may need an `MVM_MAX_SAMPLES` cap or `NODE_OPTIONS=--max-old-space-size`; a streaming
+  parser is deferred.
+- **SVAR** (`VISS_APIKEY`, optional `VISS_API_URL`) — ✅ **VERIFIED live**. Source is the **VISS API**
+  directly (Vatteninformationssystem Sverige, Länsstyrelserna), not an SMHI WFS. It fetches three
+  VISS methods: `waters&watercategory=LW` (lakes), `municipalities`, and `counties` (to resolve
+  municipality/county names). Coordinates come from the `LatLong` entry in each water's
+  `Coordinates[]` (WGS84 — no reprojection). Needs a free apikey (`VISS_APIKEY`). Verified:
+  **7252/7267 lakes map**.
 - **S-HYPE** (`SHYPE_URL`) — 🚩 **FLAGGED**. No open bulk endpoint; water-temperature is only a
   per-area Excel/CSV download and is keyed by **SUBID**, not EU_CD — a SUBID→EU_CD crosswalk plus a
   CSV/XLSX parser are required. Remains a stub.
@@ -68,84 +80,55 @@ schema); a missing source simply omits its Signal (graceful degradation, ADR-000
 
 # SVAR ETL — import Swedish water bodies
 
-One-time (re-runnable) script that seeds the `lakes` table from the SMHI
-Vattenwebb SVAR (Swedish WAter Register) WFS dataset.
+One-time (re-runnable) script that seeds the `lakes` table from the **VISS API**
+(Vatteninformationssystem Sverige, Länsstyrelserna) — the open register of Swedish
+water bodies **with EU_CD codes**. This must run **first**; every other ETL joins
+against the `lakes` table it creates.
 
 ## Prerequisites
 
-- `DATABASE_URL` environment variable pointing to the target Postgres database.
-- The SVAR GeoJSON dataset (see **Obtaining the dataset** below), either
-  accessible via a URL or as a local file.
+- `DATABASE_URL` — target Postgres database.
+- `VISS_APIKEY` — a free VISS apikey (register at <https://viss.lansstyrelsen.se/api>).
+- (Optional) `VISS_API_URL` to override the default VISS base URL.
 
 ## Running
 
 ```bash
-# From a URL:
-SVAR_WFS_URL="https://..." DATABASE_URL="postgres://..." pnpm etl:svar
-
-# From a locally downloaded file:
-SVAR_WFS_URL="file:///path/to/svar.geojson" DATABASE_URL="postgres://..." pnpm etl:svar
+pnpm etl:svar
 ```
 
-The script is **idempotent** — running it multiple times upserts rows on the
-`id` PK (`ON CONFLICT DO UPDATE`) so no duplicates are created.
+`DATABASE_URL` and `VISS_APIKEY` are read from the repo's `.env` (auto-loaded via
+`--env-file-if-exists=.env`). The script is **idempotent** — running it multiple
+times upserts rows on the `id` PK (`ON CONFLICT DO UPDATE`) so no duplicates are
+created.
 
-## Obtaining the dataset — FLAGGED (verified 2026-07-01)
+## Source — VISS API (VERIFIED live 2026-07-02)
 
-**There is no open SMHI SVAR WFS/GeoJSON endpoint.** SMHI's SVAR lake geometries
-are derived from Lantmäteriet material that is **not open data**, so Vattenwebb
-publishes SVAR as a viewing service only (confirmed on the SMHI Vattenwebb pages
-and the "Öppet API för vattenwebb" forum thread). The `vattenwebb.smhi.se/ogc/wfs`
-path assumed by earlier versions returns 404.
+The SMHI SVAR geometries are Lantmäteriet-derived and **not open data**, so the
+source is the **VISS API** directly (no WFS, no `SVAR_WFS_URL`). The script calls
+three VISS methods and joins them in memory:
 
-**Recommended source — VISS** (Vatteninformationssystem Sverige, Länsstyrelserna),
-the open register of ~37 000 water bodies **with EU_CD codes**:
+| VISS method | Provides |
+| ------------------------------ | ---------------------------------------------- |
+| `waters&watercategory=LW`      | lakes (sjöar) — EU_CD, name, coordinates, area |
+| `municipalities`               | municipality id → name lookup |
+| `counties`                     | county id → name lookup |
 
-```
-https://viss.lansstyrelsen.se/api?method=waters&watercategory=LW
-  &coordinateformat=WGS84&format=json&apikey=<KEY>
-```
+Each water's coordinates come from the **`LatLong` entry in its `Coordinates[]`
+array** — already WGS84 (EPSG:4326) decimal degrees, so **no SWEREF99TM
+reprojection is needed** for SVAR. `municipalities` / `counties` resolve the
+kommun/län names referenced by id on each water.
 
-- `watercategory=LW` selects lakes (sjöar); `coordinateformat=WGS84` returns
-  EPSG:4326 decimal degrees directly — **no SWEREF99TM reprojection needed**.
-- Requires a free apikey (register at <https://viss.lansstyrelsen.se/api>).
-- 🚩 **FLAG (live-verification pending):** the VISS `waters` response field names
-  differ from the GeoJSON `properties` the mapper below expects. With a key,
-  confirm the JSON keys for EU_CD / name / X / Y / area and update
-  `SvarFeatureProperties` + `mapFeatureToLake` + the test fixture accordingly.
+Verified: **7252 / 7267 lakes map** successfully.
 
-**Alternative — local GeoJSON file.** If a one-off SVAR GeoJSON export is obtained
-(e.g. via Länsstyrelsernas geodata catalogue, shapefile→GeoJSON), pass its
-`file://` path to `SVAR_WFS_URL`. Request WGS84/CRS84 (EPSG:4326); a SWEREF99TM
-export would store projected metres into `lat`/`lon` and be wrong. Do **not** hit
-any service at runtime from the application.
+## Field mapping
 
-## Field-name assumptions
-
-The mapper (`mapFeatureToLake` in `import-svar.ts`) expects the following
-GeoJSON `properties` fields:
-
-| SVAR field    | Type     | Nullable | Description                              |
-| ------------- | -------- | -------- | ---------------------------------------- |
-| `MS_CD`       | `string` | no       | EU WFD water-body code — used as PK      |
-| `MS_NAME`     | `string` | yes      | Swedish name (blank → stored as `null`)  |
-| `KOMMUNNAMN`  | `string` | no       | Municipality name (kommunnamn)           |
-| `LANNAMN`     | `string` | no       | County name (lännamn)                    |
-| `CENTROID_N`  | `number` | no       | Centroid northing (SWEREF99TM metres or WGS84 lat depending on CRS) |
-| `CENTROID_E`  | `number` | no       | Centroid easting (SWEREF99TM metres or WGS84 lon) |
-| `AREA_HA`     | `number` | no       | Surface area in hectares                 |
-
-> **CRS note:** Centroid coordinates are stored as-is from the source.  If the
-> WFS layer is requested in SWEREF99TM (EPSG:3006), `lat`/`lon` in the DB will
-> be Swedish northing/easting in metres — not WGS84 degrees.  Request the layer
-> in CRS84/EPSG:4326 if you need WGS84 decimal degrees, and update
-> `CENTROID_N` → latitude, `CENTROID_E` → longitude mapping accordingly.
-
-These field names match the SVAR attribute documentation at
-<https://vattenwebb.smhi.se/>.  If the actual service uses different names
-(e.g. `EUCD`, `NAMN`, `AREAL_HA`) update the `SvarFeatureProperties`
-interface and `mapFeatureToLake` function accordingly — the test fixture in
-`import-svar.test.ts` makes the mapping explicit and must be updated too.
+The mapper (`mapWaterToLake` in `import-svar.ts`) reads the VISS `waters`
+records: the EU_CD water-body code (used as the `id` PK), the water name
+(blank → stored as `null`), the municipality/county ids (resolved to names via the
+`municipalities`/`counties` lookups), the `LatLong` coordinates (lat/lon, WGS84),
+and the surface area in hectares. The test fixture in `import-svar.test.ts` makes
+the mapping explicit and must be kept in sync.
 
 ## Architecture decision
 
@@ -190,8 +173,10 @@ normal run; override only if the API version changes.
 ## Running
 
 ```bash
-DATABASE_URL="postgres://..." pnpm etl:metobs-stations
+pnpm etl:metobs-stations
 ```
+
+`DATABASE_URL` is read from the repo's `.env`.
 
 The script is **idempotent** — running it multiple times upserts rows on the
 composite `(id, parameter)` PK so no duplicates are created.  A single
@@ -235,8 +220,12 @@ exists for a lake.
 ## Running
 
 ```bash
-SHYPE_URL="file:///path/to/shype-watertemp.json" DATABASE_URL="postgres://..." pnpm etl:shype
+pnpm etl:shype
 ```
+
+`DATABASE_URL` and `SHYPE_URL` are read from the repo's `.env`. S-HYPE remains a
+stub: set `SHYPE_URL` in `.env` to a `file://` path of a pre-shaped `ShypeRecord`
+JSON array (with `lakeId` already mapped from SUBID to EU_CD).
 
 ## Obtaining the dataset
 
@@ -296,12 +285,12 @@ The system degrades gracefully: `depthFor()` in `src/lib/water/depth.ts` returns
 
 ```bash
 # Default: NORS max depth (no source config needed):
-DATABASE_URL="postgres://..." pnpm etl:depth
-
-# Custom export supplying mean depth:
-DEPTH_SOURCE=custom DEPTH_URL="file:///path/to/depth.json" \
-  DATABASE_URL="postgres://..." pnpm etl:depth
+pnpm etl:depth
 ```
+
+`DATABASE_URL` is read from the repo's `.env`. For a custom export supplying mean
+depth, set `DEPTH_SOURCE=custom` and `DEPTH_URL=file:///path/to/depth.json` in
+`.env`, then run `pnpm etl:depth`.
 
 ## Obtaining a custom (mean-depth) dataset
 
@@ -321,27 +310,33 @@ The `lake_depth` table is an optional data layer.  Lakes without a row get
 
 ---
 
-# MVM ETL — seed water colour and Secchi sight depth (endpoints VERIFIED)
+# MVM ETL — seed water colour and Secchi sight depth (VERIFIED live)
 
 One-time (re-runnable) script that seeds the `water_colour` table from the
 SLU Miljödata-MVM **Observations API v2**. Records water colour (brown/humic vs
 clear) and Secchi sight depth per lake.
 
-## Status — endpoints VERIFIED, response shapes FLAGGED (2026-07-01)
+## Status — VERIFIED live (2026-07-02)
 
 The v2 REST API and base path were verified against the OpenAPI spec
-(<https://miljodata.slu.se/api/docs/index.html>). Base path:
+(<https://miljodata.slu.se/api/docs/index.html>) and a live ticket. Base path:
 `https://miljodata.slu.se/api/observations-service/v2`; the ticket is the query
-parameter **`token`** (not `ticket`). Two facts need a **live ticket** to confirm
-before a real run:
+parameter **`token`** (not `ticket`). The ETL uses the **bulk chemistry export**
+`GET /all-full-samples/chemistry?token=<MVM_TICKET>` (~500 MB / 1.15M samples).
 
-1. **Coordinates are SWEREF99TM**, not WGS84 (`sampleSiteCoordinateN/E` +
-   `sampleSiteCoordinateSystem`). They must be reprojected to WGS84 before the
-   coordinate join is meaningful (reprojection is still TODO in `import-mvm.ts`).
-2. **Chemistry values are nested** in `observations[]` keyed by `propertyCode` /
-   `propertyAbbrevName`, not flat `absorbans420`/`fargtal`/`siktdjupM` keys.
-   Confirm the exact property codes and wire them into `MVM_PROPERTY_MATCH`:
-   `curl "$MVM_BASE_URL/full-samples/query?token=$MVM_TICKET" | jq '.[0].observations[].propertyAbbrevName'`
+Confirmed facts:
+
+1. **Property codes** (nested in each sample's `observations[]`): `Abs_F420`
+   (absorbance-420 — unit is per 5 cm, so it is multiplied **×20** to per-metre),
+   `Farg` (färgtal), `Siktdjup` (Secchi sight depth). These are wired into
+   `MVM_PROPERTY_MATCH` in `import-mvm.ts`.
+2. **Coordinates are SWEREF99TM** (`sampleSiteCoordinateN/E`) and are reprojected
+   to WGS84 via `src/lib/geo/sweref99.ts`. The station→lake join is on
+   `stationEUID` (EU WFD code → `lakes.id`) with a reprojected-coordinate fallback.
+
+⚠️ **Memory caveat:** the ~500 MB response is parsed in memory. If it OOMs, set an
+`MVM_MAX_SAMPLES` cap and/or raise the heap with
+`NODE_OPTIONS=--max-old-space-size=...`. A streaming parser is deferred.
 
 The system degrades gracefully: `colourFor()` in `src/lib/water/colour.ts`
 returns `null` when no `water_colour` row exists for a lake.
@@ -353,13 +348,14 @@ returns `null` when no `water_colour` row exists for a lake.
 | `/sample-sites/ids`   | sample-site ids (filterable) |
 | `/sample-sites/{id}`  | one `SampleSite` (coordinates + CRS) |
 | `/full-samples/query` | samples WITH nested `observations[]` |
-| `/all-full-samples/chemistry` | pre-generated bulk chemistry export |
+| `/all-full-samples/chemistry` | pre-generated bulk chemistry export (used by this ETL) |
 
 ## Prerequisites
 
 - `DATABASE_URL` environment variable pointing to the target Postgres database.
 - `MVM_TICKET` set to your Miljödata-MVM public ticket (passed as `token`).
 - (Optional) `MVM_BASE_URL` to override the verified default base path.
+- (Optional) `MVM_MAX_SAMPLES` to cap the number of samples parsed (memory guard).
 
 ## Obtaining the MVM ticket
 
@@ -372,17 +368,22 @@ returns `null` when no `water_colour` row exists for a lake.
 ## Running
 
 ```bash
-MVM_TICKET="your-ticket-here" DATABASE_URL="postgres://..." pnpm etl:mvm
+pnpm etl:mvm
 ```
 
-The script is **idempotent** — upserts on `lake_id` PK (`ON CONFLICT DO
-UPDATE`) so re-runs are safe.
+`DATABASE_URL` and `MVM_TICKET` are read from the repo's `.env`. If the ~500 MB
+response OOMs, run with `NODE_OPTIONS=--max-old-space-size=4096 pnpm etl:mvm` or
+set `MVM_MAX_SAMPLES` in `.env`. The script is **idempotent** — upserts on
+`lake_id` PK (`ON CONFLICT DO UPDATE`) so re-runs are safe.
 
 ## Import-time join (ADR-0002)
 
-The MVM API returns sample stations identified by coordinates, not by EU WFD
-lake id.  The script joins each station to a lake **at import time** using
-`stationMatchesLake` (`src/lib/water/station-match.ts`):
+The script joins each MVM station to a lake **at import time**. The primary key is
+`stationEUID` (EU WFD code → `lakes.id`, a direct match). For stations without a
+usable EUID it falls back to a coordinate match: the SWEREF99TM
+`sampleSiteCoordinateN/E` are reprojected to WGS84 (via `src/lib/geo/sweref99.ts`)
+and compared against lake centroids with `stationMatchesLake`
+(`src/lib/water/station-match.ts`):
 
 | Distance from lake centroid      | Confidence |
 | -------------------------------- | ---------- |
@@ -441,8 +442,10 @@ No authentication ticket is required (publicly available data, spec §6).
 ## Running
 
 ```bash
-DATABASE_URL="postgres://..." pnpm etl:aqua
+pnpm etl:aqua
 ```
+
+`DATABASE_URL` is read from the repo's `.env`.
 
 The script is **idempotent** — upserts on `lake_id` PK (`ON CONFLICT DO
 UPDATE`) so re-runs are safe.  Species are merged across all matching records
@@ -472,13 +475,12 @@ description: <https://dvfisk.slu.se/assets/NORS_databeskrivning.pdf> (section
 
 ## Import-time join (ADR-0002)
 
-Each aggregated record already carries `eU_CD` (the lake PK) **directly**, so no
-coordinate join is required for the ~94% of rows that have it. To keep issue #3
-scoped to URLs/params/field-shapes, each record is currently adapted into the
-existing station+catch maps and the coordinate join loop is left **unchanged**
-for issue #4 to restructure (join on `eU_CD` directly; fall back to the
-SWEREF99→WGS84-projected coordinate match only for blank-`eU_CD` rows). The
-loop uses `stationMatchesLake` (`src/lib/water/station-match.ts`):
+Each aggregated record already carries `eU_CD` (the lake PK) **directly**, so the
+~94% of rows that have it join on `eU_CD` with no coordinate math. For the
+blank-`eU_CD` rows (~6%), the fallback coordinate match now **reprojects the
+SWEREF99TM `sweref99N/E` to WGS84** (via `src/lib/geo/sweref99.ts`) before
+comparing against lake centroids with `stationMatchesLake`
+(`src/lib/water/station-match.ts`):
 
 | Distance from lake centroid      | Confidence |
 | -------------------------------- | ---------- |
@@ -486,10 +488,8 @@ loop uses `stationMatchesLake` (`src/lib/water/station-match.ts`):
 | > 200 m and ≤ equal-area radius  | `low`      |
 | > equal-area radius              | no match   |
 
-⚠️ **Until #4 lands, the coordinate join uses raw SWEREF99TM metres as lat/lon
-and will not match** — the eU_CD-direct join is the intended path. Species from
-multiple matching records for the same lake are merged and deduplicated by
-`normalizeSpecies` (trim, lower-case, dedupe).
+Species from multiple matching records for the same lake are merged and
+deduplicated by `normalizeSpecies` (trim, lower-case, dedupe).
 
 The runtime lookup `speciesFor()` is a pure table read with **no live SLU Aqua
 call**.

@@ -11,67 +11,87 @@
  */
 
 // ---------------------------------------------------------------------------
-// Source — operator must supply the URL.  FLAG (verified 2026-07-01): SMHI's
-// SVAR lake geometries are Lantmäteriet-derived and are NOT open data, so there
-// is NO open SVAR WFS/GeoJSON endpoint (SMHI publishes it as a viewing service
-// only).  Two viable sources instead:
+// Source — the VISS (Vatteninformationssystem Sverige) open water register.
+// VERIFIED live 2026-07-02 against the real API response.
 //
-//  (A) VISS — Vatteninformationssystem Sverige (Länsstyrelserna), the open
-//      register of ~37k water bodies WITH EU_CD codes.  RECOMMENDED.
-//      GET https://viss.lansstyrelsen.se/api?method=waters&watercategory=LW
-//          &coordinateformat=WGS84&format=json&apikey=<KEY>
-//      `coordinateformat=WGS84` satisfies the EPSG:4326 requirement directly
-//      (no SWEREF99TM reprojection needed).  Needs a free apikey (register at
-//      https://viss.lansstyrelsen.se/api).  FLAG: the VISS response field names
-//      differ from the GeoJSON mapper below and must be confirmed live with a
-//      key — see scripts/etl/README.md (SVAR section) before switching.
+// SMHI's SVAR lake geometries are Lantmäteriet-derived and are NOT open data,
+// so there is no open SVAR WFS.  VISS is the open register of ~7 300 lake
+// water-bodies (WaterCategory LW) keyed by EU_CD (the same code used as
+// lakes.id), published by Länsstyrelserna.  Requires a free apikey.
 //
-//  (B) A one-off SVAR GeoJSON export supplied as a local file:// path, mapped
-//      by mapFeatureToLake() below.  If exported in SWEREF99TM the CENTROID_N/E
-//      would be metres, not degrees — request WGS84/CRS84 (EPSG:4326).
+// Three VISS "methods" are used (each returns a flat JSON array):
+//   waters         — the lakes themselves (EU_CD, Name, area, Coordinates)
+//   municipalities — MunicipalityCode → Name + CountyCode
+//   counties       — CountyCode → Name
+// The two lookup methods resolve the numeric municipality codes the `waters`
+// response carries into human-readable municipality/county names (100% of the
+// 285 distinct lake municipality codes resolve).
 //
-// SVAR_WFS_URL accepts either an https URL or a file:// path.
+// Coordinates: the `waters` response carries a Coordinates[] with THREE formats
+// (SWEREF99, RT90, LatLong).  We pick Format === "LatLong" — that entry is
+// already WGS84 decimal degrees (XValue = lat, YValue = lon, decimal COMMA), so
+// NO SWEREF99TM→WGS84 reprojection is needed for the lakes table.
+//
+// VISS_API_URL defaults to the documented base; the apikey is read from
+// VISS_APIKEY and appended at fetch time so the secret never lives in a URL
+// constant or a log line.
 // ---------------------------------------------------------------------------
-const SVAR_WFS_URL =
-  process.env.SVAR_WFS_URL ??
-  "<TODO: VISS API URL (recommended) or file:// SVAR GeoJSON — see scripts/etl/README.md>";
+const VISS_API_BASE =
+  process.env.VISS_API_URL ?? "https://viss.lansstyrelsen.se/api";
 
 const BATCH_SIZE = 1_000;
 
 // ---------------------------------------------------------------------------
-// Type definitions — WFS feature shape as returned by SMHI Vattenwebb SVAR.
-// Field names follow the SVAR attribute table documented at:
-//   https://vattenwebb.smhi.se/  (Ytvattenförekomster / MS_WB_AREA layer)
+// Type definitions — VISS response shapes, VERIFIED against the live API.
 // ---------------------------------------------------------------------------
 
-/** Raw GeoJSON properties for one SVAR water-body feature. */
-export interface SvarFeatureProperties {
-  /** EU WFD water-body code, e.g. "SE656250-138625". Used as the PK. */
-  MS_CD?: string;
-  /** Swedish name of the water body. May be absent for unnamed bodies. */
-  MS_NAME?: string;
-  /** Municipality name (kommunnamn). */
-  KOMMUNNAMN?: string;
-  /** County name (lännamn). */
-  LANNAMN?: string;
-  /**
-   * Centroid northing.  The dataset may deliver coordinates in SWEREF99TM
-   * (metres) or as WGS84 decimal degrees depending on the WFS request CRS.
-   * The script stores the raw values; callers must be aware of the CRS used.
-   */
-  CENTROID_N?: number;
-  /** Centroid easting (see CENTROID_N). */
-  CENTROID_E?: number;
-  /** Water body area in hectares. */
-  AREA_HA?: number;
+/** One coordinate triple from a VISS water's Coordinates[] array. */
+export interface VissCoordinate {
+  /** Northing / latitude, as a string with a DECIMAL COMMA. */
+  XValue: string;
+  /** Easting / longitude, as a string with a DECIMAL COMMA. */
+  YValue: string;
+  /** "SWEREF99" | "RT90" | "LatLong" — we only use "LatLong" (WGS84). */
+  Format: string;
 }
 
-export interface SvarFeature {
-  type: "Feature";
-  id?: string;
-  geometry: unknown;
-  properties: SvarFeatureProperties;
+/** One water body from VISS `method=waters&watercategory=LW`. */
+export interface VissWater {
+  /** EU WFD water-body code, e.g. "SE656250-138625". Used as the PK. */
+  EU_CD?: string;
+  /** Water-body name. May be absent/blank for unnamed bodies. */
+  Name?: string | null;
+  /** Surface area in KM² (NOT hectares — multiply by 100). */
+  SurfaceAreaKM2?: number | null;
+  /** Municipality codes this water body touches (first is used as primary). */
+  Municipalites?: string[] | null;
+  /** All coordinate formats for the centroid. */
+  Coordinates?: VissCoordinate[] | null;
 }
+
+/** One row from VISS `method=municipalities`. */
+export interface VissMunicipality {
+  MunicipalityCode: string;
+  Name: string;
+  CountyCode: string | null;
+}
+
+/** One row from VISS `method=counties`. */
+export interface VissCounty {
+  CountyCode: string;
+  Name: string;
+}
+
+/** Resolved code→name lookups, built once from the two lookup methods. */
+export interface VissLookups {
+  /** MunicipalityCode → { name, countyCode }. */
+  municipality: Map<string, { name: string; countyCode: string | null }>;
+  /** CountyCode → county name. */
+  county: Map<string, string>;
+}
+
+/** Fallback text when a municipality/county cannot be resolved (notNull cols). */
+const UNKNOWN_PLACE = "Okänd";
 
 /** Row shape matching the `lakes` Drizzle table. */
 export interface LakeRow {
@@ -85,49 +105,70 @@ export interface LakeRow {
 }
 
 // ---------------------------------------------------------------------------
-// Pure mapper — unit-tested in import-svar.test.ts
+// Pure helpers — unit-tested in import-svar.test.ts
 // ---------------------------------------------------------------------------
 
-/**
- * Map a single SVAR WFS feature to a `lakes` table row.
- *
- * Throws if any required property (MS_CD, KOMMUNNAMN, LANNAMN, CENTROID_N,
- * CENTROID_E, AREA_HA) is missing.
- */
-export function mapFeatureToLake(
-  feature: Pick<SvarFeature, "id" | "properties">,
-): LakeRow {
-  const p = feature.properties;
+/** Parse a VISS decimal-COMMA numeric string ("62,168…") to a number. */
+export function parseVissNumber(value: string | undefined | null): number {
+  if (value === undefined || value === null) return Number.NaN;
+  return Number.parseFloat(value.replace(",", "."));
+}
 
-  if (!p.MS_CD) {
-    throw new Error(
-      `SVAR feature is missing required MS_CD (water-body code). Feature id: ${feature.id ?? "unknown"}`,
-    );
+/**
+ * Pick the WGS84 (LatLong) centroid from a VISS Coordinates[] array.
+ * Returns { lat, lon } or null when no LatLong entry / unparseable.
+ * XValue is latitude, YValue is longitude (VISS convention).
+ */
+export function pickLatLong(
+  coordinates: VissCoordinate[] | null | undefined,
+): { lat: number; lon: number } | null {
+  const ll = (coordinates ?? []).find((c) => c.Format === "LatLong");
+  if (!ll) return null;
+  const lat = parseVissNumber(ll.XValue);
+  const lon = parseVissNumber(ll.YValue);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  return { lat, lon };
+}
+
+/**
+ * Map one VISS water body + the resolved code→name lookups to a `lakes` row.
+ *
+ * Returns null (skip, not throw) when the water body lacks the data the lakes
+ * table requires — no EU_CD, no LatLong centroid, or no area — so one bad row
+ * can't abort the whole seed.  Municipality/county fall back to "Okänd" when a
+ * code is absent or unresolved (the columns are notNull).
+ */
+export function mapWaterToLake(
+  water: VissWater,
+  lookups: VissLookups,
+): LakeRow | null {
+  const id = water.EU_CD?.trim();
+  if (!id) return null;
+
+  const coord = pickLatLong(water.Coordinates);
+  if (!coord) return null;
+
+  const areaKm2 = water.SurfaceAreaKM2;
+  if (areaKm2 === undefined || areaKm2 === null || !Number.isFinite(areaKm2)) {
+    return null;
   }
-  if (p.KOMMUNNAMN === undefined || p.KOMMUNNAMN === null) {
-    throw new Error(`Missing KOMMUNNAMN on feature ${p.MS_CD}`);
-  }
-  if (p.LANNAMN === undefined || p.LANNAMN === null) {
-    throw new Error(`Missing LANNAMN on feature ${p.MS_CD}`);
-  }
-  if (p.CENTROID_N === undefined || p.CENTROID_N === null) {
-    throw new Error(`Missing CENTROID_N on feature ${p.MS_CD}`);
-  }
-  if (p.CENTROID_E === undefined || p.CENTROID_E === null) {
-    throw new Error(`Missing CENTROID_E on feature ${p.MS_CD}`);
-  }
-  if (p.AREA_HA === undefined || p.AREA_HA === null) {
-    throw new Error(`Missing AREA_HA on feature ${p.MS_CD}`);
-  }
+
+  // Resolve the primary municipality code → name + county name.
+  const muniCode = water.Municipalites?.[0];
+  const muni = muniCode ? lookups.municipality.get(muniCode) : undefined;
+  const municipality = muni?.name ?? UNKNOWN_PLACE;
+  const county =
+    (muni?.countyCode ? lookups.county.get(muni.countyCode) : undefined) ??
+    UNKNOWN_PLACE;
 
   return {
-    id: p.MS_CD,
-    name: p.MS_NAME?.trim() || null,
-    municipality: p.KOMMUNNAMN,
-    county: p.LANNAMN,
-    lat: p.CENTROID_N,
-    lon: p.CENTROID_E,
-    areaHa: p.AREA_HA,
+    id,
+    name: water.Name?.trim() || null,
+    municipality,
+    county,
+    lat: coord.lat,
+    lon: coord.lon,
+    areaHa: areaKm2 * 100, // km² → hectares
   };
 }
 
@@ -135,14 +176,34 @@ export function mapFeatureToLake(
 // Script body — only runs when executed directly (not when imported by tests)
 // ---------------------------------------------------------------------------
 
+/**
+ * Fetch one VISS method as JSON.  The apikey is appended here (never stored in
+ * a URL constant), and the logged URL is redacted so the key can't leak.
+ */
+async function fetchViss<T>(
+  method: string,
+  extraParams: string,
+  apikey: string,
+): Promise<T> {
+  const url = `${VISS_API_BASE}?method=${method}${extraParams}&format=json&apikey=${encodeURIComponent(apikey)}`;
+  const redacted = url.replace(/apikey=[^&]*/i, "apikey=***");
+  console.log(`Fetching VISS ${method} from: ${redacted}`);
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(
+      `Failed to fetch VISS ${method}: ${res.status} ${res.statusText}`,
+    );
+  }
+  return (await res.json()) as T;
+}
+
 async function main(): Promise<void> {
-  // Validate URL placeholder
-  if (SVAR_WFS_URL.startsWith("<TODO")) {
+  const apikey = process.env.VISS_APIKEY;
+  if (!apikey) {
     console.error(
-      "ERROR: SVAR_WFS_URL is not configured.\n" +
-        "Set the SVAR_WFS_URL environment variable to the SMHI Vattenwebb WFS\n" +
-        "download URL (or a local file:// path to a downloaded GeoJSON file).\n" +
-        "See scripts/etl/README.md for details.",
+      "ERROR: VISS_APIKEY is not set.\n" +
+        "Register for a free VISS apikey at https://viss.lansstyrelsen.se/api\n" +
+        "and export it as VISS_APIKEY.  See scripts/etl/README.md (SVAR section).",
     );
     process.exit(1);
   }
@@ -162,45 +223,51 @@ async function main(): Promise<void> {
   const pg = postgres(databaseUrl);
   const db = drizzle(pg);
 
-  console.log(`Fetching SVAR dataset from: ${SVAR_WFS_URL}`);
-  const res = await fetch(SVAR_WFS_URL);
-  if (!res.ok) {
-    throw new Error(`Failed to fetch dataset: ${res.status} ${res.statusText}`);
-  }
-
-  const geojson = (await res.json()) as {
-    type: string;
-    features: SvarFeature[];
+  // 1. Fetch the two lookup tables (municipalities, counties) and build maps.
+  const municipalities = await fetchViss<VissMunicipality[]>(
+    "municipalities",
+    "",
+    apikey,
+  );
+  const counties = await fetchViss<VissCounty[]>("counties", "", apikey);
+  const lookups: VissLookups = {
+    municipality: new Map(
+      municipalities.map((m) => [
+        m.MunicipalityCode,
+        { name: m.Name, countyCode: m.CountyCode },
+      ]),
+    ),
+    county: new Map(counties.map((c) => [c.CountyCode, c.Name])),
   };
+  console.log(
+    `Loaded ${lookups.municipality.size} municipalities, ${lookups.county.size} counties.`,
+  );
 
-  // H11: drop the unused `geometry` from each feature immediately after parse.
-  // mapFeatureToLake only reads `properties`; retaining the full polygon
-  // geometry for ~100k features held hundreds of MB for nothing.  We keep only
-  // the properties we map.  [scope] full streaming-parse of the response is a
-  // larger rework — [~] deferred: stream-parse rework.
-  const features: Array<Pick<SvarFeature, "id" | "properties">> = (
-    geojson.features ?? []
-  ).map((f) => ({ id: f.id, properties: f.properties }));
-  console.log(`Fetched ${features.length} features.`);
+  // 2. Fetch the lake water bodies (WaterCategory LW).
+  const waters = await fetchViss<VissWater[]>(
+    "waters",
+    "&watercategory=LW",
+    apikey,
+  );
+  console.log(`Fetched ${waters.length} water bodies.`);
 
   let imported = 0;
   let unnamed = 0;
   let errors = 0;
 
   // Process in batches
-  for (let i = 0; i < features.length; i += BATCH_SIZE) {
-    const batch = features.slice(i, i + BATCH_SIZE);
+  for (let i = 0; i < waters.length; i += BATCH_SIZE) {
+    const batch = waters.slice(i, i + BATCH_SIZE);
     const rows: LakeRow[] = [];
 
-    for (const feature of batch) {
-      try {
-        const row = mapFeatureToLake(feature);
-        rows.push(row);
-        if (row.name === null) unnamed++;
-      } catch (err) {
+    for (const water of batch) {
+      const row = mapWaterToLake(water, lookups);
+      if (row === null) {
         errors++;
-        console.warn(`Skipping feature: ${(err as Error).message}`);
+        continue;
       }
+      rows.push(row);
+      if (row.name === null) unnamed++;
     }
 
     if (rows.length > 0) {
@@ -227,12 +294,12 @@ async function main(): Promise<void> {
     }
 
     console.log(
-      `  Progress: ${Math.min(i + BATCH_SIZE, features.length)} / ${features.length}`,
+      `  Progress: ${Math.min(i + BATCH_SIZE, waters.length)} / ${waters.length}`,
     );
   }
 
   console.log(
-    `\nDone. Imported: ${imported}, Unnamed: ${unnamed}, Skipped (errors): ${errors}`,
+    `\nDone. Imported: ${imported}, Unnamed: ${unnamed}, Skipped (no EU_CD/coord/area): ${errors}`,
   );
 
   await pg.end();

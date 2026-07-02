@@ -35,8 +35,8 @@
  * `stationMatchesLake` centroid match, which is now bounding-box pre-filtered
  * and memoized per station (see `joinStationToLake` in §6) so it is
  * O(fallback-rows × local-lakes) rather than O(rows × lakes).
- * TODO: blank-eU_CD coordinates are still SWEREF99TM metres, not WGS84 — the
- * fallback only matches once those are reprojected (see below).
+ * NORS coordinates are SWEREF99TM metres; they are reprojected to WGS84 via
+ * `sweref99ToWgs84` at adapt time (§3) so the coordinate fallback matches.
  *
  * ## Idempotency
  * Upserts on lake_id PK (ON CONFLICT DO UPDATE).  Re-runs are safe.
@@ -84,8 +84,8 @@ export interface NorsAggregatedRecord {
 /**
  * A survey station as consumed by the (unchanged) join loop below.  Populated
  * by adapting a NorsAggregatedRecord.  `euCd` is carried through so issue #4
- * can join directly on it; `lat`/`lon` are the raw SWEREF99 coordinates and
- * MUST be reprojected to WGS84 before the haversine join is meaningful (TODO).
+ * can join directly on it; `lat`/`lon` are WGS84 (reprojected from the NORS
+ * SWEREF99TM coordinates at adapt time) so the haversine fallback is meaningful.
  */
 export interface AquaStation {
   /** Station identifier — the NORS eU_CD (or a synthesized key when blank). */
@@ -94,9 +94,9 @@ export interface AquaStation {
   euCd?: string;
   /** Lake name. */
   name?: string;
-  /** SWEREF99TM northing (metres) — reproject to WGS84 lat before use. */
+  /** WGS84 latitude (reprojected from NORS SWEREF99TM at adapt time). */
   lat: number;
-  /** SWEREF99TM easting (metres) — reproject to WGS84 lon before use. */
+  /** WGS84 longitude (reprojected from NORS SWEREF99TM at adapt time). */
   lon: number;
 }
 
@@ -142,6 +142,7 @@ async function main(): Promise<void> {
   const { lakeSpecies, lakes } = await import("@/shared/db/schema");
   const { stationMatchesLake } = await import("@/lib/water/station-match");
   const { haversine } = await import("@/lib/geo/haversine");
+  const { sweref99ToWgs84 } = await import("@/lib/geo/sweref99");
   const { normalizeSpecies } = await import("@/lib/water/species");
 
   const pg = postgres(databaseUrl);
@@ -185,16 +186,22 @@ async function main(): Promise<void> {
     // A stable per-record station id: prefer eU_CD, else fall back to the row
     // index so blank-eU_CD rows still get a unique key for the coordinate join.
     const stationId = euCd || `nors-row-${i}`;
-    const lat = r.sweref99N;
-    const lon = r.sweref99E;
-    if (typeof lat !== "number" || typeof lon !== "number") continue;
+    // #4: NORS coordinates are SWEREF99TM metres — reproject to WGS84 so the
+    // blank-eU_CD coordinate fallback (haversine against the lake centroid)
+    // is meaningful.  eU_CD-direct rows ignore lat/lon, but a row with an eU_CD
+    // AND coordinates still benefits if the direct join misses the lakes table.
+    const north = r.sweref99N;
+    const east = r.sweref99E;
+    if (typeof north !== "number" || typeof east !== "number") continue;
+    const wgs = sweref99ToWgs84(north, east);
+    if (!wgs) continue;
 
     stations.push({
       stationId,
       euCd: euCd || undefined,
       name: r.sjö ?? undefined,
-      lat,
-      lon,
+      lat: wgs.lat,
+      lon: wgs.lon,
     });
 
     for (const species of (r.fångadeArter ?? "").split(",")) {

@@ -4,49 +4,53 @@
  *
  * Run:  pnpm etl:mvm
  *
- * ## Source — endpoints VERIFIED against the OpenAPI spec 2026-07-01
+ * ## Source — VERIFIED live 2026-07-02 (needs MVM_TICKET)
  * MVM exposes a REST v2 API documented at
  *   https://miljodata.slu.se/api/docs/index.html
- *   (spec: https://miljodata.slu.se/api/docs/mvm-api-v2/swagger.json)
  * Base path: https://miljodata.slu.se/api/observations-service/v2
  * The public ticket is passed as the query parameter `token` (NOT `ticket`).
- * Relevant endpoints (all GET):
- *   /sample-sites/ids        → list sample-site ids (filterable)
- *   /sample-sites/{id}        → one SampleSite (coordinates + CRS)
- *   /full-samples/query       → samples WITH observations (filterable)
- *   /full-samples/{id}        → one Sample with observations
- *   /all-full-samples/chemistry → pre-generated chemistry export (bulk)
  *
- * ## FLAG — structurally wired, live-verification pending (needs MVM_TICKET)
- * Two structural facts differ from the previous stub and could NOT be confirmed
- * live without a ticket; they are the main work remaining before a real run:
+ * We use the BULK chemistry export (the working path with a public ticket):
+ *   GET /all-full-samples/chemistry?token=<ticket>
+ * It takes ONLY `token` and returns a `{ numberOfSamples, samples[] }` envelope
+ * (~1.15M samples, ~500MB).  The filtered `/full-samples/query` endpoint requires
+ * filter params and returned `isAuthorized:false` with a public ticket, so the
+ * bulk export is what a real run uses.
  *
- * 1. Coordinates are SWEREF99TM, not WGS84.  SampleSite carries
- *    `sampleSiteCoordinateN/E` (or `X/Y`) plus `sampleSiteCoordinateSystem`.
- *    They MUST be reprojected to WGS84 before the haversine/stationMatchesLake
- *    join is meaningful.  (SWEREF99→WGS84 projection is still TODO — see below.)
+ * ## Real sample shape (VERIFIED — see __fixtures__/mvm-chemistry-sample.json)
+ * Each element of `samples[]` is FLAT: station info + observations are inline
+ * (there is NO separate SampleSite endpoint to join — the old two-endpoint model
+ * was wrong and has been removed).  Fields this ETL reads:
+ *   stationEUID            — EU WFD code, e.g. "SE639339-154122" → matches
+ *                            `lakes.id`.  JOIN DIRECTLY on this (like import-aqua
+ *                            joins on eU_CD); no haversine for rows that carry it.
+ *   stationCoordinateN/E   — SWEREF99TM northing/easting (metres).  Reprojected
+ *                            to WGS84 via `sweref99ToWgs84` for the coordinate
+ *                            fallback used by blank-EUID rows.
+ *   stationCoordinateSystem — CRS name, e.g. "SWEREF99 TM".
+ *   samplingDate           — "YYYY-MM-DD"; used to prefer more-recent samples
+ *                            when several map to one lake.
+ *   observations[]         — each has propertyCode / propertyAbbrevName /
+ *                            propertyName + observationValues[]; each value is a
+ *                            DECIMAL-COMMA string ("0,123") plus a `unit`.
  *
- * 2. Chemistry values are NESTED, not flat.  A Sample has an `observations[]`
- *    array of SampleObservation, each identified by a `propertyCode`/
- *    `propertyAbbrevName`, whose `observationValues[]` hold the `value`+`unit`.
- *    Absorbance-420 / färgtal / Secchi are therefore looked up BY PROPERTY CODE,
- *    not as top-level `absorbans420`/`fargtal`/`siktdjupM` keys.  The exact
- *    property codes must be read from GET /common (or a sample response) with a
- *    live ticket and wired into extractMvmSample() below.
- *    Verify command (needs a ticket):
- *      curl "https://miljodata.slu.se/api/observations-service/v2/full-samples/query?token=$MVM_TICKET" | jq '.[0].observations[].propertyAbbrevName'
+ * ## Confirmed property codes (propertyCode)
+ *   absorbans420 → "Abs_F420".  CRITICAL: its unit is "/5cm", NOT per-metre.
+ *     `deriveColour` expects A₄₂₀ in m⁻¹ (thresholds at > 0.1), so a /5cm value
+ *     must be multiplied by 20 to get per-metre (0,123 /5cm → 2.46 /m).  The ×20
+ *     is applied ONLY when the unit indicates a 5 cm path length (see
+ *     absToPerMetre()); other units are read as already per-metre.
+ *   färgtal      → "Farg".
+ *   Secchi       → "Siktdjup".
+ * matchesProperty() needles (abs_f420, färg, siktdjup) match these
+ * case-insensitively.
  *
  * ## Architecture (ADR-0002)
  * - The MVM ticket (MVM_TICKET env var) is used HERE, at import time only.
- * - The import-time join (station → lake) is performed by `stationMatchesLake`
- *   in `src/lib/water/station-match.ts`.
- * - The runtime path `src/lib/water/colour.ts#colourFor` is a pure table
- *   lookup — it does NOT import env.ts and never references MVM_TICKET.
- *
- * ## FLAG for issue #4 (station→lake join restructure)
- * The join loop below is left as-is for #4.  The MVM Sample/SampleSite also
- * expose `stationEUID` / `sampleSiteEUId` — if those carry the EU WFD code, #4
- * can join directly on `lakes.id` instead of the coordinate match.
+ * - Direct EUID join → `lakes.id`; coordinate fallback via `stationMatchesLake`
+ *   in `src/lib/water/station-match.ts` only for blank-EUID rows.
+ * - The runtime path `src/lib/water/colour.ts#colourFor` is a pure table lookup
+ *   — it does NOT import env.ts and never references MVM_TICKET.
  *
  * ## Idempotency
  * Upserts on lake_id PK (ON CONFLICT DO UPDATE).  Re-runs are safe.
@@ -57,15 +61,31 @@
  *   - fargtal > 30 mg Pt/L  → 'brown'; ≤ 30  → 'clear'
  * Threshold references: EEA humic classification and Naturvårdsverket
  * water colour guidelines for Swedish national lake monitoring.
+ *
+ * ## [~] Remaining caveat — 500MB single-response memory
+ * The bulk export is ~500MB / ~1.15M samples.  No streaming-JSON dependency is
+ * present (checked package.json: no stream-json / clarinet / oboe), so the
+ * default path does a plain `await res.json()`, which buffers the whole body and
+ * CAN OOM on a real run.  A `--limit N` flag / MVM_MAX_SAMPLES env caps the
+ * adapted sample count so a real run can be bounded until a streaming parser is
+ * added (do not add a new npm dep without checking it is already present).
  */
 
+// Pure geo util (no server-only deps) — safe to import at module scope so the
+// exported adaptMvmStation can reproject SWEREF99TM → WGS84.
+import { sweref99ToWgs84 } from "@/lib/geo/sweref99";
+
 // ---------------------------------------------------------------------------
-// MVM Observations API v2 — base path VERIFIED against the OpenAPI spec.
+// MVM Observations API v2 — base path VERIFIED live 2026-07-02.
 // The ticket is a query parameter named `token`.
 // ---------------------------------------------------------------------------
 const MVM_BASE_URL =
   process.env.MVM_BASE_URL ??
   "https://miljodata.slu.se/api/observations-service/v2";
+
+/** Bulk chemistry export path — takes ONLY `token`, returns {numberOfSamples,samples}. */
+const MVM_CHEMISTRY_PATH =
+  process.env.MVM_CHEMISTRY_PATH ?? "/all-full-samples/chemistry";
 
 /** H8: chunk size keeps each INSERT well under Postgres' 65,535 bind-param cap. */
 const BATCH_SIZE = 1_000;
@@ -82,51 +102,33 @@ function redactTicket(url: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Type definitions — raw MVM v2 shapes VERIFIED against the OpenAPI schema;
+// Type definitions — raw MVM v2 chemistry shapes VERIFIED live 2026-07-02;
 // MvmStation/MvmSample are the flattened shapes the join loop consumes.
 // ---------------------------------------------------------------------------
 
-/** A sample station consumed by the join loop (from a raw MvmRawSampleSite). */
+/** A sample station consumed by the coordinate-fallback join (from a flat sample). */
 export interface MvmStation {
-  /** MVM sample-site identifier (SampleSite.sampleSiteId, stringified). */
+  /** Station identifier — the stationEUID (used for the direct lakes.id join). */
   stationId: string;
-  /** Station name (SampleSite.preferredName). */
+  /** EU WFD water-body code, when present (direct join on `lakes.id`). */
+  euCd?: string;
+  /** Station name (stationName). */
   name?: string;
-  /**
-   * Latitude — MUST be WGS84 for the join.  MVM returns SWEREF99TM in
-   * `sampleSiteCoordinateN`; the fetch code is responsible for reprojection
-   * (still TODO — see the module FLAG).
-   */
+  /** WGS84 latitude (reprojected from stationCoordinateN at adapt time). */
   lat: number;
-  /** Longitude — WGS84 (reprojected from `sampleSiteCoordinateE`). */
+  /** WGS84 longitude (reprojected from stationCoordinateE at adapt time). */
   lon: number;
 }
 
-/**
- * Raw MVM v2 SampleSite (subset of fields this ETL reads).  VERIFIED against
- * the OpenAPI schema 2026-07-01.  Coordinates carry an explicit CRS.
- */
-export interface MvmRawSampleSite {
-  sampleSiteId?: number;
-  preferredName?: string | null;
-  /** EU WFD id, if populated (issue #4 could join directly on this). */
-  sampleSiteEUId?: string | null;
-  /** SWEREF99TM northing / easting. */
-  sampleSiteCoordinateN?: number | null;
-  sampleSiteCoordinateE?: number | null;
-  /** Coordinate reference system name, e.g. "SWEREF99TM". */
-  sampleSiteCoordinateSystem?: string | null;
-}
-
-/** One value inside a SampleObservation (VERIFIED — SampleObservationValue). */
+/** One value inside an observation (VERIFIED — decimal-comma `value` + `unit`). */
 export interface MvmRawObservationValue {
   value?: string | null;
   unit?: string | null;
 }
 
-/** One observed property on a sample (VERIFIED — SampleObservation). */
+/** One observed property on a sample (VERIFIED — propertyCode + observationValues). */
 export interface MvmRawObservation {
-  /** Machine property code (used to identify absorbance / färgtal / Secchi). */
+  /** Machine property code, e.g. "Abs_F420" / "Farg" / "Siktdjup". */
   propertyCode?: string | null;
   /** Abbreviated property name, e.g. "Abs_F 420". */
   propertyAbbrevName?: string | null;
@@ -134,24 +136,42 @@ export interface MvmRawObservation {
   observationValues?: MvmRawObservationValue[] | null;
 }
 
-/** Raw MVM v2 Sample (subset) — carries nested observations (VERIFIED). */
-export interface MvmRawSample {
-  sampleId?: number;
-  samplingSiteId?: number;
+/**
+ * One FLAT chemistry sample from the bulk export (subset of fields this ETL
+ * reads).  Station info + observations are inline — VERIFIED live 2026-07-02.
+ */
+export interface MvmRawChemistrySample {
+  /** EU WFD water-body code, e.g. "SE639339-154122" → `lakes.id`. */
+  stationEUID?: string | null;
+  stationName?: string | null;
+  /** SWEREF99TM northing (metres) — NOT WGS84 latitude. */
+  stationCoordinateN?: number | null;
+  /** SWEREF99TM easting (metres) — NOT WGS84 longitude. */
+  stationCoordinateE?: number | null;
+  /** Coordinate reference system name, e.g. "SWEREF99 TM". */
+  stationCoordinateSystem?: string | null;
+  /** Sampling date "YYYY-MM-DD" — prefer more-recent samples per lake. */
+  samplingDate?: string | null;
   observations?: MvmRawObservation[] | null;
 }
 
+/** Top-level bulk-export envelope (VERIFIED — numberOfSamples is a STRING). */
+export interface MvmChemistryResponse {
+  numberOfSamples?: string;
+  samples?: MvmRawChemistrySample[] | null;
+}
+
 /**
- * Flattened measurement extracted from a raw MvmRawSample by extractMvmSample()
- * — the shape the (unchanged) join loop and mapMvmSample consume.  The three
- * value fields are pulled out of the nested `observations[]` by property code.
+ * Flattened measurement extracted from a raw chemistry sample by
+ * extractMvmSample() — the shape the join loop and mapMvmSample consume.  The
+ * three value fields are pulled out of the nested `observations[]` by property.
  */
 export interface MvmSample {
-  /** Sample-site identifier — links back to MvmStation.stationId. */
+  /** Station identifier — links back to MvmStation.stationId (the stationEUID). */
   stationId: string;
   /**
-   * Absorbance at 420 nm (A₄₂₀, m⁻¹).
-   * Used by deriveColour; preferred over fargtal when present.
+   * Absorbance at 420 nm (A₄₂₀, m⁻¹) — already converted from the source /5cm
+   * unit where applicable (see absToPerMetre()).  Preferred over fargtal.
    */
   absorbans420?: number | null;
   /**
@@ -161,6 +181,8 @@ export interface MvmSample {
   fargtal?: number | null;
   /** Secchi sight depth in metres. */
   siktdjupM?: number | null;
+  /** Sampling date "YYYY-MM-DD" — used to prefer more-recent samples per lake. */
+  samplingDate?: string | null;
 }
 
 /** Row shape matching the `water_colour` Drizzle table. */
@@ -189,7 +211,6 @@ export function mapMvmSample(
     throw new Error("mapMvmSample: lakeId must not be empty.");
   }
 
-  // Lazy-require deriveColour to keep this file testable without heavy deps.
   const absorbans420 =
     sample.absorbans420 !== null ? sample.absorbans420 : undefined;
   const fargtal = sample.fargtal !== null ? sample.fargtal : undefined;
@@ -220,16 +241,17 @@ export function mapMvmSample(
 }
 
 // ---------------------------------------------------------------------------
-// Raw-response adapters — bridge the real MVM v2 shapes to the flat shapes the
-// (issue-#4-owned) join loop consumes.
+// Raw-response adapters — bridge the real MVM v2 chemistry shapes to the flat
+// shapes the join loop consumes.
 // ---------------------------------------------------------------------------
 
 /**
- * MVM property codes for the fields we read.  FLAG: these are the documented
- * abbreviations but the exact `propertyCode`/`propertyAbbrevName` strings MUST
- * be confirmed against a live response (needs MVM_TICKET) — see the module FLAG.
- * Matching is done case-insensitively against both propertyCode and
- * propertyAbbrevName so either identifier works.
+ * MVM property matchers for the fields we read.  VERIFIED against a live sample:
+ *   absorbans420 → propertyCode "Abs_F420"
+ *   färgtal      → propertyCode "Farg"
+ *   Secchi       → propertyCode "Siktdjup"
+ * Matching is case-insensitive against propertyCode + propertyAbbrevName +
+ * propertyName so either identifier works.
  */
 const MVM_PROPERTY_MATCH = {
   /** Absorbance, filtered, 420 nm (A₄₂₀). */
@@ -246,51 +268,95 @@ function matchesProperty(obs: MvmRawObservation, needles: readonly string[]) {
   return needles.some((n) => hay.includes(n));
 }
 
-function firstNumericValue(obs: MvmRawObservation): number | undefined {
+/**
+ * Parse the first finite numeric value of an observation, returning both the
+ * number and its raw unit string (the caller needs the unit to convert A₄₂₀).
+ * Values are decimal-comma strings ("0,123") — the comma is normalised to a dot.
+ */
+function firstNumericValue(
+  obs: MvmRawObservation,
+): { num: number; unit: string } | undefined {
   for (const v of obs.observationValues ?? []) {
     const num = Number.parseFloat((v.value ?? "").replace(",", "."));
-    if (Number.isFinite(num)) return num;
+    if (Number.isFinite(num)) return { num, unit: (v.unit ?? "").trim() };
   }
   return undefined;
 }
 
 /**
- * Flatten one raw MVM Sample into the MvmSample the join loop consumes, pulling
- * absorbance / färgtal / Secchi out of the nested `observations[]` by property.
- * FLAG: verify MVM_PROPERTY_MATCH against a live response before a real run.
+ * Convert an absorbance-420 reading to per-metre (m⁻¹) for deriveColour.
+ *
+ * MVM reports A₄₂₀ over a fixed optical path length, and the bulk export's unit
+ * for this property is "/5cm" (absorbance measured through a 5 cm cuvette), NOT
+ * per-metre.  deriveColour thresholds A₄₂₀ at > 0.1 m⁻¹, so a /5cm value must be
+ * scaled to a 1 m path: 1 m / 0.05 m = ×20  (0.123 /5cm → 2.46 /m).
+ *
+ * The ×20 is applied ONLY when the unit indicates a 5 cm path (contains "5cm").
+ * A unit that is already per-metre ("/m", "abs/m", "1/m") is passed through
+ * unchanged.  Any other explicit path length ("/50mm" = 5 cm too, "/10cm", etc.)
+ * is normalised generically from its parsed path length; if the unit is unknown
+ * the value is returned as-is (documented risk — better than a wrong ×20).
  */
-export function extractMvmSample(raw: MvmRawSample): MvmSample {
+export function absToPerMetre(num: number, unit: string): number {
+  const u = unit.toLowerCase().replace(/\s+/g, "");
+  // Already per-metre — nothing to do.
+  if (/(^|\/)m$|abs\/m|1\/m|\bm-?1\b|m⁻¹/.test(u)) return num;
+  // Explicit "/5cm" (the verified MVM unit).
+  if (u.includes("5cm")) return num * 20;
+  // Generic "/<n>cm" or "/<n>mm" path length → scale to a 1 m path.
+  const cm = u.match(/\/(\d+(?:\.\d+)?)cm/);
+  if (cm) return num * (100 / Number.parseFloat(cm[1]));
+  const mm = u.match(/\/(\d+(?:\.\d+)?)mm/);
+  if (mm) return num * (1000 / Number.parseFloat(mm[1]));
+  // Unknown unit — pass through unchanged (see docstring).
+  return num;
+}
+
+/**
+ * Flatten one raw chemistry sample into the MvmSample the join loop consumes,
+ * pulling absorbance / färgtal / Secchi out of the nested `observations[]` by
+ * property.  The A₄₂₀ reading is converted from its /5cm unit to per-metre.
+ */
+export function extractMvmSample(raw: MvmRawChemistrySample): MvmSample {
   const out: MvmSample = {
-    stationId: String(raw.samplingSiteId ?? ""),
+    stationId: (raw.stationEUID ?? "").trim(),
+    samplingDate: raw.samplingDate ?? undefined,
   };
   for (const obs of raw.observations ?? []) {
     if (matchesProperty(obs, MVM_PROPERTY_MATCH.absorbans420)) {
-      out.absorbans420 = firstNumericValue(obs) ?? out.absorbans420;
+      const hit = firstNumericValue(obs);
+      if (hit) out.absorbans420 = absToPerMetre(hit.num, hit.unit);
     } else if (matchesProperty(obs, MVM_PROPERTY_MATCH.fargtal)) {
-      out.fargtal = firstNumericValue(obs) ?? out.fargtal;
+      const hit = firstNumericValue(obs);
+      if (hit) out.fargtal = hit.num;
     } else if (matchesProperty(obs, MVM_PROPERTY_MATCH.siktdjup)) {
-      out.siktdjupM = firstNumericValue(obs) ?? out.siktdjupM;
+      const hit = firstNumericValue(obs);
+      if (hit) out.siktdjupM = hit.num;
     }
   }
   return out;
 }
 
 /**
- * Convert a raw MVM SampleSite to the join-loop MvmStation.
- * FLAG: MVM returns SWEREF99TM (`sampleSiteCoordinateN/E`).  Reprojection to
- * WGS84 is still TODO — for now the raw SWEREF99 metres are passed through and
- * the coordinate join will NOT be meaningful until a projection is added (or
- * issue #4 switches to an EU-id join via `sampleSiteEUId`).
+ * Adapt one flat chemistry sample to the coordinate-fallback MvmStation.
+ * `stationId`/`euCd` are the stationEUID (for the direct lakes.id join); the
+ * SWEREF99TM `stationCoordinateN/E` are reprojected to WGS84 via
+ * `sweref99ToWgs84` so the haversine/stationMatchesLake fallback is meaningful.
+ * Returns null when coordinates are absent or non-finite.
  */
-export function adaptMvmStation(raw: MvmRawSampleSite): MvmStation | null {
-  const lat = raw.sampleSiteCoordinateN;
-  const lon = raw.sampleSiteCoordinateE;
-  if (typeof lat !== "number" || typeof lon !== "number") return null;
+export function adaptMvmStation(raw: MvmRawChemistrySample): MvmStation | null {
+  const north = raw.stationCoordinateN;
+  const east = raw.stationCoordinateE;
+  if (typeof north !== "number" || typeof east !== "number") return null;
+  const wgs = sweref99ToWgs84(north, east);
+  if (!wgs) return null;
+  const euCd = (raw.stationEUID ?? "").trim();
   return {
-    stationId: String(raw.sampleSiteId ?? ""),
-    name: raw.preferredName ?? undefined,
-    lat, // TODO(#4): reproject SWEREF99TM → WGS84
-    lon,
+    stationId: euCd,
+    euCd: euCd || undefined,
+    name: raw.stationName ?? undefined,
+    lat: wgs.lat,
+    lon: wgs.lon,
   };
 }
 
@@ -324,13 +390,21 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // [~] 500MB memory guard: cap the number of adapted samples so a real run can
+  // be bounded until a streaming JSON parser is added.  --limit N (CLI) or
+  // MVM_MAX_SAMPLES (env); 0/absent = no cap.
+  const limitArg = process.argv
+    .find((a) => a.startsWith("--limit="))
+    ?.slice("--limit=".length);
+  const maxSamples =
+    Number.parseInt(limitArg ?? process.env.MVM_MAX_SAMPLES ?? "", 10) || 0;
+
   // Lazy imports — DB / server-only code never loaded by pure tests.
   const { drizzle } = await import("drizzle-orm/postgres-js");
   const { default: postgres } = await import("postgres");
   const { sql } = await import("drizzle-orm");
   const { waterColour, lakes } = await import("@/shared/db/schema");
   const { stationMatchesLake } = await import("@/lib/water/station-match");
-  const { deriveColour } = await import("@/lib/water/colour");
   const { haversine } = await import("@/lib/geo/haversine");
 
   const pg = postgres(databaseUrl);
@@ -348,70 +422,98 @@ async function main(): Promise<void> {
 
   console.log(`Loaded ${lakeCandidates.length} lakes from DB.`);
 
-  // ── 2. Fetch MVM sample sites ────────────────────────────────────────────
-  // FLAG: /sample-sites/ids returns ids only; a full site list may require
-  // iterating /sample-sites/{id}.  Wired against the documented query shape;
-  // confirm the exact response envelope with a live ticket (see module FLAG).
-  const stationsUrl = `${MVM_BASE_URL}/sample-sites/ids?token=${encodeURIComponent(ticket)}`;
-  console.log(`Fetching MVM sample sites from: ${redactTicket(stationsUrl)}`);
-
-  const stationsRes = await fetch(stationsUrl);
-  if (!stationsRes.ok) {
-    throw new Error(
-      `Failed to fetch MVM stations: ${stationsRes.status} ${stationsRes.statusText}`,
-    );
-  }
-  const rawSites = (await stationsRes.json()) as MvmRawSampleSite[];
-  const stations: MvmStation[] = rawSites.flatMap((s) => {
-    const adapted = adaptMvmStation(s);
-    return adapted ? [adapted] : [];
-  });
-  console.log(`Fetched ${stations.length} MVM stations.`);
-
-  // ── 3. Fetch MVM measurements (full samples with nested observations) ─────
-  const samplesUrl = `${MVM_BASE_URL}/full-samples/query?token=${encodeURIComponent(ticket)}`;
-  console.log(`Fetching MVM samples from: ${redactTicket(samplesUrl)}`);
+  // ── 2. Fetch the bulk chemistry export (single endpoint, flat samples) ─────
+  // [~] WARNING: this response is ~500MB / ~1.15M samples.  No streaming-JSON
+  // dependency is present (checked package.json), so `await res.json()` buffers
+  // the WHOLE body and CAN OOM.  Run node with a larger heap (e.g.
+  // NODE_OPTIONS=--max-old-space-size=8192) and/or use --limit / MVM_MAX_SAMPLES
+  // to cap the adapted sample count until a streaming parser is wired in.
+  const samplesUrl = `${MVM_BASE_URL}${MVM_CHEMISTRY_PATH}?token=${encodeURIComponent(ticket)}`;
+  console.log(
+    `Fetching MVM chemistry bulk export from: ${redactTicket(samplesUrl)}`,
+  );
 
   const samplesRes = await fetch(samplesUrl);
   if (!samplesRes.ok) {
     throw new Error(
-      `Failed to fetch MVM samples: ${samplesRes.status} ${samplesRes.statusText}`,
+      `Failed to fetch MVM chemistry export: ${samplesRes.status} ${samplesRes.statusText}`,
     );
   }
-  const rawSamples = (await samplesRes.json()) as MvmRawSample[];
-  // Flatten nested observations → the flat MvmSample the join loop consumes.
-  const samples: MvmSample[] = rawSamples.map(extractMvmSample);
-  console.log(`Fetched ${samples.length} MVM samples.`);
-
-  // ── 4. Index stations by id ───────────────────────────────────────────────
-  const stationMap = new Map<string, MvmStation>(
-    stations.map((s) => [s.stationId, s]),
+  const body = (await samplesRes.json()) as MvmChemistryResponse;
+  let rawSamples = body.samples ?? [];
+  console.log(
+    `Fetched ${body.numberOfSamples ?? rawSamples.length} MVM chemistry samples (envelope count).`,
   );
+  if (maxSamples > 0 && rawSamples.length > maxSamples) {
+    console.log(
+      `Capping to first ${maxSamples} samples (--limit/MVM_MAX_SAMPLES).`,
+    );
+    rawSamples = rawSamples.slice(0, maxSamples);
+  }
 
-  // ── 5. Join station → lake at import time (ADR-0002) ─────────────────────
+  // ── 3. Adapt + extract each flat sample ────────────────────────────────────
+  //   One flat sample = one station (by stationEUID) + one measurement.  The
+  //   station is only needed for the coordinate fallback (blank-EUID rows); the
+  //   extracted MvmSample carries the EUID directly for the O(1) join.
+  const samples: MvmSample[] = [];
+  const stationMap = new Map<string, MvmStation>();
+  for (const raw of rawSamples) {
+    const sample = extractMvmSample(raw);
+    samples.push(sample);
+    // Index the station for the coordinate fallback, keyed by stationId (EUID
+    // or the reprojected coordinates for blank-EUID rows).  A blank-EUID sample
+    // still gets a station keyed by "" — but those need coordinates to join, so
+    // give each blank-EUID row a synthetic key from its coordinates below.
+    const station = adaptMvmStation(raw);
+    if (station) {
+      const key =
+        station.stationId || `mvm-coord-${station.lat},${station.lon}`;
+      station.stationId = key;
+      sample.stationId = sample.stationId || key;
+      if (!stationMap.has(key)) stationMap.set(key, station);
+    }
+  }
+  console.log(`Adapted ${samples.length} MVM samples.`);
+
+  // ── 4. Join station → lake at import time (ADR-0002) ─────────────────────
   const rows: ColourRow[] = [];
   let skipped = 0;
   let noMatch = 0;
 
-  // Best sample per lake: prefer high confidence and more-recent data.
-  // For this stub we keep the last-seen row per lakeId (operator can refine).
-  const bestByLake = new Map<string, ColourRow>();
+  // Best sample per lake: prefer high confidence, then the more-recent
+  // samplingDate (chemistry time-series often has many samples per lake).
+  const bestByLake = new Map<
+    string,
+    { row: ColourRow; samplingDate: string }
+  >();
 
-  // C2: memoize the station→lake match per UNIQUE stationId.  The previous
-  // code re-ran the full O(lakes) scan + haversine for EVERY sample row, so a
-  // station with N time-series samples was re-joined N times → effectively
-  // O(samples × lakes).  Memoizing collapses it to O(stations × lakes).  A
-  // coarse bounding-box pre-filter (BBOX_DEG) skips far-away lakes before the
-  // haversine so each station→lake join is near-O(local lakes).
-  // [scope] memo + bbox pre-filter only; a full PostGIS spatial index is
-  // deferred.  [~] deferred: PostGIS spatial join.
-  type StationMatch = { lakeId: string; confidence: "high" | "low" } | null;
-  const matchByStation = new Map<string, StationMatch>();
+  // Two-tier join, mirroring import-aqua.ts §6:
+  //   (a) DIRECT — samples carrying `stationEUID` join straight on `lakes.id` in
+  //       O(1), high confidence, no haversine.
+  //   (b) COORDINATE FALLBACK — blank-EUID rows fall through to the centroid
+  //       join, with a bounding-box pre-filter + per-station memo so it is
+  //       O(fallback-stations × local-lakes).  [~] deferred: PostGIS spatial join.
+  const lakeById = new Map(lakeCandidates.map((lake) => [lake.id, lake]));
 
   /** ~degrees of latitude per km; lakes farther than the area radius can't match. */
   const BBOX_DEG = 0.6; // ~66 km half-window — generous vs largest area radii
 
-  function joinStationToLake(station: MvmStation): StationMatch {
+  type StationMatch = { lakeId: string; confidence: "high" | "low" } | null;
+  const matchByStation = new Map<string, StationMatch>();
+
+  function joinToLake(sample: MvmSample): StationMatch {
+    // (a) Direct EUID join — no coordinate math when the lake PK is present.
+    const euCd = sample.stationId;
+    if (euCd) {
+      const lake = lakeById.get(euCd);
+      if (lake) return { lakeId: lake.id, confidence: "high" };
+      // EUID present but not in our lakes table → fall through to coordinates.
+    }
+
+    // (b) Coordinate fallback (needs a station with reprojected coordinates).
+    const station = stationMap.get(sample.stationId);
+    if (!station) return null;
+
     const cached = matchByStation.get(station.stationId);
     if (cached !== undefined) return cached;
 
@@ -462,45 +564,15 @@ async function main(): Promise<void> {
   }
 
   for (const sample of samples) {
-    const station = stationMap.get(sample.stationId);
-    if (!station) {
-      skipped++;
-      continue;
-    }
-
-    const matched = joinStationToLake(station);
+    const matched = joinToLake(sample);
     if (matched === null) {
       noMatch++;
       continue;
     }
-    const bestLakeId = matched.lakeId;
-    const bestConfidence = matched.confidence;
 
     let row: ColourRow;
     try {
-      const absorbans420 =
-        sample.absorbans420 !== null && sample.absorbans420 !== undefined
-          ? sample.absorbans420
-          : undefined;
-      const fargtal =
-        sample.fargtal !== null && sample.fargtal !== undefined
-          ? sample.fargtal
-          : undefined;
-
-      const colour = deriveColour({ absorbans420, fargtal });
-      const sightDepthM =
-        sample.siktdjupM !== undefined &&
-        sample.siktdjupM !== null &&
-        Number.isFinite(sample.siktdjupM)
-          ? sample.siktdjupM
-          : null;
-
-      row = {
-        lakeId: bestLakeId,
-        colour,
-        sightDepthM,
-        confidence: bestConfidence,
-      };
+      row = mapMvmSample(sample, matched.lakeId, matched.confidence);
     } catch (err) {
       skipped++;
       console.warn(
@@ -509,19 +581,23 @@ async function main(): Promise<void> {
       continue;
     }
 
-    // Keep high-confidence over low; otherwise last-seen wins.
-    const existing = bestByLake.get(bestLakeId);
-    if (
+    // Keep high-confidence over low; within the same confidence prefer the
+    // more-recent samplingDate (ISO "YYYY-MM-DD" sorts lexicographically).
+    const date = sample.samplingDate ?? "";
+    const existing = bestByLake.get(matched.lakeId);
+    const isBetter =
       !existing ||
-      (row.confidence === "high" && existing.confidence === "low")
-    ) {
-      bestByLake.set(bestLakeId, row);
+      (row.confidence === "high" && existing.row.confidence === "low") ||
+      (row.confidence === existing.row.confidence &&
+        date > existing.samplingDate);
+    if (isBetter) {
+      bestByLake.set(matched.lakeId, { row, samplingDate: date });
     }
   }
 
-  rows.push(...bestByLake.values());
+  for (const { row } of bestByLake.values()) rows.push(row);
 
-  // ── 6. Batch upsert (chunked) ──────────────────────────────────────────────
+  // ── 5. Batch upsert (chunked) ──────────────────────────────────────────────
   // H8: chunk the insert.  Postgres caps a statement at 65,535 bind params, so
   // a single INSERT of up to ~100k rows × 4 cols would throw at ~16k rows.
   // BATCH_SIZE keeps each statement well under the cap.

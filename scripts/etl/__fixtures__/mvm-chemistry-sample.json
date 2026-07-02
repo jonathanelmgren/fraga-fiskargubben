@@ -1,0 +1,26 @@
+{
+  "note": "real MVM v2 chemistry sample, trimmed to ETL-read fields (verified 2026-07-02)",
+  "sample": {
+    "stationEUID": "SE639339-154122",
+    "stationName": "Botorpströmmen, Brunnsö",
+    "stationCoordinateN": 6392208,
+    "stationCoordinateE": 589249,
+    "stationCoordinateSystem": "SWEREF99 TM",
+    "samplingDate": "2009-01-12",
+    "county": "Kalmar län",
+    "municipality": "Västervik",
+    "observations": [
+      {
+        "propertyCode": "Abs_F420",
+        "propertyAbbrevName": "Abs_F 420",
+        "propertyName": "Absorbans filtrerat (420 nm)",
+        "observationValues": [
+          {
+            "value": "0,123",
+            "unit": "/5cm"
+          }
+        ]
+      }
+    ]
+  }
+}
