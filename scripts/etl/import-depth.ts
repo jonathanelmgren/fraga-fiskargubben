@@ -184,14 +184,35 @@ async function main(): Promise<void> {
     throw new Error(`Failed to fetch dataset: ${res.status} ${res.statusText}`);
   }
 
-  const rows: DepthRow[] = [];
   let errors = 0;
   let skipped = 0;
 
+  // Dedupe by lakeId: NORS carries MULTIPLE records per lake (repeat surveys),
+  // so a raw insert would put the same lakeId twice in one batch and Postgres
+  // rejects that ("ON CONFLICT DO UPDATE cannot affect row a second time"). Keep
+  // the DEEPEST reading per lake (max maxDepthM; prefer a non-null meanDepthM).
+  const byLake = new Map<string, DepthRow>();
+  function keep(row: DepthRow): void {
+    const prev = byLake.get(row.lakeId);
+    if (!prev) {
+      byLake.set(row.lakeId, row);
+      return;
+    }
+    // Max of the two maxima; stays null only if BOTH are null.
+    const maxima = [prev.maxDepthM, row.maxDepthM].filter(
+      (d): d is number => d !== null && d !== undefined,
+    );
+    byLake.set(row.lakeId, {
+      lakeId: row.lakeId,
+      maxDepthM: maxima.length > 0 ? Math.max(...maxima) : null,
+      meanDepthM: prev.meanDepthM ?? row.meanDepthM,
+    });
+  }
+
   if (DEPTH_SOURCE_IS_NORS) {
-    // Default path: the NORS aggregated report — one record per lake, keyed by
-    // eU_CD, with maxDjup.  mapNorsDepthRecord returns null for rows without a
-    // usable eU_CD + maxDjup (most NORS rows lack a depth value).
+    // Default path: the NORS aggregated report, keyed by eU_CD, with maxDjup.
+    // mapNorsDepthRecord returns null for rows without a usable eU_CD + maxDjup
+    // (most NORS rows lack a depth value).
     const records = (await res.json()) as NorsDepthRecord[];
     console.log(`Fetched ${records.length} NORS records.`);
     for (const record of records) {
@@ -200,7 +221,7 @@ async function main(): Promise<void> {
         skipped++;
         continue;
       }
-      rows.push(row);
+      keep(row);
     }
   } else {
     // Custom export path: records already match DepthRecord.
@@ -208,13 +229,15 @@ async function main(): Promise<void> {
     console.log(`Fetched ${records.length} records.`);
     for (const record of records) {
       try {
-        rows.push(mapDepthRecord(record));
+        keep(mapDepthRecord(record));
       } catch (err) {
         errors++;
         console.warn(`Skipping record: ${(err as Error).message}`);
       }
     }
   }
+
+  const rows: DepthRow[] = [...byLake.values()];
 
   // H8: chunk so a large INSERT can't exceed Postgres' 65,535 bind-param cap.
   for (let i = 0; i < rows.length; i += BATCH_SIZE) {
