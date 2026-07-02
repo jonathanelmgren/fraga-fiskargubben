@@ -453,50 +453,11 @@ async function main(): Promise<void> {
     );
   }
 
-  const samples: MvmSample[] = [];
-  const stationMap = new Map<string, MvmStation>();
-
-  // web ReadableStream (fetch body) → Node Readable → stream-json chain: parse
-  // JSON tokens → pick the `samples` array → assemble one { key, value } per
-  // element.  stream-json v3 composes via stream-chain's chain([...]); the chain
-  // is an async-iterable Node stream, so we consume it with for-await.
-  const nodeStream = Readable.fromWeb(
-    samplesRes.body as Parameters<typeof Readable.fromWeb>[0],
-  );
-  const pipeline = chain([
-    nodeStream,
-    parser(),
-    pick({ filter: "samples" }),
-    streamArray(),
-  ]);
-
-  let seen = 0;
-  for await (const { value } of pipeline as AsyncIterable<{
-    value: MvmRawChemistrySample;
-  }>) {
-    const sample = extractMvmSample(value);
-    samples.push(sample);
-    // Index the station for the coordinate fallback, keyed by stationId (EUID or
-    // the reprojected coordinates for blank-EUID rows).
-    const station = adaptMvmStation(value);
-    if (station) {
-      const key =
-        station.stationId || `mvm-coord-${station.lat},${station.lon}`;
-      station.stationId = key;
-      sample.stationId = sample.stationId || key;
-      if (!stationMap.has(key)) stationMap.set(key, station);
-    }
-    seen++;
-    if (maxSamples > 0 && seen >= maxSamples) {
-      console.log(`Stopping early at ${maxSamples} samples (--limit).`);
-      nodeStream.destroy();
-      break;
-    }
-  }
-  console.log(`Adapted ${samples.length} MVM samples (streamed).`);
-
-  // ── 4. Join station → lake at import time (ADR-0002) ─────────────────────
-  const rows: ColourRow[] = [];
+  // ── 4. Stream + join incrementally (ADR-0002) ────────────────────────────
+  // MEMORY: with ~1.15M samples, accumulating them all before joining OOMs
+  // (~4GB). Instead we join each sample AS IT STREAMS and keep only the reduced
+  // results: bestByLake (one row per lake, ~≤7k) and the per-station match memo.
+  // Nothing sample-sized is retained.
   let skipped = 0;
   let noMatch = 0;
 
@@ -519,9 +480,15 @@ async function main(): Promise<void> {
   const BBOX_DEG = 0.6; // ~66 km half-window — generous vs largest area radii
 
   type StationMatch = { lakeId: string; confidence: "high" | "low" } | null;
+  // Memoized by station key so repeat samples at one station skip the O(lakes)
+  // scan. Bounded by distinct stations, not sample count.
   const matchByStation = new Map<string, StationMatch>();
 
-  function joinToLake(sample: MvmSample): StationMatch {
+  /** Join one adapted sample + its (optional) station to a lake. */
+  function joinToLake(
+    sample: MvmSample,
+    station: MvmStation | null,
+  ): StationMatch {
     // (a) Direct EUID join — no coordinate math when the lake PK is present.
     const euCd = sample.stationId;
     if (euCd) {
@@ -531,7 +498,6 @@ async function main(): Promise<void> {
     }
 
     // (b) Coordinate fallback (needs a station with reprojected coordinates).
-    const station = stationMap.get(sample.stationId);
     if (!station) return null;
 
     const cached = matchByStation.get(station.stationId);
@@ -583,13 +549,11 @@ async function main(): Promise<void> {
     return result;
   }
 
-  for (const sample of samples) {
-    const matched = joinToLake(sample);
-    if (matched === null) {
-      noMatch++;
-      continue;
-    }
-
+  /** Reduce one joined sample into bestByLake (high confidence, then recency). */
+  function accumulate(
+    sample: MvmSample,
+    matched: { lakeId: string; confidence: "high" | "low" },
+  ): void {
     let row: ColourRow;
     try {
       row = mapMvmSample(sample, matched.lakeId, matched.confidence);
@@ -598,9 +562,8 @@ async function main(): Promise<void> {
       console.warn(
         `Skipping sample for station ${sample.stationId}: ${(err as Error).message}`,
       );
-      continue;
+      return;
     }
-
     // Keep high-confidence over low; within the same confidence prefer the
     // more-recent samplingDate (ISO "YYYY-MM-DD" sorts lexicographically).
     const date = sample.samplingDate ?? "";
@@ -615,7 +578,55 @@ async function main(): Promise<void> {
     }
   }
 
-  for (const { row } of bestByLake.values()) rows.push(row);
+  // web ReadableStream (fetch body) → Node Readable → stream-json chain: parse
+  // JSON tokens → pick the `samples` array → assemble one { key, value } per
+  // element.  stream-json v3 composes via stream-chain's chain([...]); the chain
+  // is an async-iterable Node stream, so we consume it with for-await.
+  const nodeStream = Readable.fromWeb(
+    samplesRes.body as Parameters<typeof Readable.fromWeb>[0],
+  );
+  const pipeline = chain([
+    nodeStream,
+    parser(),
+    pick({ filter: "samples" }),
+    streamArray(),
+  ]);
+
+  let seen = 0;
+  for await (const { value } of pipeline as AsyncIterable<{
+    value: MvmRawChemistrySample;
+  }>) {
+    const sample = extractMvmSample(value);
+    // Reproject the station coordinates for the fallback; key blank-EUID rows by
+    // their coordinates so repeat samples share one match. Not retained past the
+    // join.
+    const station = adaptMvmStation(value);
+    if (station) {
+      const key =
+        station.stationId || `mvm-coord-${station.lat},${station.lon}`;
+      station.stationId = key;
+      sample.stationId = sample.stationId || key;
+    }
+
+    const matched = joinToLake(sample, station);
+    if (matched === null) {
+      noMatch++;
+    } else {
+      accumulate(sample, matched);
+    }
+
+    seen++;
+    if (maxSamples > 0 && seen >= maxSamples) {
+      console.log(`Stopping early at ${maxSamples} samples (--limit).`);
+      nodeStream.destroy();
+      break;
+    }
+  }
+  console.log(
+    `Joined ${seen} MVM samples (streamed); ${bestByLake.size} lakes.`,
+  );
+
+  const rows: ColourRow[] = [...bestByLake.values()].map((v) => v.row);
 
   // ── 5. Batch upsert (chunked) ──────────────────────────────────────────────
   // H8: chunk the insert.  Postgres caps a statement at 65,535 bind params, so

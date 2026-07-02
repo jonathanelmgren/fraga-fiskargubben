@@ -15,31 +15,10 @@
 
 import "server-only";
 
-// ────────────────────────────────────────────────────────────────────────────
-// Pure mapper — unit-testable without DB or network
-// ────────────────────────────────────────────────────────────────────────────
-
-/**
- * Normalize a raw species list:
- *  - Trim surrounding whitespace.
- *  - Convert to lower case.
- *  - Filter out blank / whitespace-only entries.
- *  - Deduplicate (preserving first-occurrence order).
- */
-export function normalizeSpecies(rawList: string[]): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-
-  for (const raw of rawList) {
-    const normalized = raw.trim().toLowerCase();
-    if (normalized.length === 0) continue;
-    if (seen.has(normalized)) continue;
-    seen.add(normalized);
-    result.push(normalized);
-  }
-
-  return result;
-}
+// normalizeSpecies is a pure helper living in a NON-server-only module so the
+// ETL (import-aqua.ts) can import it directly without tripping this file's
+// `server-only` guard. Re-exported here for existing runtime call sites.
+export { normalizeSpecies } from "./species-normalize";
 
 // ────────────────────────────────────────────────────────────────────────────
 // DB-backed lookup — server-only, NO SLU Aqua API reference
