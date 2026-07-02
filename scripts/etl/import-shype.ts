@@ -3,17 +3,30 @@
  *
  * Run:  pnpm etl:shype
  *
- * ## Status
- * STUB — the Vattenwebb S-HYPE export is not yet wired.  The script logs a
- * clear error and exits 1 if `SHYPE_URL` is not configured.  Once the export
- * URL is known, implement the mapper and remove the TODO guards.
+ * ## Status — STUB (no open bulk endpoint; FLAG verified 2026-07-01)
+ * SMHI Vattenwebb DOES publish S-HYPE modeled water temperature at the outlet
+ * of each sub-catchment, but only via the interactive "Modelldata per område"
+ * viewer (https://vattenwebb.smhi.se/modelarea/) as a per-area Excel/CSV
+ * download — there is NO documented open bulk REST/WFS endpoint for it
+ * (SMHI staff confirm the only API-available hydrology product today is water
+ * discharge, not water temperature).  So this remains a stub: the script exits
+ * 1 unless SHYPE_URL points at a manually-exported file.
  *
- * See scripts/etl/README.md (S-HYPE section) for dataset notes and the
- * placeholder URL pattern.
+ * Two further gaps to resolve before a real run:
+ *  1. JOIN KEY MISMATCH.  Vattenwebb keys these series by SUBID (sub-catchment
+ *     id), NOT the EU WFD code used as `lakes.id`.  A SUBID→EU_CD crosswalk is
+ *     required (mapRecordToWaterTemp assumes `lakeId` already matches lakes.id).
+ *  2. FORMAT.  The export is Excel/CSV, not JSON — the fetch below still assumes
+ *     JSON; add a parser (or pre-convert to the ShypeRecord JSON shape).
+ *
+ * The rest of the system degrades gracefully: `waterTempFor()` falls back to the
+ * code-computed estimate when no `water_temp` row exists.
+ *
+ * See scripts/etl/README.md (S-HYPE section) for dataset notes.
  *
  * ## Idempotency
- * When wired, the script should upsert on `lake_id` PK (ON CONFLICT DO UPDATE)
- * so re-runs are safe.
+ * When wired, the script upserts on `lake_id` PK (ON CONFLICT DO UPDATE) so
+ * re-runs are safe.
  *
  * ## Architecture
  * Per ADR-0002: ETL runs once (or on-demand by an operator), never at request
@@ -22,12 +35,14 @@
  */
 
 // ---------------------------------------------------------------------------
-// URL placeholder — operator must supply the real download URL.
-// See scripts/etl/README.md (S-HYPE section) for the Vattenwebb export path.
+// Source — no open bulk endpoint (see the FLAG above).  Operator must supply a
+// file:// path to a manually-exported S-HYPE water-temperature file, converted
+// to a JSON array of ShypeRecord (with lakeId already mapped from SUBID to the
+// EU WFD code).  See scripts/etl/README.md (S-HYPE section).
 // ---------------------------------------------------------------------------
 const SHYPE_URL =
   process.env.SHYPE_URL ??
-  "<TODO: SMHI Vattenwebb S-HYPE sub-catchment water-temperature export URL — see scripts/etl/README.md>";
+  "<TODO: file:// path to a manual S-HYPE water-temp export — see scripts/etl/README.md>";
 
 /** H8: chunk size keeps each INSERT well under Postgres' 65,535 bind-param cap. */
 const BATCH_SIZE = 1_000;

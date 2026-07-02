@@ -11,12 +11,30 @@
  */
 
 // ---------------------------------------------------------------------------
-// URL placeholder — operator must supply the real download URL (or a path to
-// a locally-downloaded GeoJSON file).  See scripts/etl/README.md.
+// Source — operator must supply the URL.  FLAG (verified 2026-07-01): SMHI's
+// SVAR lake geometries are Lantmäteriet-derived and are NOT open data, so there
+// is NO open SVAR WFS/GeoJSON endpoint (SMHI publishes it as a viewing service
+// only).  Two viable sources instead:
+//
+//  (A) VISS — Vatteninformationssystem Sverige (Länsstyrelserna), the open
+//      register of ~37k water bodies WITH EU_CD codes.  RECOMMENDED.
+//      GET https://viss.lansstyrelsen.se/api?method=waters&watercategory=LW
+//          &coordinateformat=WGS84&format=json&apikey=<KEY>
+//      `coordinateformat=WGS84` satisfies the EPSG:4326 requirement directly
+//      (no SWEREF99TM reprojection needed).  Needs a free apikey (register at
+//      https://viss.lansstyrelsen.se/api).  FLAG: the VISS response field names
+//      differ from the GeoJSON mapper below and must be confirmed live with a
+//      key — see scripts/etl/README.md (SVAR section) before switching.
+//
+//  (B) A one-off SVAR GeoJSON export supplied as a local file:// path, mapped
+//      by mapFeatureToLake() below.  If exported in SWEREF99TM the CENTROID_N/E
+//      would be metres, not degrees — request WGS84/CRS84 (EPSG:4326).
+//
+// SVAR_WFS_URL accepts either an https URL or a file:// path.
 // ---------------------------------------------------------------------------
 const SVAR_WFS_URL =
   process.env.SVAR_WFS_URL ??
-  "<TODO: SMHI Vattenwebb SVAR WFS download URL — see scripts/etl/README.md>";
+  "<TODO: VISS API URL (recommended) or file:// SVAR GeoJSON — see scripts/etl/README.md>";
 
 const BATCH_SIZE = 1_000;
 

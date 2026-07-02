@@ -1,59 +1,107 @@
 /**
- * ETL stub: import fish species per lake from SLU Aqua / Sötebasen
- * (test-fishing / provfiske) data.
+ * ETL: import fish species per lake from SLU Aqua's NORS database
+ * (Nationellt Register över Sjöprovfisken — lake test-fishing / provfiske).
  *
  * Run:  pnpm etl:aqua
  *
- * ## Status
- * STUB — the SLU Aqua / Sötebasen API base URL and endpoint paths are
- * placeholders.  The script validates that AQUA_BASE_URL and DATABASE_URL are
- * set, then exits 1 with a clear error if endpoints have not been confirmed.
- * Replace the TODO constants once the actual endpoint paths are known.
+ * ## Source — VERIFIED live 2026-07-01
+ * SLU Aqua publishes NORS via the public data portal at https://dvfisk.slu.se.
+ * The Angular app calls a REST API under `api/v1/nors`; the per-lake aggregated
+ * report endpoint is:
+ *   GET https://dvfisk.slu.se/api/v1/nors/data-aggregerad/rapport
+ * Live-checked: returns a flat JSON array (~4250 lakes) of one record per lake.
+ * Field description: https://dvfisk.slu.se/assets/NORS_databeskrivning.pdf
+ * (section "Nätprovfiske aggregerade data").  Relevant fields (camelCased in
+ * the JSON response):
+ *   eU_CD        — EU WFD water-body code (matches `lakes.id`; blank " " for
+ *                  ~6% of rows that predate WFD delineation)
+ *   sjö          — lake name with SMHI id prefix, e.g. "624588-149908 Malmsjön"
+ *   fångadeArter — comma-separated species list, e.g. "Abborre,Gädda,Mört"
+ *   sweref99N/E  — SWEREF99TM coordinates (metres) — NOT WGS84
+ *   area         — area in hectares;  maxDjup — max depth (m);  höH — elevation
  *
- * ## No ticket / authentication required (per spec §6)
- * SLU Aqua / Sötebasen provfiske data is publicly available.  If the real
- * endpoint does require authentication, add an AQUA_TOKEN env var here and
- * document it in the README.
+ * No authentication ticket is required (public data, spec §6).
  *
  * ## Architecture (ADR-0002)
- * - The import-time join (station → lake) is performed by `stationMatchesLake`
- *   in `src/lib/water/station-match.ts`.  All external calls happen HERE; the
- *   runtime path `src/lib/water/species.ts#speciesFor` is a pure table lookup.
- * - Species per lake are collected from all survey records that matched, then
+ * - All external calls happen HERE; the runtime path
+ *   `src/lib/water/species.ts#speciesFor` is a pure table lookup.
+ * - Species per lake are collected from all matching survey records, then
  *   deduplicated and normalized via `normalizeSpecies` from `species.ts`.
+ *
+ * ## FLAG for issue #4 (station→lake join restructure)
+ * The NORS aggregated record already carries `eU_CD` (the lake PK) DIRECTLY, so
+ * the coordinate-based `stationMatchesLake` join below is NOT needed for the
+ * ~94% of rows that have an eU_CD — those can join straight on `lakes.id`.
+ * To keep this change scoped to URLs/params/field-shapes (issue #3), the
+ * aggregated record is adapted into the existing station+catch maps so the
+ * O(rows × lakes) join loop is left BYTE-IDENTICAL for #4 to restructure.
+ * #4 should: (a) join on eU_CD when present (high confidence, no haversine),
+ * (b) fall back to the SWEREF99→WGS84-projected coordinate match only for
+ * blank-eU_CD rows.  The SWEREF99→WGS84 projection is still TODO (see below).
  *
  * ## Idempotency
  * Upserts on lake_id PK (ON CONFLICT DO UPDATE).  Re-runs are safe.
  */
 
 // ---------------------------------------------------------------------------
-// Aqua / Sötebasen endpoint placeholders
-// Verify actual paths against https://www.slu.se/aqua/ and Sötebasen docs.
+// NORS aggregated-report endpoint — VERIFIED live 2026-07-01.
+// Base is the dvfisk portal; the aggregated per-lake report path is fixed.
 // ---------------------------------------------------------------------------
 const AQUA_BASE_URL =
-  process.env.AQUA_BASE_URL ??
-  "<TODO: Aqua base URL — e.g. https://sotebasen.slu.se/api/v1>";
+  process.env.AQUA_BASE_URL ?? "https://dvfisk.slu.se/api/v1/nors";
+
+/** Per-lake aggregated NORS report (one record per surveyed lake). */
+const AQUA_RAPPORT_PATH =
+  process.env.AQUA_RAPPORT_PATH ?? "/data-aggregerad/rapport";
 
 /** H8: chunk size keeps each INSERT well under Postgres' 65,535 bind-param cap. */
 const BATCH_SIZE = 1_000;
 
 // ---------------------------------------------------------------------------
-// Type definitions (shapes are placeholders — adapt to real Sötebasen response)
+// Type definitions — VERIFIED against the live NORS aggregated response.
 // ---------------------------------------------------------------------------
 
-/** A survey station from the Sötebasen stations endpoint. */
+/**
+ * One record from the NORS aggregated report
+ * (GET /data-aggregerad/rapport).  Keys are camelCased by the API from the
+ * Swedish column names documented in NORS_databeskrivning.pdf.  Only the
+ * fields this ETL consumes are typed; the record carries ~40 more.
+ */
+export interface NorsAggregatedRecord {
+  /** EU WFD water-body code (matches `lakes.id`); " " (blank) for some rows. */
+  eU_CD?: string | null;
+  /** Lake name with SMHI id prefix, e.g. "624588-149908 Malmsjön". */
+  sjö?: string | null;
+  /** Comma-separated species list, e.g. "Abborre,Gädda,Mört,Sarv". */
+  fångadeArter?: string | null;
+  /** SWEREF99TM northing (metres) — NOT WGS84 latitude. */
+  sweref99N?: number | null;
+  /** SWEREF99TM easting (metres) — NOT WGS84 longitude. */
+  sweref99E?: number | null;
+  /** Lake area in hectares. */
+  area?: number | null;
+}
+
+/**
+ * A survey station as consumed by the (unchanged) join loop below.  Populated
+ * by adapting a NorsAggregatedRecord.  `euCd` is carried through so issue #4
+ * can join directly on it; `lat`/`lon` are the raw SWEREF99 coordinates and
+ * MUST be reprojected to WGS84 before the haversine join is meaningful (TODO).
+ */
 export interface AquaStation {
-  /** Station / survey site identifier. */
+  /** Station identifier — the NORS eU_CD (or a synthesized key when blank). */
   stationId: string;
-  /** Station name. */
+  /** EU WFD water-body code, when present (issue #4 joins directly on this). */
+  euCd?: string;
+  /** Lake name. */
   name?: string;
-  /** Latitude (WGS84). */
+  /** SWEREF99TM northing (metres) — reproject to WGS84 lat before use. */
   lat: number;
-  /** Longitude (WGS84). */
+  /** SWEREF99TM easting (metres) — reproject to WGS84 lon before use. */
   lon: number;
 }
 
-/** One survey catch record from the Sötebasen catches endpoint. */
+/** One species observed at a station (expanded from `fångadeArter`). */
 export interface AquaCatch {
   /** Station identifier — links back to AquaStation.stationId. */
   stationId: string;
@@ -76,8 +124,8 @@ async function main(): Promise<void> {
   if (AQUA_BASE_URL.startsWith("<TODO")) {
     console.error(
       "ERROR: AQUA_BASE_URL is not configured.\n" +
-        "Set the AQUA_BASE_URL environment variable to the SLU Aqua /\n" +
-        "Sötebasen API base URL.  See scripts/etl/README.md — Aqua section.\n",
+        "Set the AQUA_BASE_URL environment variable to the SLU Aqua NORS\n" +
+        "API base URL.  See scripts/etl/README.md — Aqua section.\n",
     );
     process.exit(1);
   }
@@ -112,31 +160,52 @@ async function main(): Promise<void> {
 
   console.log(`Loaded ${lakeCandidates.length} lakes from DB.`);
 
-  // ── 2. Fetch survey stations ──────────────────────────────────────────────
-  const stationsUrl = `${AQUA_BASE_URL}/stations`;
-  console.log(`Fetching Aqua survey stations from: ${stationsUrl}`);
+  // ── 2. Fetch the NORS aggregated per-lake report (single endpoint) ─────────
+  const rapportUrl = `${AQUA_BASE_URL}${AQUA_RAPPORT_PATH}`;
+  console.log(`Fetching NORS aggregated report from: ${rapportUrl}`);
 
-  const stationsRes = await fetch(stationsUrl);
-  if (!stationsRes.ok) {
+  const rapportRes = await fetch(rapportUrl);
+  if (!rapportRes.ok) {
     throw new Error(
-      `Failed to fetch Aqua stations: ${stationsRes.status} ${stationsRes.statusText}`,
+      `Failed to fetch NORS report: ${rapportRes.status} ${rapportRes.statusText}`,
     );
   }
-  const stations: AquaStation[] = (await stationsRes.json()) as AquaStation[];
-  console.log(`Fetched ${stations.length} Aqua stations.`);
+  const records: NorsAggregatedRecord[] =
+    (await rapportRes.json()) as NorsAggregatedRecord[];
+  console.log(`Fetched ${records.length} NORS aggregated records.`);
 
-  // ── 3. Fetch catch records ────────────────────────────────────────────────
-  const catchesUrl = `${AQUA_BASE_URL}/catches`;
-  console.log(`Fetching Aqua catch records from: ${catchesUrl}`);
+  // ── 3. Adapt the aggregated records into the station + catch shapes the ────
+  //       (unchanged, issue-#4-owned) join loop below consumes.  One aggregated
+  //       record = one station; `fångadeArter` expands to one AquaCatch per
+  //       species.  The eU_CD is carried on the station so #4 can join directly.
+  const stations: AquaStation[] = [];
+  const catches: AquaCatch[] = [];
+  for (let i = 0; i < records.length; i++) {
+    const r = records[i];
+    const euCd = (r.eU_CD ?? "").trim();
+    // A stable per-record station id: prefer eU_CD, else fall back to the row
+    // index so blank-eU_CD rows still get a unique key for the coordinate join.
+    const stationId = euCd || `nors-row-${i}`;
+    const lat = r.sweref99N;
+    const lon = r.sweref99E;
+    if (typeof lat !== "number" || typeof lon !== "number") continue;
 
-  const catchesRes = await fetch(catchesUrl);
-  if (!catchesRes.ok) {
-    throw new Error(
-      `Failed to fetch Aqua catches: ${catchesRes.status} ${catchesRes.statusText}`,
-    );
+    stations.push({
+      stationId,
+      euCd: euCd || undefined,
+      name: r.sjö ?? undefined,
+      lat,
+      lon,
+    });
+
+    for (const species of (r.fångadeArter ?? "").split(",")) {
+      const trimmed = species.trim();
+      if (trimmed) catches.push({ stationId, species: trimmed });
+    }
   }
-  const catches: AquaCatch[] = (await catchesRes.json()) as AquaCatch[];
-  console.log(`Fetched ${catches.length} Aqua catch records.`);
+  console.log(
+    `Adapted ${stations.length} stations and ${catches.length} catch rows.`,
+  );
 
   // ── 4. Index stations by id ───────────────────────────────────────────────
   const stationMap = new Map<string, AquaStation>(

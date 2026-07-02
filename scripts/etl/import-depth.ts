@@ -1,19 +1,28 @@
 /**
- * ETL stub: import bathymetric depth scalars from SMHI Vattenwebb.
+ * ETL: import per-lake max depth from SLU Aqua's NORS aggregated report.
  *
  * Run:  pnpm etl:depth
  *
- * ## Status
- * STUB — the Vattenwebb bathymetry export URL/format is not yet wired.  The
- * script logs a clear error and exits 1 if `DEPTH_URL` is not configured.
- * Once the export URL is known, implement the mapper and remove the TODO guards.
+ * ## Source — VERIFIED live 2026-07-01
+ * The NORS aggregated report (same endpoint as the Aqua species ETL) carries a
+ * `maxDjup` (max depth, metres) field keyed by `eU_CD` (the lake PK):
+ *   GET https://dvfisk.slu.se/api/v1/nors/data-aggregerad/rapport
+ * Field description: https://dvfisk.slu.se/assets/NORS_databeskrivning.pdf
+ * (section "Nätprovfiske aggregerade data" → "Maxdjup: Sjöns maxdjup i meter").
  *
- * See scripts/etl/README.md (depth section) for dataset notes and the
- * placeholder URL pattern.
+ * This reuses the NORS report rather than a separate bathymetry export.
+ *
+ * ## FLAG — mean depth is NOT available from NORS
+ * NORS aggregated data provides `maxDjup` only, so `meanDepthM` is always null
+ * here.  SMHI Vattenwebb DOES publish mean/max depth (medeldjup/maxdjup) per
+ * water body, but only via the interactive "Modelldata per område" viewer /
+ * per-area Excel export — there is no documented open bulk REST/WFS endpoint
+ * (SMHI: lake geometries are Lantmäteriet-derived and not open data).  If mean
+ * depth is required, an operator must export it manually and point DEPTH_URL at
+ * a file:// JSON array of DepthRecord objects (set DEPTH_SOURCE=custom).
  *
  * ## Idempotency
- * When wired, the script upserts on `lake_id` PK (ON CONFLICT DO UPDATE) so
- * re-runs are safe.
+ * Upserts on `lake_id` PK (ON CONFLICT DO UPDATE) so re-runs are safe.
  *
  * ## Architecture
  * Per ADR-0002: ETL runs once (or on-demand by an operator), never at request
@@ -23,23 +32,35 @@
  */
 
 // ---------------------------------------------------------------------------
-// URL placeholder — operator must supply the real download URL.
-// See scripts/etl/README.md (depth section) for the Vattenwebb export path.
+// Source — VERIFIED live 2026-07-01.  Defaults to the NORS aggregated report.
+// Override DEPTH_URL with a file:// path to a manual Vattenwebb bathymetry
+// export (a JSON array of DepthRecord) AND set DEPTH_SOURCE=custom to supply
+// mean depth.  See scripts/etl/README.md (depth section).
 // ---------------------------------------------------------------------------
 const DEPTH_URL =
   process.env.DEPTH_URL ??
-  "<TODO: SMHI Vattenwebb bathymetry export URL — see scripts/etl/README.md>";
+  "https://dvfisk.slu.se/api/v1/nors/data-aggregerad/rapport";
+
+/**
+ * True when DEPTH_URL is the NORS aggregated report (default): records are
+ * mapped via mapNorsDepthRecord (maxDjup/eU_CD).  False when the operator
+ * supplies a pre-shaped DepthRecord export (DEPTH_SOURCE=custom): records are
+ * mapped via mapDepthRecord directly.
+ */
+const DEPTH_SOURCE_IS_NORS =
+  process.env.DEPTH_SOURCE?.toLowerCase() !== "custom" &&
+  DEPTH_URL.includes("data-aggregerad");
 
 /** H8: chunk size keeps each INSERT well under Postgres' 65,535 bind-param cap. */
 const BATCH_SIZE = 1_000;
 
 // ---------------------------------------------------------------------------
-// Type definitions — adapt once the real bathymetry export schema is known.
+// Type definitions
 // ---------------------------------------------------------------------------
 
 /**
- * Expected shape of one record from the bathymetry export.
- * Field names are placeholders — verify against the actual dataset.
+ * Shape of one record from a custom bathymetry export (DEPTH_SOURCE=custom).
+ * The NORS default path uses NorsDepthRecord instead.
  */
 export interface DepthRecord {
   /** Lake identifier (must match `lakes.id`). */
@@ -48,6 +69,17 @@ export interface DepthRecord {
   maxDepthM?: number | null;
   /** Mean lake depth in metres (may be absent in source). */
   meanDepthM?: number | null;
+}
+
+/**
+ * Relevant fields of one NORS aggregated record (see import-aqua.ts for the
+ * full shape).  VERIFIED live 2026-07-01.
+ */
+export interface NorsDepthRecord {
+  /** EU WFD water-body code (matches `lakes.id`); " " (blank) for some rows. */
+  eU_CD?: string | null;
+  /** Max depth in metres. */
+  maxDjup?: number | null;
 }
 
 /** Row shape matching the `lake_depth` Drizzle table. */
@@ -95,6 +127,24 @@ export function mapDepthRecord(record: DepthRecord): DepthRow {
   };
 }
 
+/**
+ * Map one NORS aggregated record to a `lake_depth` row.  Returns null (rather
+ * than throwing) for rows without an eU_CD or without a finite maxDjup — NORS
+ * carries ~4250 lakes but only those with both are usable depth rows.  Mean
+ * depth is unavailable from NORS (see the module FLAG) and is always null.
+ */
+export function mapNorsDepthRecord(record: NorsDepthRecord): DepthRow | null {
+  const lakeId = (record.eU_CD ?? "").trim();
+  if (!lakeId) return null;
+
+  const { maxDjup } = record;
+  if (maxDjup === undefined || maxDjup === null || !Number.isFinite(maxDjup)) {
+    return null;
+  }
+
+  return { lakeId, maxDepthM: maxDjup, meanDepthM: null };
+}
+
 // ---------------------------------------------------------------------------
 // Script body — only runs when executed directly (not when imported by tests)
 // ---------------------------------------------------------------------------
@@ -103,8 +153,8 @@ async function main(): Promise<void> {
   if (DEPTH_URL.startsWith("<TODO")) {
     console.error(
       "ERROR: DEPTH_URL is not configured.\n" +
-        "Set the DEPTH_URL environment variable to the SMHI Vattenwebb\n" +
-        "bathymetry export URL.\n" +
+        "Unset it to use the default NORS aggregated report, or set it to a\n" +
+        "file:// path of a custom bathymetry export (with DEPTH_SOURCE=custom).\n" +
         "See scripts/etl/README.md (depth section) for details.",
     );
     process.exit(1);
@@ -125,26 +175,44 @@ async function main(): Promise<void> {
   const pg = postgres(databaseUrl);
   const db = drizzle(pg);
 
-  console.log(`Fetching bathymetry dataset from: ${DEPTH_URL}`);
+  console.log(
+    `Fetching depth dataset from: ${DEPTH_URL} ` +
+      `(source: ${DEPTH_SOURCE_IS_NORS ? "NORS aggregated" : "custom export"})`,
+  );
   const res = await fetch(DEPTH_URL);
   if (!res.ok) {
     throw new Error(`Failed to fetch dataset: ${res.status} ${res.statusText}`);
   }
 
-  // TODO: parse the actual bathymetry export format once it is known.
-  // The Vattenwebb export may be JSON, CSV, or another format.
-  const records: DepthRecord[] = (await res.json()) as DepthRecord[];
-  console.log(`Fetched ${records.length} records.`);
-
   const rows: DepthRow[] = [];
   let errors = 0;
+  let skipped = 0;
 
-  for (const record of records) {
-    try {
-      rows.push(mapDepthRecord(record));
-    } catch (err) {
-      errors++;
-      console.warn(`Skipping record: ${(err as Error).message}`);
+  if (DEPTH_SOURCE_IS_NORS) {
+    // Default path: the NORS aggregated report — one record per lake, keyed by
+    // eU_CD, with maxDjup.  mapNorsDepthRecord returns null for rows without a
+    // usable eU_CD + maxDjup (most NORS rows lack a depth value).
+    const records = (await res.json()) as NorsDepthRecord[];
+    console.log(`Fetched ${records.length} NORS records.`);
+    for (const record of records) {
+      const row = mapNorsDepthRecord(record);
+      if (row === null) {
+        skipped++;
+        continue;
+      }
+      rows.push(row);
+    }
+  } else {
+    // Custom export path: records already match DepthRecord.
+    const records = (await res.json()) as DepthRecord[];
+    console.log(`Fetched ${records.length} records.`);
+    for (const record of records) {
+      try {
+        rows.push(mapDepthRecord(record));
+      } catch (err) {
+        errors++;
+        console.warn(`Skipping record: ${(err as Error).message}`);
+      }
     }
   }
 
@@ -163,7 +231,9 @@ async function main(): Promise<void> {
       });
   }
 
-  console.log(`\nDone. Imported: ${rows.length}, Skipped (errors): ${errors}`);
+  console.log(
+    `\nDone. Imported: ${rows.length}, No depth: ${skipped}, Skipped (errors): ${errors}`,
+  );
 
   await pg.end();
 }

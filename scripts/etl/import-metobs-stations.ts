@@ -15,15 +15,21 @@
  */
 
 // ---------------------------------------------------------------------------
-// Endpoint placeholder — operator must verify the real path against the
-// SMHI Open Data metobs API docs before running.  See scripts/etl/README.md.
+// SMHI Open Data metobs endpoint — VERIFIED against the live API 2026-07-01.
+//
+// The station list for a parameter is the parameter node itself; it carries a
+// `station` array.  There is NO separate `/station.json` sub-resource.  URL
+// pattern (from the api.json entry point):
+//   /api/version/{version}/parameter/{parameter}.json
+// Live-checked: GET .../parameter/1.json → { ..., "station": [ { id, name,
+//   latitude, longitude, active, from, to }, ... ] } (1000 stations for p=1).
+// Docs: https://opendata.smhi.se/apidocs/metobs/ ; entry: /api.json
 // ---------------------------------------------------------------------------
 const METOBS_BASE =
   process.env.METOBS_BASE ?? "https://opendata-download-metobs.smhi.se";
 
 const METOBS_STATION_URL =
-  process.env.METOBS_STATION_URL ??
-  "<TODO: confirm real path, e.g. /api/version/1.0/parameter/{p}/station.json>";
+  process.env.METOBS_STATION_URL ?? "/api/version/1.0/parameter/{p}.json";
 
 const BATCH_SIZE = 500;
 
