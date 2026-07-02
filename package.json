@@ -25,7 +25,6 @@
     "ts:check": "tsgo --noEmit",
     "etl:svar": "tsx --env-file-if-exists=.env scripts/etl/import-svar.ts",
     "etl:metobs-stations": "tsx --env-file-if-exists=.env scripts/etl/import-metobs-stations.ts",
-    "etl:shype": "tsx --env-file-if-exists=.env scripts/etl/import-shype.ts",
     "etl:depth": "tsx --env-file-if-exists=.env scripts/etl/import-depth.ts",
     "etl:mvm": "tsx --env-file-if-exists=.env scripts/etl/import-mvm.ts",
     "etl:aqua": "tsx --env-file-if-exists=.env scripts/etl/import-aqua.ts",
