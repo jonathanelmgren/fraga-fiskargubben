@@ -22,6 +22,8 @@ export type PersistTurnsDeps = {
   }): Promise<void>;
   updateLastActive(conversationId: string): Promise<void>;
   emit(event: AnalyticsEvent): Promise<void>;
+  /** Refund a spent credit when the first-turn stream fails (ADR-0004). */
+  refundCredit(userId: string): Promise<boolean>;
 };
 
 /**
@@ -54,9 +56,15 @@ export async function persistTurns(
     conversationId: string;
     message: string;
     stream: Pick<AdviceStream, "finalMessage">;
+    /**
+     * Set only when a credit was spent for THIS first-turn stream. If
+     * finalMessage() rejects, the credit is refunded (a failed answer must not
+     * consume a credit, ADR-0004). Absent on follow-ups / free / anon turns.
+     */
+    refundUserId?: string;
   },
 ): Promise<void> {
-  const { conversationId, message, stream } = args;
+  const { conversationId, message, stream, refundUserId } = args;
   try {
     // Resolve the assistant text BEFORE writing, so the user+assistant pair is
     // persisted atomically-in-spirit (no dangling user row on a stream that
@@ -84,6 +92,23 @@ export async function persistTurns(
       conversationId,
       payload: { reason: err instanceof Error ? err.message : String(err) },
     });
+    // C-refund: finalMessage() rejected → the first-turn Sonnet answer failed.
+    // ADR-0004 defines a Credit as a SUCCESSFUL answer, so refund the credit
+    // that was spent before the stream. Guarded + idempotent (refundCredit only
+    // decrements creditsUsed > 0), best-effort — never rethrows.
+    if (refundUserId !== undefined) {
+      try {
+        await deps.refundCredit(refundUserId);
+      } catch (refundErr) {
+        await deps.emit({
+          type: "persistence_failure",
+          conversationId,
+          payload: {
+            reason: `refundCredit: ${refundErr instanceof Error ? refundErr.message : String(refundErr)}`,
+          },
+        });
+      }
+    }
   } finally {
     // M11: always roll lastActiveAt forward, even when finalMessage() rejected,
     // so a half-failed turn doesn't leave the conversation looking stale.

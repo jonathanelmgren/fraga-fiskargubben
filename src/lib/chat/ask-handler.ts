@@ -166,6 +166,13 @@ export type AskResult =
       conversationId: string;
       /** Present only for new anon conversations; the route uses this to set the fiska_claim cookie. */
       claimToken?: string;
+      /**
+       * Set to the user id ONLY when a credit was actually spent for this
+       * first-turn stream (ADR-0004). The route refunds it if the Sonnet stream
+       * fails post-return — a failed answer must not consume a credit. Absent on
+       * follow-ups and free/anon turns (nothing to refund).
+       */
+      refundUserId?: string;
     };
 
 // L8: gate strings consolidated in ./gate-messages (imported above).
@@ -365,27 +372,25 @@ export async function handleAsk(
 
     // Spend credit and emit lake_resolved.
     // M2: the credit is committed here, BEFORE adviseFirst/the stream succeeds
-    // (ADR-0004: Credit = fresh fetch + Sonnet).  A failed Sonnet call after
-    // this point burns the credit.  A clean refund needs a stream-result
-    // callback back into the handler (the stream resolves in route.ts, after
-    // this function returns) — [~] deferred: refund needs stream-result
-    // callback into handler.  Observability is covered: route.ts emits a
-    // `persistence_failure` analytics event if the post-stream path fails, so
-    // the credit/stream discrepancy is at least visible.
-    // TODO(refund): thread a finalMessage()-failure callback into handleAsk so
-    // a failed first-turn stream can refund the spent credit.
+    // (ADR-0004: Credit = fresh fetch + a successful Sonnet answer). The stream
+    // resolves in route.ts AFTER this function returns, so a failed answer can't
+    // be refunded inline. Instead we surface `refundUserId` on the stream result
+    // — the route's post-stream persistTurns refunds the credit when
+    // finalMessage() rejects, so a failed first-turn answer never consumes one.
     //
     // E5 (check-then-spend race): spendCredit is a GUARDED atomic UPDATE that
     // returns false when the user has, since the canSpendCredit pre-check,
     // exhausted the free limit (e.g. a concurrent request raced ahead). Treat
     // a false return as out-of-credits so two concurrent free-tier prompts can
     // never both stream.
+    let refundUserId: string | undefined;
     if (userId) {
       const spent = await deps.spendCredit(userId);
       if (!spent) {
         await deps.emit({ type: "out_of_credits" });
         return { type: "out_of_credits", text: OUT_OF_CREDITS_MESSAGE };
       }
+      refundUserId = userId;
     }
     await deps.emit({ type: "lake_resolved", lakeId: lake.id });
 
@@ -404,6 +409,8 @@ export async function handleAsk(
       // Surface the claimToken for new anon conversations so route.ts can
       // set the fiska_claim cookie — this is the plumbing that was missing.
       ...(newAnonClaimToken !== null ? { claimToken: newAnonClaimToken } : {}),
+      // Refund target: only when a credit was actually spent above.
+      ...(refundUserId !== undefined ? { refundUserId } : {}),
     };
   }
 

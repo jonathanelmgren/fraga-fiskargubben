@@ -143,6 +143,43 @@ export async function spendCredit(
 }
 
 /**
+ * Refund a previously-spent credit (the inverse of spendCredit).
+ *
+ * Called when the first-turn Sonnet stream fails AFTER spendCredit committed:
+ * ADR-0004 defines a Credit as "fresh fetch + a successful Sonnet answer", so a
+ * failed answer must not consume one. The decrement is GUARDED with
+ * `creditsUsed > 0` so a double-refund (or a refund racing a concurrent path)
+ * can never drive the balance negative — the DB serialises the conditional
+ * UPDATE and a redundant refund simply affects zero rows.
+ *
+ * Paid users don't consume credits, but the decrement is still safe for them
+ * (their creditsUsed is not the gate); the guard only prevents underflow.
+ *
+ * `credit_refunded` is emitted only when a credit was actually returned.
+ *
+ * @returns true if a credit was refunded, false if there was nothing to refund.
+ */
+export async function refundCredit(
+  userId: string,
+  deps: QuotaDeps = defaultDeps(),
+): Promise<boolean> {
+  const updated = await deps.db
+    .update(users)
+    .set({ creditsUsed: sql`${users.creditsUsed} - 1` })
+    .where(and(eq(users.id, userId), sql`${users.creditsUsed} > 0`))
+    .returning({ id: users.id });
+
+  const refunded = updated.length > 0;
+  if (refunded) {
+    await deps.emit({
+      type: "credit_refunded",
+      payload: { userId },
+    });
+  }
+  return refunded;
+}
+
+/**
  * Freezes a conversation (sets frozen=true) and emits a chat_limit_hit event.
  * Call this when chatTurnAllowed returns false.
  */

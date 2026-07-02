@@ -38,6 +38,7 @@ import {
   canSpendCredit,
   chatTurnAllowed,
   freezeConversation,
+  refundCredit,
   spendCredit,
 } from "@/lib/chat/quota";
 import { ExternalServiceError, TimeoutError } from "@/lib/errors";
@@ -319,6 +320,7 @@ function buildPersistDeps(): PersistTurnsDeps {
         .where(eq(conversations.id, conversationId));
     },
     emit: (event) => emit(event),
+    refundCredit: (userId) => refundCredit(userId),
   };
 }
 
@@ -423,6 +425,11 @@ export async function POST(request: Request): Promise<Response> {
         conversationId: streamConvId,
         message,
         stream,
+        // Refund the credit if the first-turn Sonnet stream fails (ADR-0004).
+        // Present only when a credit was actually spent for this turn.
+        ...(result.refundUserId !== undefined
+          ? { refundUserId: result.refundUserId }
+          : {}),
       }),
     );
 

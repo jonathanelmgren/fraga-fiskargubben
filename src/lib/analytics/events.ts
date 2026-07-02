@@ -7,6 +7,9 @@ export type AnalyticsEventType =
   | "source_miss"
   | "signals_built"
   | "credit_spent"
+  // C-refund: the first-turn Sonnet stream failed after the credit was spent,
+  // so the credit was returned. Pairs with credit_spent to reconcile spend.
+  | "credit_refunded"
   | "topic_refused"
   | "chat_limit_hit"
   // M6: emitted on every attempt against an ALREADY-frozen conversation, kept
