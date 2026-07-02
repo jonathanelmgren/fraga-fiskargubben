@@ -23,8 +23,9 @@
  *
  * 1. Coordinates are SWEREF99TM, not WGS84.  SampleSite carries
  *    `sampleSiteCoordinateN/E` (or `X/Y`) plus `sampleSiteCoordinateSystem`.
- *    They MUST be reprojected to WGS84 before the haversine/stationMatchesLake
- *    join is meaningful.  (SWEREF99→WGS84 projection is still TODO — see below.)
+ *    adaptMvmStation now reprojects them to WGS84 via `sweref99ToWgs84`.
+ *    (Live-verify the exact coordinate field names against a ticketed response;
+ *    the reprojection math itself is validated in sweref99.test.ts.)
  *
  * 2. Chemistry values are NESTED, not flat.  A Sample has an `observations[]`
  *    array of SampleObservation, each identified by a `propertyCode`/
@@ -58,6 +59,10 @@
  * Threshold references: EEA humic classification and Naturvårdsverket
  * water colour guidelines for Swedish national lake monitoring.
  */
+
+// Pure geo util (no server-only deps) — safe to import at module scope so the
+// exported adaptMvmStation can reproject SWEREF99TM → WGS84.
+import { sweref99ToWgs84 } from "@/lib/geo/sweref99";
 
 // ---------------------------------------------------------------------------
 // MVM Observations API v2 — base path VERIFIED against the OpenAPI spec.
@@ -277,20 +282,21 @@ export function extractMvmSample(raw: MvmRawSample): MvmSample {
 
 /**
  * Convert a raw MVM SampleSite to the join-loop MvmStation.
- * FLAG: MVM returns SWEREF99TM (`sampleSiteCoordinateN/E`).  Reprojection to
- * WGS84 is still TODO — for now the raw SWEREF99 metres are passed through and
- * the coordinate join will NOT be meaningful until a projection is added (or
- * issue #4 switches to an EU-id join via `sampleSiteEUId`).
+ * MVM returns SWEREF99TM (`sampleSiteCoordinateN/E`, metres); reproject to WGS84
+ * via `sweref99ToWgs84` so the haversine/stationMatchesLake join is meaningful.
+ * Returns null when coordinates are absent or non-finite.
  */
 export function adaptMvmStation(raw: MvmRawSampleSite): MvmStation | null {
-  const lat = raw.sampleSiteCoordinateN;
-  const lon = raw.sampleSiteCoordinateE;
-  if (typeof lat !== "number" || typeof lon !== "number") return null;
+  const north = raw.sampleSiteCoordinateN;
+  const east = raw.sampleSiteCoordinateE;
+  if (typeof north !== "number" || typeof east !== "number") return null;
+  const wgs = sweref99ToWgs84(north, east);
+  if (!wgs) return null;
   return {
     stationId: String(raw.sampleSiteId ?? ""),
     name: raw.preferredName ?? undefined,
-    lat, // TODO(#4): reproject SWEREF99TM → WGS84
-    lon,
+    lat: wgs.lat,
+    lon: wgs.lon,
   };
 }
 
