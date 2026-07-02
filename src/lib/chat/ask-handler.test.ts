@@ -89,7 +89,9 @@ function makeDeps(overrides: Partial<AskHandlerDeps> = {}): AskHandlerDeps {
       onTopic: true,
       lakeName: "Tolken",
     }),
-    resolveLake: vi.fn().mockResolvedValue(BASE_LAKE),
+    resolveLake: vi
+      .fn()
+      .mockResolvedValue({ kind: "resolved", lake: BASE_LAKE }),
     buildSignals: vi.fn().mockResolvedValue(BASE_SIGNALS),
     adviseFirst: vi.fn().mockReturnValue(makeStream()),
     adviseFollowup: vi.fn().mockReturnValue(makeStream()),
@@ -262,7 +264,7 @@ describe("case 4: new conversation, lake not resolved", () => {
         onTopic: true,
         lakeName: "Fantasisjön",
       }),
-      resolveLake: vi.fn().mockResolvedValue(null),
+      resolveLake: vi.fn().mockResolvedValue({ kind: "none" }),
     });
 
     const input: AskInput = { message: "Vad biter i Fantasisjön?" };
@@ -273,6 +275,34 @@ describe("case 4: new conversation, lake not resolved", () => {
     expect(r.text).toBeDefined();
     expect(deps.emit).toHaveBeenCalledWith(
       expect.objectContaining({ type: "lake_unresolved" }),
+    );
+    expect(deps.spendCredit).not.toHaveBeenCalled();
+    expect(deps.adviseFirst).not.toHaveBeenCalled();
+  });
+
+  it("emits lake_ambiguous listing municipalities when the name matches several lakes", async () => {
+    const deps = makeDeps({
+      getSession: vi.fn().mockResolvedValue({ user: { id: "user-1" } }),
+      getConversation: vi.fn().mockResolvedValue(null),
+      extract: vi.fn().mockResolvedValue({ onTopic: true, lakeName: "Tolken" }),
+      resolveLake: vi.fn().mockResolvedValue({
+        kind: "ambiguous",
+        candidates: [
+          { id: "a", name: "Tolken", municipality: "Borås", county: "VG" },
+          { id: "b", name: "Tolken", municipality: "Mark", county: "VG" },
+        ],
+      }),
+    });
+
+    const input: AskInput = { message: "Vad biter i Tolken?" };
+    const result = await handleAsk(input, deps);
+
+    const r = asType(result, "lake_ambiguous");
+    // The reprompt names both candidate municipalities so the user can pick.
+    expect(r.text).toContain("Borås");
+    expect(r.text).toContain("Mark");
+    expect(deps.emit).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "lake_ambiguous" }),
     );
     expect(deps.spendCredit).not.toHaveBeenCalled();
     expect(deps.adviseFirst).not.toHaveBeenCalled();
@@ -730,7 +760,9 @@ describe("I1: Signals.lake uses formatted label; lake-lock compares bare name", 
     const deps = makeDeps({
       getSession: vi.fn().mockResolvedValue({ user: { id: "user-1" } }),
       getConversation: vi.fn().mockResolvedValue(null),
-      resolveLake: vi.fn().mockResolvedValue(BASE_LAKE),
+      resolveLake: vi
+        .fn()
+        .mockResolvedValue({ kind: "resolved", lake: BASE_LAKE }),
     });
 
     await handleAsk({ message: "Vad biter i Tolken?" }, deps);

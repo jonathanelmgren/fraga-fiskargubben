@@ -20,7 +20,7 @@
 import { randomUUID } from "node:crypto";
 import type { AnalyticsEvent } from "@/lib/analytics/events";
 import type { Extraction, HistoryMessage } from "@/lib/chat/extractor";
-import type { Lake } from "@/lib/lakes/resolve";
+import type { Lake, ResolveResult } from "@/lib/lakes/resolve";
 import { formatLabel } from "@/lib/lakes/resolve-helpers";
 import type { Signals } from "@/lib/signals/types";
 import {
@@ -28,6 +28,7 @@ import {
   CANNED_REFUSAL,
   CHAT_LIMIT_MESSAGE,
   LAKE_UNRESOLVED_MESSAGE,
+  lakeAmbiguousMessage,
   OUT_OF_CREDITS_MESSAGE,
 } from "./gate-messages";
 import { resolveSwedishTime } from "./swedish-time";
@@ -95,7 +96,7 @@ export type AskHandlerDeps = {
 
   // Leaf modules (thin wrappers over the real fns)
   extract(message: string, history: HistoryMessage[]): Promise<Extraction>;
-  resolveLake(name: string, municipality?: string): Promise<Lake | null>;
+  resolveLake(name: string, municipality?: string): Promise<ResolveResult>;
   buildSignals(input: {
     lake: Lake & { label: string };
     targetTime: Date;
@@ -158,6 +159,7 @@ export type AskResult =
   | { type: "chat_limit"; text: string }
   | { type: "topic_refused"; text: string }
   | { type: "lake_unresolved"; text: string }
+  | { type: "lake_ambiguous"; text: string }
   | { type: "out_of_credits"; text: string }
   | { type: "lake_lock"; text: string }
   | {
@@ -288,16 +290,29 @@ export async function handleAsk(
   // ── Step 5a: New conversation ───────────────────────────────────────────
 
   if (!conversationId || !conversation) {
-    // Resolve lake
-    const lake = await deps.resolveLake(
+    // Resolve lake. resolveLake distinguishes "no such name" from "several
+    // lakes share this name" so we can prompt precisely (less guessing) —
+    // an ambiguous name asks WHICH municipality rather than a generic reprompt.
+    const resolved = await deps.resolveLake(
       extraction.lakeName ?? "",
       extraction.municipality,
     );
 
-    if (!lake) {
+    if (resolved.kind === "ambiguous") {
+      const municipalities = resolved.candidates.map((c) => c.municipality);
+      await deps.emit({ type: "lake_ambiguous" });
+      return {
+        type: "lake_ambiguous",
+        text: lakeAmbiguousMessage(resolved.candidates[0].name, municipalities),
+      };
+    }
+
+    if (resolved.kind === "none") {
       await deps.emit({ type: "lake_unresolved" });
       return { type: "lake_unresolved", text: LAKE_UNRESOLVED_MESSAGE };
     }
+
+    const lake = resolved.lake;
 
     // Credit gate — load user row for logged-in users
     let userRow: UserRow | null = null;

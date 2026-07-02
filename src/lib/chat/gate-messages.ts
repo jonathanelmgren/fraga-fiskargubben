@@ -26,6 +26,20 @@ export const ANON_REGISTER_MESSAGE =
 export const LAKE_UNRESOLVED_MESSAGE =
   "Kände inte igen sjön du nämnde — kan du skriva sjönamnet tydligare, eventuellt med kommunen?";
 
+/**
+ * Several real lakes share the named body — ask WHICH one (by municipality)
+ * instead of guessing. Fiskargubben's voice; lists the candidate municipalities
+ * so the user can just answer with a kommun. Distinct from LAKE_UNRESOLVED
+ * (that's "never heard of it"; this is "heard of several").
+ */
+export function lakeAmbiguousMessage(
+  lakeName: string,
+  municipalities: string[],
+): string {
+  const options = municipalities.join(", ");
+  return `Det finns flera sjöar som heter ${lakeName}, hörru — vilken menar du? Säg kommunen: ${options}.`;
+}
+
 /** Free credits exhausted. */
 export const OUT_OF_CREDITS_MESSAGE =
   "Du har förbrukat dina gratiskrediter — uppgradera för att fiska vidare.";
