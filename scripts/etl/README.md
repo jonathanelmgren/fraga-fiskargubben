@@ -72,9 +72,9 @@ the exact remaining step.
   (~500 MB / 1.15M samples) is the source. Confirmed property codes: `Abs_F420` (absorbance, unit
   is /5cm → multiplied ×20 to per-metre), `Farg` (färgtal), `Siktdjup` (Secchi). Coordinates are
   **SWEREF99TM**, reprojected to WGS84 via `src/lib/geo/sweref99.ts`; the station→lake join is on
-  `stationEUID` (EU WFD code → `lakes.id`) with a reprojected-coordinate fallback. ⚠️ The 500 MB
-  response may need an `MVM_MAX_SAMPLES` cap or `NODE_OPTIONS=--max-old-space-size`; a streaming
-  parser is deferred.
+  `stationEUID` (EU WFD code → `lakes.id`) with a reprojected-coordinate fallback. The 500 MB
+  response is **streamed** (stream-json), so every sample is processed with no memory tuning and
+  no gap.
 - **SVAR** (`VISS_APIKEY`, optional `VISS_API_URL`) — ✅ **VERIFIED live**. Source is the **VISS API**
   directly (Vatteninformationssystem Sverige, Länsstyrelserna), not an SMHI WFS. It fetches three
   VISS methods: `waters&watercategory=LW` (lakes), `municipalities`, and `counties` (to resolve
@@ -284,9 +284,9 @@ Confirmed facts:
    to WGS84 via `src/lib/geo/sweref99.ts`. The station→lake join is on
    `stationEUID` (EU WFD code → `lakes.id`) with a reprojected-coordinate fallback.
 
-⚠️ **Memory caveat:** the ~500 MB response is parsed in memory. If it OOMs, set an
-`MVM_MAX_SAMPLES` cap and/or raise the heap with
-`NODE_OPTIONS=--max-old-space-size=...`. A streaming parser is deferred.
+**Memory:** the ~500 MB response is **streamed** (stream-json + stream-chain) — the
+`samples[]` array is consumed element-by-element, so the raw body is never fully
+buffered. A full seed needs no heap tuning and processes every sample.
 
 The system degrades gracefully: `colourFor()` in `src/lib/water/colour.ts`
 returns `null` when no `water_colour` row exists for a lake.
@@ -305,7 +305,8 @@ returns `null` when no `water_colour` row exists for a lake.
 - `DATABASE_URL` environment variable pointing to the target Postgres database.
 - `MVM_TICKET` set to your Miljödata-MVM public ticket (passed as `token`).
 - (Optional) `MVM_BASE_URL` to override the verified default base path.
-- (Optional) `MVM_MAX_SAMPLES` to cap the number of samples parsed (memory guard).
+- (Optional) `MVM_MAX_SAMPLES` / `--limit N` — early-stop after N samples, for a
+  quick partial/dev run only. Never needed for a full seed (the response is streamed).
 
 ## Obtaining the MVM ticket
 
@@ -321,10 +322,10 @@ returns `null` when no `water_colour` row exists for a lake.
 pnpm etl:mvm
 ```
 
-`DATABASE_URL` and `MVM_TICKET` are read from the repo's `.env`. If the ~500 MB
-response OOMs, run with `NODE_OPTIONS=--max-old-space-size=4096 pnpm etl:mvm` or
-set `MVM_MAX_SAMPLES` in `.env`. The script is **idempotent** — upserts on
-`lake_id` PK (`ON CONFLICT DO UPDATE`) so re-runs are safe.
+`DATABASE_URL` and `MVM_TICKET` are read from the repo's `.env`. The ~500 MB
+response is streamed, so no heap tuning is needed and every sample is processed.
+The script is **idempotent** — upserts on `lake_id` PK (`ON CONFLICT DO UPDATE`)
+so re-runs are safe.
 
 ## Import-time join (ADR-0002)
 
