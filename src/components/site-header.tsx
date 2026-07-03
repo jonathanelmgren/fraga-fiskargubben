@@ -22,7 +22,8 @@ export async function SiteHeader() {
     : null;
 
   return (
-    <header className="sticky top-0 z-30 flex items-center justify-between border-b border-border bg-background/85 px-4 py-2.5 backdrop-blur-sm sm:px-6">
+    // Fixed h-14: the /ask pages size their chat column as calc(100dvh - 3.5rem).
+    <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-border bg-background/85 px-4 backdrop-blur-sm sm:px-6">
       <Link href="/" className="group flex items-center gap-2.5">
         <Image
           src={gubbeIconImg}
