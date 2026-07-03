@@ -6,6 +6,16 @@ export type Signals = {
   lake: string; // Lake label — canonical "name (municipality, county)" format
   lakeId: string;
   /**
+   * Rebuild: set when the lake could not be resolved and the conversation
+   * continues in area mode — the snapshot then carries only SMHI-derived
+   * conditions (no lake-specific water data). The persona is instructed to be
+   * honest about not knowing the specific water. `lakeId` is "area" and
+   * `lake` is an area label ("trakten kring …").
+   */
+  areaOnly?: boolean;
+  /** Area mode: the lake name the user asked about, so the answer can name it honestly. */
+  askedLakeName?: string;
+  /**
    * Bare lake name (e.g. "Tolken") without the municipality/county suffix.
    * Used internally for the lake-lock comparison so the lock is not coupled
    * to the formatted label.  Absent on old snapshots (treat as undefined).
