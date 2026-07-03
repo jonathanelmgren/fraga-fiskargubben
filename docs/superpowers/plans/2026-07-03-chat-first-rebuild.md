@@ -26,7 +26,7 @@
 - `conversations`: add `status: text("status").default("resolved").notNull()` (`'lake_pending' | 'resolved' | 'unresolved_area'`; default `'resolved'` keeps legacy rows valid), `resolveAttempts: integer("resolve_attempts").default(0).notNull()`, `userLat`/`userLon: doublePrecision` nullable. (`lakeId` is already nullable.)
 - `users`: add `signupIpHash: text("signup_ip_hash")` nullable.
 
-- [ ] Steps: edit schema → `pnpm db:generate` → `pnpm db:migrate` → commit.
+- [x] Steps: edit schema → `pnpm db:generate` → `pnpm db:migrate` → commit.
 
 ### Task 2: Models + analytics event types
 
@@ -35,7 +35,7 @@
 - `RESOLVER_MODEL = "claude-haiku-4-5"`.
 - New events: `lake_clarify`, `lake_unresolved_area`, `signup_ip_blocked` (check existing union shape and extend).
 
-- [ ] Steps: TDD on models test → implement → commit.
+- [x] Steps: TDD on models test → implement → commit.
 
 ### Task 3: Candidate search — `src/lib/lakes/candidates.ts`
 
@@ -51,7 +51,7 @@ export async function candidateLakes(
 - Distance computed in SQL (approx planar ok) when `userLoc` present.
 - Test: `src/lib/lakes/candidates.test.ts` (mock db.execute).
 
-- [ ] Steps: failing test → implement → pass → commit.
+- [x] Steps: failing test → implement → pass → commit.
 
 ### Task 4: Haiku resolver — `src/lib/lakes/haiku-resolver.ts`
 
@@ -79,7 +79,7 @@ export async function resolveLakeWithHaiku(params: {
 - System prompt: Swedish-geography-aware picker; candidates listed with municipality/county/area/distance; instructed that Lantmäteriet municipality tags can differ from colloquial ones (adjacent-municipality tolerance); user location is a bias, prompt text wins; untrusted-data tag rules.
 - Test with fake client: picks candidate, low confidence passthrough, noSuchLake, parse-failure → `{lakeId:null, confidence:0}`.
 
-- [ ] Steps: failing tests → implement → pass → commit.
+- [x] Steps: failing tests → implement → pass → commit.
 
 ### Task 5: Area signals — `src/lib/signals/build-area.ts` + Signals type
 
@@ -98,7 +98,7 @@ export async function buildAreaSignals(input: {
 - Forecast/observed conditions + pressure/temp trends + light window only (no depth/colour/species/water-temp). Forecast cache key `area:<lat.toFixed(2)>,<lon.toFixed(2)>`. `lakeId: "area"`, `areaOnly: true`. Never throws.
 - Test: fake fetchers via module mocks (follow build.test.ts patterns).
 
-- [ ] Steps: failing test → implement → pass → commit.
+- [x] Steps: failing test → implement → pass → commit.
 
 ### Task 6: Persona + extractor + gate copy loosening
 
@@ -108,7 +108,7 @@ export async function buildAreaSignals(input: {
 - Extractor `onTopic` description loosened to match; keep injection guards.
 - Gate copy: reword `CANNED_REFUSAL`; add `LAKE_CLARIFY_FALLBACK`; keep others.
 
-- [ ] Steps: update tests → implement → pass → commit.
+- [x] Steps: update tests → implement → pass → commit.
 
 ### Task 7: Quota — admin bypass
 
@@ -116,7 +116,7 @@ export async function buildAreaSignals(input: {
 
 - `canSpendCredit(user, opts?: { isAdmin?: boolean })` → true for admin; `chatTurnAllowed(count, opts?: { isAdmin?: boolean })` → true for admin. `spendCredit` not called for admins (handler skips; no counter increment).
 
-- [ ] Steps: failing tests → implement → pass → commit.
+- [x] Steps: failing tests → implement → pass → commit.
 
 ### Task 8: ask-handler rework (core)
 
@@ -137,7 +137,7 @@ export async function buildAreaSignals(input: {
    - `noSuchLake` or attempts+1 ≥ 3: transition to `unresolved_area`; coords = conversation.userLat/lon → candidate centroid → none; buildAreaSignals (or minimal Signals w/o conditions when no coords); charge; adviseFirst.
    - else: bump attempts, return `clarify` with resolver's question.
 
-- [ ] Steps: rewrite tests for each path (new-resolved-first-try, clarify-then-resolved, 3-strikes→area, noSuchLake→area, credit-at-transition-only, admin bypass, anon clarify follow-up allowed, out-of-credits pre-check, IDOR unchanged) → implement → pass → commit.
+- [x] Steps: rewrite tests for each path (new-resolved-first-try, clarify-then-resolved, 3-strikes→area, noSuchLake→area, credit-at-transition-only, admin bypass, anon clarify follow-up allowed, out-of-credits pre-check, IDOR unchanged) → implement → pass → commit.
 
 ### Task 9: Route — location, clarify persistence, badges header
 
@@ -148,7 +148,7 @@ export async function buildAreaSignals(input: {
 - `clarify` result → `Response.json({type:"clarify", text}, 200)` + `X-Conversation-Id` header + Set-Cookie for new anon claimToken + `after()` persisting user msg + assistant clarify text.
 - Stream result → add `X-Signals` header: `encodeURIComponent(JSON.stringify({lake, status, airTempC, windMs, waterTempC}))` (values unwrapped from provenance).
 
-- [ ] Steps: update route tests → implement → pass → commit.
+- [x] Steps: update route tests → implement → pass → commit.
 
 ### Task 10: Auth — IP signup guard + deleteUser
 
@@ -158,7 +158,7 @@ export async function buildAreaSignals(input: {
 - better-auth `databaseHooks.user.create.before`: extract IP → hash → count users w/ same hash createdAt > now-30d → if ≥ SIGNUP_IP_LIMIT (env, default 3) throw `APIError` with Swedish message; else return `{ data: { ...user, signupIpHash } }`. Declare `user.additionalFields.signupIpHash` (input:false). No IP found → allow.
 - Enable `user: { deleteUser: { enabled: true } }`.
 
-- [ ] Steps: failing tests (hash, extract, hook logic w/ injected count) → implement → pass → commit.
+- [x] Steps: failing tests (hash, extract, hook logic w/ injected count) → implement → pass → commit.
 
 ### Task 11: UI — layout, header, auth dialog
 
@@ -168,7 +168,7 @@ export async function buildAreaSignals(input: {
 - AuthDialog: overlay dialog, login mode default; "Inte registrerad? Skapa konto här" flips to signup; social buttons both modes; Swedish copy; opens when `?auth=1`.
 - Brand tokens per screenshot: cream bg, deep green ink, amber CTA; keep OKLch token structure.
 
-- [ ] Steps: build components → wire layout → visual check later (Task 14) → commit.
+- [x] Steps: build components → wire layout → visual check later (Task 14) → commit.
 
 ### Task 12: UI — landing hero + ask pages + chat rework
 
@@ -180,7 +180,7 @@ export async function buildAreaSignals(input: {
 - Chat: signal badges strip (lake/area, lufttemp, vind, vattentemp) fed by initialBadges or `X-Signals` header; `clarify` JSON rendered as assistant bubble (conversation continues); gates as before.
 - Drawer (logged-in): lists user conversations (server-loaded, newest first, title = bareLakeName ?? first-message excerpt) + "Ny chatt" → `/ask`.
 
-- [ ] Steps: implement pages/components → adapt chat tests → pass → commit.
+- [x] Steps: implement pages/components → adapt chat tests → pass → commit.
 
 ### Task 13: Profile page
 
@@ -188,12 +188,12 @@ export async function buildAreaSignals(input: {
 
 - Server component, redirect `/` when logged out. Shows name, email, member since (sv-SE date), credits `X av 3` or `Obegränsat` (paid/admin). Danger zone: delete account (confirm dialog → `authClient.deleteUser()` → redirect `/`). Premium card: "Premium — 49 kr" STUB button → "Betalning kommer snart".
 
-- [ ] Steps: implement → commit.
+- [x] Steps: implement → commit.
 
 ### Task 14: Verify + e2e + PR
 
-- [ ] `pnpm ts:check`, `pnpm biome:fix`, `pnpm test` all green.
-- [ ] Update `e2e/specs/*.spec.ts` for new landing/dialog (compile-checked; full run needs built server + DB).
-- [ ] `pnpm build`.
-- [ ] `pnpm dev` + chrome MCP: landing, auth dialog toggle, profile page, chat flows (resolved, clarify, area) — visual verification, screenshots.
-- [ ] Push branch, open PR with summary + migration notes (drizzle migration, `SIGNUP_IP_LIMIT` env optional).
+- [x] `pnpm ts:check`, `pnpm biome:fix`, `pnpm test` all green.
+- [x] Update `e2e/specs/*.spec.ts` for new landing/dialog (compile-checked; full run needs built server + DB).
+- [x] `pnpm build`.
+- [x] `pnpm dev` + chrome MCP: landing, auth dialog toggle, profile page, chat flows (resolved, clarify, area) — visual verification, screenshots.
+- [x] Push branch, open PR with summary + migration notes (drizzle migration, `SIGNUP_IP_LIMIT` env optional).
