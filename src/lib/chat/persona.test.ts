@@ -9,16 +9,27 @@ describe("FISKARGUBBEN_SYSTEM", () => {
     expect(FISKARGUBBEN_SYSTEM.includes("${")).toBe(false);
   });
 
-  it("contains a fishing-only / refuse-off-topic instruction", () => {
-    // The persona must decline non-fishing questions in character.
-    // We accept any of several natural Swedish phrases that encode this rule.
-    const hasFishingLock =
-      /fisk/i.test(FISKARGUBBEN_SYSTEM) &&
-      (/avvis|vägra|avböj|inte svar|tackar nej|håller sig|bara (om|till) fisk|bara fisk|enbart fisk/i.test(
-        FISKARGUBBEN_SYSTEM,
-      ) ||
-        /inget annat/i.test(FISKARGUBBEN_SYSTEM));
-    expect(hasFishingLock).toBe(true);
+  it("refuses clearly off-domain topics but allows weather/nature questions", () => {
+    // Rebuild: the guard is loosened. Weather/water/nature questions get
+    // straight answers; only clearly unrelated topics (code, homework,
+    // politics) are refused in character.
+    expect(/avvis/i.test(FISKARGUBBEN_SYSTEM)).toBe(true);
+    expect(/programmering|läxor|politik/i.test(FISKARGUBBEN_SYSTEM)).toBe(true);
+    expect(/väder/i.test(FISKARGUBBEN_SYSTEM)).toBe(true);
+    // The old hard lock must be gone.
+    expect(/BARA om fiske\. Inget annat/.test(FISKARGUBBEN_SYSTEM)).toBe(false);
+  });
+
+  it("contains honest area-only guidance (unresolved lake)", () => {
+    expect(FISKARGUBBEN_SYSTEM).toContain("areaOnly");
+    expect(/ärlig/i.test(FISKARGUBBEN_SYSTEM)).toBe(true);
+    expect(/hitta (ALDRIG|aldrig) på/i.test(FISKARGUBBEN_SYSTEM)).toBe(true);
+  });
+
+  it("bans scripted catchphrases", () => {
+    expect(/katchfraser|slagord/i.test(FISKARGUBBEN_SYSTEM)).toBe(true);
+    // Known catchphrase examples must not be baked into the prompt.
+    expect(FISKARGUBBEN_SYSTEM.includes("fiskarna vet om det")).toBe(false);
   });
 
   it("contains gender-neutrality instruction", () => {

@@ -7,9 +7,12 @@
  * re-export from here so existing import sites keep working.
  */
 
-/** Off-topic refusal (extractor topic gate). */
+/**
+ * Off-topic refusal (extractor topic gate). Rebuild: the gate is loosened —
+ * weather/water/nature questions pass — so the refusal names what IS in scope.
+ */
 export const CANNED_REFUSAL =
-  "Jag snackar bara fiske, hörru. Fråga mig om sjöar, abborre eller gädda istället.";
+  "Sånt kan jag inget om, hörru. Fråga mig om fiske, väder eller vatten istället.";
 
 /**
  * Chat-turn limit hit — deliberately a PLAIN system alert, NOT Fiskargubben's
