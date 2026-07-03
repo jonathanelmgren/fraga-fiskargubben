@@ -27,12 +27,11 @@ import { CHAT_LIMIT_MESSAGE } from "@/lib/chat/quota";
 import type { CandidateLake } from "@/lib/lakes/candidates";
 import type { Signals } from "@/lib/signals/types";
 import {
-  areaLabel,
   type AskHandlerDeps,
-  type AskInput,
   type AskResult,
-  centroidOf,
+  areaLabel,
   type ConversationRow,
+  centroidOf,
   handleAsk,
   toBadges,
 } from "./ask-handler";
@@ -56,8 +55,14 @@ const BASE_SIGNALS: Signals = {
   lakeId: "tolken-1",
   bareLakeName: "Tolken",
   timeLocal: "2026-06-29T10:00:00",
-  airTempC: { value: 17, provenance: { source: "forecast", confidence: "high" } },
-  windMs: { value: 4.2, provenance: { source: "forecast", confidence: "high" } },
+  airTempC: {
+    value: 17,
+    provenance: { source: "forecast", confidence: "high" },
+  },
+  windMs: {
+    value: 4.2,
+    provenance: { source: "forecast", confidence: "high" },
+  },
 };
 
 const TOLKEN: CandidateLake = {
@@ -201,9 +206,11 @@ describe("anon quota gate", () => {
 
   it("ALLOWS an anon follow-up on their own conversation (clarify loop needs it)", async () => {
     const deps = makeDeps({
-      getConversation: vi.fn().mockResolvedValue(
-        resolvedConversation({ userId: null, claimToken: "token-abc" }),
-      ),
+      getConversation: vi
+        .fn()
+        .mockResolvedValue(
+          resolvedConversation({ userId: null, claimToken: "token-abc" }),
+        ),
       countUserMessages: vi.fn().mockResolvedValue(1),
     });
     const result = await handleAsk(
@@ -244,15 +251,12 @@ describe("chat-turn limit", () => {
   it("passes isAdmin to chatTurnAllowed so admins bypass the limit", async () => {
     const deps = makeDeps({
       getSession: loggedIn("admin-1", true),
-      getConversation: vi.fn().mockResolvedValue(
-        resolvedConversation({ userId: "admin-1" }),
-      ),
+      getConversation: vi
+        .fn()
+        .mockResolvedValue(resolvedConversation({ userId: "admin-1" })),
       countUserMessages: vi.fn().mockResolvedValue(25),
     });
-    await handleAsk(
-      { message: "Mer?", conversationId: "conv-1" },
-      deps,
-    );
+    await handleAsk({ message: "Mer?", conversationId: "conv-1" }, deps);
     expect(deps.chatTurnAllowed).toHaveBeenCalledWith(25, { isAdmin: true });
   });
 
@@ -695,7 +699,9 @@ describe("follow-ups", () => {
     expect(deps.emit).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "persistence_failure",
-        payload: expect.objectContaining({ reason: "missing_signals_snapshot" }),
+        payload: expect.objectContaining({
+          reason: "missing_signals_snapshot",
+        }),
       }),
     );
   });
@@ -724,9 +730,11 @@ describe("C1: conversation-ownership enforcement", () => {
 
   it("rejects a tokenless anon caller supplying another anon's conversationId", async () => {
     const deps = makeDeps({
-      getConversation: vi.fn().mockResolvedValue(
-        resolvedConversation({ userId: null, claimToken: "real-token" }),
-      ),
+      getConversation: vi
+        .fn()
+        .mockResolvedValue(
+          resolvedConversation({ userId: null, claimToken: "real-token" }),
+        ),
     });
     const result = await handleAsk(
       { message: "Vad biter?", conversationId: "conv-1" },

@@ -42,9 +42,9 @@ describe("extractClientIp", () => {
   });
 
   it("falls back to x-real-ip", () => {
-    expect(
-      extractClientIp(new Headers({ "x-real-ip": "203.0.113.9" })),
-    ).toBe("203.0.113.9");
+    expect(extractClientIp(new Headers({ "x-real-ip": "203.0.113.9" }))).toBe(
+      "203.0.113.9",
+    );
   });
 
   it("returns null when no header is present", () => {

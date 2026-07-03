@@ -17,8 +17,8 @@ vi.mock("@/shared/env", () => ({
 }));
 
 import { describe, expect, it } from "vitest";
-import type { Lake } from "./resolve";
 import { attachDistances, candidateLakes } from "./candidates";
+import type { Lake } from "./resolve";
 
 const asunden: Lake = {
   id: "lake-asunden",
@@ -43,7 +43,9 @@ describe("attachDistances", () => {
     expect(out[0].distanceKm).toBeGreaterThan(5);
     expect(out[0].distanceKm).toBeLessThan(15);
     // one decimal
-    expect(out[0].distanceKm).toBe(Math.round((out[0].distanceKm ?? 0) * 10) / 10);
+    expect(out[0].distanceKm).toBe(
+      Math.round((out[0].distanceKm ?? 0) * 10) / 10,
+    );
   });
 
   it("does not mutate input rows", () => {

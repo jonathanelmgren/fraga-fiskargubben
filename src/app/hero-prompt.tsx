@@ -11,11 +11,7 @@ export type PendingPrompt = {
   location?: { lat: number; lon: number };
 };
 
-const SUGGESTIONS = [
-  "Tolken i kväll",
-  "Sämsjön nu",
-  "Åsunden i morgon bitti",
-];
+const SUGGESTIONS = ["Tolken i kväll", "Sämsjön nu", "Åsunden i morgon bitti"];
 
 type GeoState = "off" | "loading" | "on" | "denied";
 

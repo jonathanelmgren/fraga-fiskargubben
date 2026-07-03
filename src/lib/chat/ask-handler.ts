@@ -183,10 +183,7 @@ export type AskHandlerDeps = {
    * (raced past the free limit) — caller treats false as out-of-credits (E5).
    */
   spendCredit(userId: string): Promise<boolean>;
-  chatTurnAllowed(
-    messageCount: number,
-    opts?: { isAdmin?: boolean },
-  ): boolean;
+  chatTurnAllowed(messageCount: number, opts?: { isAdmin?: boolean }): boolean;
   freezeConversation(id: string): Promise<void>;
 
   // DB writes (lifecycle)
@@ -674,19 +671,15 @@ export function centroidOf(
   candidates: CandidateLake[],
 ): UserLocation | undefined {
   if (candidates.length === 0) return undefined;
-  const lat =
-    candidates.reduce((sum, c) => sum + c.lat, 0) / candidates.length;
-  const lon =
-    candidates.reduce((sum, c) => sum + c.lon, 0) / candidates.length;
+  const lat = candidates.reduce((sum, c) => sum + c.lat, 0) / candidates.length;
+  const lon = candidates.reduce((sum, c) => sum + c.lon, 0) / candidates.length;
   return { lat, lon };
 }
 
 /** Swedish area label for unresolved-area snapshots. */
-export function areaLabel(
-  extraction: Extraction,
-  hasCoords: boolean,
-): string {
-  if (extraction.municipality) return `trakten kring ${extraction.municipality}`;
+export function areaLabel(extraction: Extraction, hasCoords: boolean): string {
+  if (extraction.municipality)
+    return `trakten kring ${extraction.municipality}`;
   if (hasCoords) return "trakten där du är";
   return "okänt vatten";
 }

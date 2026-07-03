@@ -3,11 +3,8 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { PENDING_PROMPT_KEY, type PendingPrompt } from "@/app/hero-prompt";
 import gubbeImg from "@/assets/gubbe.png";
-import {
-  PENDING_PROMPT_KEY,
-  type PendingPrompt,
-} from "@/app/hero-prompt";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -105,7 +102,7 @@ function Badge({
 
 function BadgesStrip({ badges }: { badges: Badges }) {
   return (
-    <div
+    <section
       className="flex flex-wrap items-center gap-2 border-b border-border bg-card/60 px-4 py-2.5"
       aria-label="Fångad data"
     >
@@ -123,7 +120,7 @@ function BadgesStrip({ badges }: { badges: Badges }) {
       {badges.waterTempC !== undefined && (
         <Badge icon="🌊" label={`Vatten ${formatNum(badges.waterTempC)}°C`} />
       )}
-    </div>
+    </section>
   );
 }
 
@@ -439,7 +436,12 @@ export default function Chat({
           streamingMsgId = assistantMsgId;
           setMessages((prev) => [
             ...prev,
-            { role: "assistant", text: "", streaming: true, id: assistantMsgId },
+            {
+              role: "assistant",
+              text: "",
+              streaming: true,
+              id: assistantMsgId,
+            },
           ]);
           setThinking(false);
           setStreaming(true);

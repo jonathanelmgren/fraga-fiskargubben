@@ -5,11 +5,11 @@
 import "server-only";
 
 import { asc, desc, eq } from "drizzle-orm";
+import type { DrawerItem } from "@/components/chat-drawer";
 import { toBadges } from "@/lib/chat/ask-handler";
 import type { Signals } from "@/lib/signals/types";
 import { db } from "@/shared/db/client";
 import { conversations, messages } from "@/shared/db/schema";
-import type { DrawerItem } from "@/components/chat-drawer";
 
 const DRAWER_LIMIT = 30;
 
@@ -26,9 +26,7 @@ function titleOf(snapshot: Signals | null, status: string): string {
   return status === "lake_pending" ? "Ny fråga" : "Chatt";
 }
 
-export async function listConversations(
-  userId: string,
-): Promise<DrawerItem[]> {
+export async function listConversations(userId: string): Promise<DrawerItem[]> {
   const rows = await db
     .select({
       id: conversations.id,

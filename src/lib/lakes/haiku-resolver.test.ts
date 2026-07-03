@@ -97,7 +97,8 @@ describe("resolveLakeWithHaiku", () => {
       lakeId: "lake-asunden-boras",
       confidence: 35,
       noSuchLake: false,
-      clarifyQuestion: "Vilken av dem menar du — den vid Borås eller den i Kinda?",
+      clarifyQuestion:
+        "Vilken av dem menar du — den vid Borås eller den i Kinda?",
     });
     const result = await resolveLakeWithHaiku({
       message: "Åsunden",
@@ -188,9 +189,11 @@ describe("resolveLakeWithHaiku", () => {
   });
 
   it("wraps an API failure as ExternalServiceError with upstream status", async () => {
-    const parseSpy = vi.fn().mockRejectedValue(
-      Object.assign(new Error("rate limited"), { status: 429 }),
-    );
+    const parseSpy = vi
+      .fn()
+      .mockRejectedValue(
+        Object.assign(new Error("rate limited"), { status: 429 }),
+      );
     await expect(
       resolveLakeWithHaiku({
         message: "Åsunden",

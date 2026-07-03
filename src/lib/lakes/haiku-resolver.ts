@@ -206,9 +206,10 @@ export async function resolveLakeWithHaiku(params: {
 
   return {
     lakeId: validLakeId,
-    confidence: validLakeId === null && parsed.lakeId !== null
-      ? 0 // hallucinated id — never confident
-      : parsed.confidence,
+    confidence:
+      validLakeId === null && parsed.lakeId !== null
+        ? 0 // hallucinated id — never confident
+        : parsed.confidence,
     noSuchLake: parsed.noSuchLake,
     clarifyQuestion: parsed.clarifyQuestion.trim() || LAKE_CLARIFY_FALLBACK,
   };
