@@ -40,6 +40,14 @@ export function lakeAmbiguousMessage(
   return `Det finns flera sjöar som heter ${lakeName}, hörru — vilken menar du? Säg kommunen: ${options}.`;
 }
 
+/**
+ * Fallback clarify question when the Haiku resolver could not produce one
+ * (parse failure). In-persona; used by the free clarify rounds of the
+ * lake-resolution lifecycle.
+ */
+export const LAKE_CLARIFY_FALLBACK =
+  "Vilken sjö menar du nu? Säg namnet och kommunen eller närmaste ort, så vet jag vilket vatten vi pratar om.";
+
 /** Free credits exhausted. */
 export const OUT_OF_CREDITS_MESSAGE =
   "Du har förbrukat dina gratiskrediter — uppgradera för att fiska vidare.";
