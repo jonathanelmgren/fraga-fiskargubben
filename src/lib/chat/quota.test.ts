@@ -56,6 +56,18 @@ describe("canSpendCredit", () => {
   it("allows isPaid=true even with creditsUsed=99", () => {
     expect(canSpendCredit({ isPaid: true, creditsUsed: 99 })).toBe(true);
   });
+
+  it("admin bypasses the cap regardless of credits/paid state", () => {
+    expect(
+      canSpendCredit({ isPaid: false, creditsUsed: 999 }, { isAdmin: true }),
+    ).toBe(true);
+  });
+
+  it("isAdmin:false behaves like no opts", () => {
+    expect(
+      canSpendCredit({ isPaid: false, creditsUsed: 3 }, { isAdmin: false }),
+    ).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -84,6 +96,10 @@ describe("chatTurnAllowed", () => {
 
   it("wind-down turn 15 is NOT blocked (soft taper, handled elsewhere)", () => {
     expect(chatTurnAllowed(15)).toBe(true);
+  });
+
+  it("admin has no turn limit", () => {
+    expect(chatTurnAllowed(MAX_CHAT_TURNS + 100, { isAdmin: true })).toBe(true);
   });
 });
 
