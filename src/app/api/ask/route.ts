@@ -21,7 +21,7 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import { and, asc, count, eq } from "drizzle-orm";
+import { and, asc, count, eq, sql } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { after } from "next/server";
 import { emit } from "@/lib/analytics/events";
@@ -31,11 +31,19 @@ import {
   getLakeLockRedirect,
   isLakeLockViolation,
 } from "@/lib/chat/advise";
-import type { AskHandlerDeps, AskResult } from "@/lib/chat/ask-handler";
+import type {
+  AskHandlerDeps,
+  AskResult,
+  ConversationStatus,
+} from "@/lib/chat/ask-handler";
 import { handleAsk } from "@/lib/chat/ask-handler";
 import { signClaimToken, verifyClaimToken } from "@/lib/chat/claim-cookie";
 import { extract } from "@/lib/chat/extractor";
-import { type PersistTurnsDeps, persistTurns } from "@/lib/chat/persist-turns";
+import {
+  persistClarifyTurns,
+  type PersistTurnsDeps,
+  persistTurns,
+} from "@/lib/chat/persist-turns";
 import {
   canSpendCredit,
   chatTurnAllowed,
@@ -46,8 +54,11 @@ import {
 import { toTextStream } from "@/lib/chat/sse-text-stream";
 import { ExternalServiceError, TimeoutError } from "@/lib/errors";
 import { getSession } from "@/lib/get-session";
-import { resolveLake } from "@/lib/lakes/resolve";
+import { isAdminEmail } from "@/lib/is-admin";
+import { candidateLakes } from "@/lib/lakes/candidates";
+import { resolveLakeWithHaiku } from "@/lib/lakes/haiku-resolver";
 import { buildSignals } from "@/lib/signals/build";
+import { buildAreaSignals } from "@/lib/signals/build-area";
 import { db } from "@/shared/db/client";
 import { conversations, messages, users } from "@/shared/db/schema";
 import { env } from "@/shared/env";
@@ -118,6 +129,21 @@ export function serializeClaimCookie(name: string, value: string): string {
   return parts.join("; ");
 }
 
+/**
+ * Sweden-ish bounding box for the optional browser geolocation. Exported for
+ * tests. Anything outside is dropped (VPN exits, spoofed coords, GPS noise).
+ */
+export function parseLocation(
+  value: unknown,
+): { lat: number; lon: number } | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const { lat, lon } = value as { lat?: unknown; lon?: unknown };
+  if (typeof lat !== "number" || typeof lon !== "number") return undefined;
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return undefined;
+  if (lat < 54 || lat > 70 || lon < 9 || lon > 26) return undefined;
+  return { lat, lon };
+}
+
 /** H1: in-persona Swedish fallback the chat UI renders as a generic error. */
 const GENERIC_ERROR_MESSAGE =
   "Något krånglar i tacklingen just nu, hörru — kasta igen om en stund.";
@@ -174,11 +200,18 @@ function buildDeps(): AskHandlerDeps {
     // is threaded end-to-end here so the gendered-tilltal path is reachable the
     // moment a gender field is added to the session/account.
     // [~] deferred: IdP gender field not yet on the Better Auth session.
+    // isAdmin (ADMIN_EMAILS allowlist) lifts the credit cap + chat-turn limit.
     getSession: async () => {
       const session = await getSession();
       if (!session) return null;
       const gender = (session.user as { gender?: string | null }).gender;
-      return { user: { id: session.user.id, gender } };
+      return {
+        user: {
+          id: session.user.id,
+          gender,
+          isAdmin: isAdminEmail(session.user.email),
+        },
+      };
     },
 
     // ── DB reads ──────────────────────────────────────────────────────────
@@ -195,6 +228,10 @@ function buildDeps(): AskHandlerDeps {
         userId: row.userId,
         claimToken: row.claimToken,
         frozen: row.frozen,
+        status: row.status as ConversationStatus,
+        resolveAttempts: row.resolveAttempts,
+        userLat: row.userLat,
+        userLon: row.userLon,
         signalsSnapshot: row.signalsSnapshot ?? null,
         lakeId: row.lakeId,
         // I1 + M1 + M9: use ONLY the bare lake name ("Tolken") as the lake-lock
@@ -249,13 +286,15 @@ function buildDeps(): AskHandlerDeps {
 
     // ── Leaf modules ──────────────────────────────────────────────────────
     extract: (message, history) => extract(message, history),
-    resolveLake: (name, municipality) => resolveLake(name, municipality),
+    candidateLakes: (name, userLoc) => candidateLakes(name, userLoc),
+    resolveLakeWithHaiku: (params) => resolveLakeWithHaiku(params),
     buildSignals: ({ lake, targetTime, now }) =>
       buildSignals({
         lake: { ...lake, name: lake.name ?? lake.id },
         targetTime,
         now,
       }),
+    buildAreaSignals: (input) => buildAreaSignals(input),
     adviseFirst: ({ signals, message, history, gender }) =>
       adviseFirst({ signals, message, history: history ?? [], gender }),
     adviseFollowup: ({ snapshot, message, history, turnIndex, gender }) =>
@@ -273,24 +312,41 @@ function buildDeps(): AskHandlerDeps {
     chatTurnAllowed,
     freezeConversation: (id) => freezeConversation(id),
 
-    // ── DB writes ─────────────────────────────────────────────────────────
-    createConversation: async ({
+    // ── DB writes (resolution lifecycle) ──────────────────────────────────
+    createPendingConversation: async ({
       userId,
       claimToken,
-      lakeId,
-      targetTime,
-      signalsSnapshot,
+      userLat,
+      userLon,
     }) => {
       const id = randomUUID();
       await db.insert(conversations).values({
         id,
         userId: userId ?? null,
         claimToken: claimToken ?? null,
-        lakeId,
-        targetTime: targetTime ?? null,
-        signalsSnapshot,
+        status: "lake_pending",
+        userLat: userLat ?? null,
+        userLon: userLon ?? null,
       });
       return id;
+    },
+    transitionConversation: async ({
+      id,
+      status,
+      lakeId,
+      targetTime,
+      signalsSnapshot,
+    }) => {
+      await db
+        .update(conversations)
+        .set({ status, lakeId, targetTime, signalsSnapshot })
+        .where(eq(conversations.id, id));
+    },
+    incrementResolveAttempts: async (id) => {
+      await db
+        .update(conversations)
+        .set({ resolveAttempts: sql`${conversations.resolveAttempts} + 1` })
+        .where(eq(conversations.id, id));
     },
 
     // ── Analytics ─────────────────────────────────────────────────────────
@@ -350,7 +406,11 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   // Parse request body
-  let body: { message?: unknown; conversationId?: unknown };
+  let body: {
+    message?: unknown;
+    conversationId?: unknown;
+    location?: unknown;
+  };
   try {
     body = await request.json();
   } catch {
@@ -377,6 +437,11 @@ export async function POST(request: Request): Promise<Response> {
   }
   const conversationId = rawConversationId;
 
+  // Optional browser geolocation. Silently ignore anything malformed or
+  // outside a generous Sweden-ish bounding box (bogus coords must not steer
+  // resolution or SMHI fetches) — location is a hint, never a hard input.
+  const location = parseLocation(body.location);
+
   // Pre-read the claim token cookie (cookies() is async in Next.js 16) and
   // verify its HMAC signature.  A missing, malformed, or tampered signature
   // yields null → treated exactly like "no claim cookie" (see claim-cookie.ts).
@@ -395,7 +460,10 @@ export async function POST(request: Request): Promise<Response> {
   // stable in-persona Swedish gate the existing chat UI already handles.
   let result: AskResult;
   try {
-    result = await handleAsk({ message, conversationId, claimToken }, deps);
+    result = await handleAsk(
+      { message, conversationId, claimToken, location },
+      deps,
+    );
   } catch (err) {
     // L-rt1: emit a queryable pipeline_error so a failure escaping handleAsk is
     // visible in analytics (previously the catch returned a classified Response
@@ -447,6 +515,16 @@ export async function POST(request: Request): Promise<Response> {
       "X-Conversation-Id": result.conversationId,
     });
 
+    // Badge payload for the chat UI (lake/area label + key conditions). Known
+    // before the stream starts — signals are built before adviseFirst. Header
+    // values must be ASCII → URI-encode the JSON.
+    if (result.badges) {
+      headers.set(
+        "X-Signals",
+        encodeURIComponent(JSON.stringify(result.badges)),
+      );
+    }
+
     // Set claim token cookie for new anon conversations.
     // handleAsk returns claimToken on the stream result when it created a new
     // anon conversation. Without this cookie the anon quota gate (isAnon &&
@@ -474,6 +552,39 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     return new Response(readable, { headers });
+  }
+
+  // Clarify round (rebuild spec): a free Haiku follow-up question. Persist
+  // BOTH turns post-response (the next resolver round needs them as history)
+  // and expose the conversation id + claim cookie exactly like the stream
+  // path, so the client can continue the same conversation.
+  if (result.type === "clarify") {
+    const clarify = result;
+    after(() =>
+      persistClarifyTurns(buildPersistDeps(), {
+        conversationId: clarify.conversationId,
+        message,
+        clarifyText: clarify.text,
+      }),
+    );
+
+    const headers = new Headers({
+      "Content-Type": "application/json",
+      "X-Conversation-Id": clarify.conversationId,
+    });
+    if (clarify.claimToken) {
+      headers.append(
+        "Set-Cookie",
+        serializeClaimCookie(
+          CLAIM_TOKEN_COOKIE,
+          signClaimToken(clarify.claimToken),
+        ),
+      );
+    }
+    return new Response(
+      JSON.stringify({ type: "clarify", text: clarify.text }),
+      { headers },
+    );
   }
 
   // Non-stream gate responses — structured JSON

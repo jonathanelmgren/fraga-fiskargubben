@@ -50,6 +50,48 @@ function assistantTextOf(final: {
  *
  * Never throws.
  */
+/**
+ * Persist a clarify round (rebuild spec): the user turn plus the resolver's
+ * clarify question as the assistant turn. No stream involved — the text is
+ * already final. Same never-throws contract as persistTurns.
+ */
+export async function persistClarifyTurns(
+  deps: Pick<PersistTurnsDeps, "persistMessage" | "updateLastActive" | "emit">,
+  args: { conversationId: string; message: string; clarifyText: string },
+): Promise<void> {
+  const { conversationId, message, clarifyText } = args;
+  try {
+    await deps.persistMessage({
+      conversationId,
+      role: "user",
+      content: message,
+    });
+    await deps.persistMessage({
+      conversationId,
+      role: "assistant",
+      content: clarifyText,
+    });
+  } catch (err) {
+    await deps.emit({
+      type: "persistence_failure",
+      conversationId,
+      payload: { reason: err instanceof Error ? err.message : String(err) },
+    });
+  } finally {
+    try {
+      await deps.updateLastActive(conversationId);
+    } catch (err) {
+      await deps.emit({
+        type: "persistence_failure",
+        conversationId,
+        payload: {
+          reason: `updateLastActive: ${err instanceof Error ? err.message : String(err)}`,
+        },
+      });
+    }
+  }
+}
+
 export async function persistTurns(
   deps: PersistTurnsDeps,
   args: {
