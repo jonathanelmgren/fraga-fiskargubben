@@ -29,6 +29,12 @@ const schema = z.object({
    * dashboard denies everyone) so the app still boots in dev/CI without it.
    */
   ADMIN_EMAILS: z.string().optional(),
+  /**
+   * Signup abuse guard: max accounts per hashed client IP within a rolling
+   * 30-day window. Optional — defaults to 3. Set high (e.g. 1000) in e2e/CI
+   * environments where every registration comes from localhost.
+   */
+  SIGNUP_IP_LIMIT: z.coerce.number().int().positive().optional(),
 });
 
 const parsed = schema.safeParse(process.env);

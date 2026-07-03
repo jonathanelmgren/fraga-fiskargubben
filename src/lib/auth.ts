@@ -1,7 +1,13 @@
 import "server-only";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { APIError } from "better-auth/api";
 import { nextCookies } from "better-auth/next-js";
+import { emit } from "@/lib/analytics/events";
+import {
+  checkSignupAllowed,
+  SIGNUP_IP_LIMIT_MESSAGE,
+} from "@/lib/auth/signup-ip";
 import { claimConversation } from "@/lib/chat/anon";
 import { verifyClaimToken } from "@/lib/chat/claim-cookie";
 import { db } from "@/shared/db/client";
@@ -27,9 +33,25 @@ export const auth = betterAuth({
     enabled: true,
     // Open registration: anyone can sign up. No email sender wired yet, so
     // verification is off — turn on once a transactional mail path exists.
+    // Abuse is bounded by the signup IP guard in the user.create.before hook.
     disableSignUp: false,
     minPasswordLength: 8,
     requireEmailVerification: false,
+  },
+  user: {
+    // signupIpHash is stamped by the before-create hook (never client input).
+    additionalFields: {
+      signupIpHash: {
+        type: "string",
+        required: false,
+        input: false,
+      },
+    },
+    // Profile page: self-service account deletion (cascades wipe sessions,
+    // accounts and conversations via the FK on delete rules).
+    deleteUser: {
+      enabled: true,
+    },
   },
   socialProviders: {
     google: {
@@ -63,6 +85,26 @@ export const auth = betterAuth({
   databaseHooks: {
     user: {
       create: {
+        // Signup abuse guard (rebuild spec D): reject when too many accounts
+        // registered from the same (hashed) IP in the rolling window; stamp
+        // the hash on the row otherwise. Runs BEFORE the insert so a blocked
+        // registration never creates a row — and covers email + OAuth alike.
+        // No determinable IP (context-less creation, odd proxies) → allow.
+        async before(user, context) {
+          const headers = context?.headers ?? context?.request?.headers;
+          if (!headers) return { data: user };
+
+          const { allowed, ipHash } = await checkSignupAllowed(headers);
+          if (!allowed) {
+            await emit({ type: "signup_ip_blocked" }).catch(() => {});
+            throw new APIError("TOO_MANY_REQUESTS", {
+              message: SIGNUP_IP_LIMIT_MESSAGE,
+            });
+          }
+          return {
+            data: ipHash ? { ...user, signupIpHash: ipHash } : user,
+          };
+        },
         async after(user, context) {
           // context is null when the user is created outside of a request
           // (e.g. tests, seed scripts) — skip the claim in that case.
