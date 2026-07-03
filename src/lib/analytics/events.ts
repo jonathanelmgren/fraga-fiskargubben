@@ -35,7 +35,15 @@ export type AnalyticsEventType =
   // L-ah1: the Extractor returned a relative Swedish time (e.g. "ikväll") that
   // new Date() can't parse, so Signals fell back to `now`. Emitted so the
   // prevalence of this silent degradation is visible.
-  | "time_parse_fallback";
+  | "time_parse_fallback"
+  // Rebuild: the Haiku resolver was not confident enough (< threshold) and we
+  // asked the user to be more specific — a free clarify round.
+  | "lake_clarify"
+  // Rebuild: resolution gave up (attempts exhausted or confident no-such-lake);
+  // the conversation continues in area mode on SMHI signals only.
+  | "lake_unresolved_area"
+  // Rebuild: a registration was rejected by the signup IP guard.
+  | "signup_ip_blocked";
 
 export interface AnalyticsEvent {
   type: AnalyticsEventType;

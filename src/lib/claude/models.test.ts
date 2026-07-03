@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ADVICE_MODEL, EXTRACTOR_MODEL } from "./models";
+import { ADVICE_MODEL, EXTRACTOR_MODEL, RESOLVER_MODEL } from "./models";
 
 describe("claude models", () => {
   it("uses Haiku 4.5 for extraction", () => {
@@ -7,5 +7,8 @@ describe("claude models", () => {
   });
   it("uses Sonnet 4.6 for first-prompt advice", () => {
     expect(ADVICE_MODEL).toBe("claude-sonnet-4-6");
+  });
+  it("uses Haiku 4.5 for lake resolution (free clarify rounds)", () => {
+    expect(RESOLVER_MODEL).toBe("claude-haiku-4-5");
   });
 });

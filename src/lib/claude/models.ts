@@ -3,3 +3,6 @@
 export const EXTRACTOR_MODEL = "claude-haiku-4-5" as const;
 export const ADVICE_MODEL = "claude-sonnet-4-6" as const;
 export const FOLLOWUP_MODEL = "claude-haiku-4-5" as const;
+// Lake resolution (candidate picking + clarify questions) is Haiku: every
+// pre-resolution turn is free, so it must stay on the cheap tier.
+export const RESOLVER_MODEL = "claude-haiku-4-5" as const;
