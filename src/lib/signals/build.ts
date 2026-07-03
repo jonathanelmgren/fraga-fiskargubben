@@ -17,6 +17,7 @@
  */
 
 import { emit } from "@/lib/analytics/events";
+import { formatStockholmLocal, stockholmParts } from "@/lib/time/stockholm";
 import { colourFor } from "@/lib/water/colour";
 import { depthFor } from "@/lib/water/depth";
 import { speciesFor } from "@/lib/water/species";
@@ -86,15 +87,15 @@ function assignFinite<K extends keyof Signals>(
 }
 
 /**
- * Derive calendar season from the LOCAL month (0-indexed).
+ * Derive calendar season from the SWEDISH month.
  * Northern hemisphere: Dec-Feb=winter, Mar-May=spring, Jun-Aug=summer, Sep-Nov=autumn.
  *
- * L4: uses getMonth() (local) rather than getUTCMonth() so it stays consistent
- * with the rest of the file's local-time handling — at UTC+1/+2 a month-
- * boundary near midnight would otherwise land in the wrong season.
+ * Uses the Europe/Stockholm month, not the host-local or UTC month: on a UTC
+ * server a month boundary near midnight would otherwise land in the wrong
+ * season (e.g. 00:30 CET on 1 Mar is still 23:30 UTC on 28 Feb → "winter").
  */
 function seasonFromDate(date: Date): Season {
-  const month = date.getMonth(); // 0-11, local
+  const month = stockholmParts(date).month - 1; // 0-11, Swedish local
   if (month >= 2 && month <= 4) return "spring";
   if (month >= 5 && month <= 7) return "summer";
   if (month >= 8 && month <= 10) return "autumn";
@@ -403,7 +404,10 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
     // lake-lock comparison in follow-ups can compare against the bare name
     // rather than the full "name (municipality, county)" label.
     bareLakeName: lake.name,
-    timeLocal: safeTargetTime.toISOString(),
+    // Europe/Stockholm wall-clock (zone-less ISO) — this field is what the LLM
+    // reads as "the time the angler is standing in". `.toISOString()` would
+    // render UTC (22:00 for a 00:00-Stockholm summer instant) → wrong hour.
+    timeLocal: formatStockholmLocal(safeTargetTime),
   };
 
   // #8: flag observed staleness so the LLM can hedge on the observed snapshot.

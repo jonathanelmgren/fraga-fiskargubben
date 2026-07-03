@@ -54,6 +54,7 @@ vi.mock("@/lib/signals/light", () => ({
 
 import { emit } from "@/lib/analytics/events";
 import { lightWindow, sunTimes } from "@/lib/signals/light";
+import { formatStockholmLocal } from "@/lib/time/stockholm";
 import { colourFor } from "@/lib/water/colour";
 import { depthFor } from "@/lib/water/depth";
 import { speciesFor } from "@/lib/water/species";
@@ -751,8 +752,9 @@ describe("buildSignals", () => {
         now: NOW,
       });
 
-      // timeLocal should be the now fallback, not NaN or a throw
-      expect(signals.timeLocal).toBe(NOW.toISOString());
+      // timeLocal should be the now fallback (as Swedish wall-clock), not NaN
+      // or a throw. NOW is 08:00Z = 10:00 CEST in Stockholm.
+      expect(signals.timeLocal).toBe(formatStockholmLocal(NOW));
     });
   });
 

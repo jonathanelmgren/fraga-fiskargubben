@@ -4,21 +4,35 @@
  * Table-driven tests for resolveSwedishTime: Swedish relative-time phrasings →
  * expected concrete Date, against a FIXED injected `now`.
  *
- * All dates are constructed with the local Date(...) constructor and asserted
- * against local-field getters, so the suite is timezone-agnostic: the parser
- * uses local setDate/setHours, and so do these expectations.
+ * Both `now` and every expected date are constructed as Europe/Stockholm
+ * wall-clock instants (via stockholmWallClockToUtc), matching the parser, which
+ * resolves in the Swedish zone. The suite is therefore genuinely TZ-independent
+ * — it passes under any process TZ (dev GMT+2 or UTC prod).
  */
 
 import { describe, expect, it } from "vitest";
+import { stockholmWallClockToUtc } from "@/lib/time/stockholm";
 import { resolveSwedishTime } from "./swedish-time";
 
-// Fixed reference clock: Wednesday 2026-07-01, 14:30 local time.
-// getDay() === 3 (Wednesday). Chosen mid-week so weekday math is unambiguous.
-const NOW = new Date(2026, 6, 1, 14, 30, 0, 0);
+// Fixed reference clock: Wednesday 2026-07-01, 14:30 SWEDISH time (CEST).
+// Stockholm weekday === 3 (Wednesday). Mid-week so weekday math is unambiguous.
+const NOW = stockholmWallClockToUtc({
+  year: 2026,
+  month: 7,
+  day: 1,
+  hour: 14,
+  minute: 30,
+});
 
-/** Build an expected local Date: `now`'s date + dayOffset, at hh:mm. */
+/** Build an expected Swedish wall-clock Date: 2026-07-(1+offset) at hh:mm. */
 function local(dayOffset: number, hour: number, minute = 0): Date {
-  return new Date(2026, 6, 1 + dayOffset, hour, minute, 0, 0);
+  return stockholmWallClockToUtc({
+    year: 2026,
+    month: 7,
+    day: 1 + dayOffset,
+    hour,
+    minute,
+  });
 }
 
 /** Assert a resolved Date equals the expected local wall-clock. */
