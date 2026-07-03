@@ -42,6 +42,13 @@ export const users = pgTable("user", {
   creditsUsed: integer("credits_used").default(0).notNull(),
   /** Stub paid flag — true lifts the 3-credit free cap. Real payment deferred. ADR-0004. */
   isPaid: boolean("is_paid").default(false).notNull(),
+  /**
+   * HMAC-SHA256 of the client IP at registration (keyed with
+   * BETTER_AUTH_SECRET) — the signup abuse guard counts accounts per hash
+   * within a rolling window. Nullable: legacy rows and registrations where no
+   * client IP could be determined.
+   */
+  signupIpHash: text("signup_ip_hash"),
 });
 
 export const sessions = pgTable("session", {
@@ -247,7 +254,24 @@ export const conversations = pgTable("conversation", {
   userId: text("user_id").references(() => users.id, { onDelete: "cascade" }),
   /** Set for anonymous conversations; matched on registration to claim. ADR-0001. */
   claimToken: text("claim_token"),
-  /** Locked Context lake for this conversation. ADR-0004. */
+  /**
+   * Lake-resolution lifecycle: 'lake_pending' → 'resolved' | 'unresolved_area'.
+   * Pre-transition turns are Haiku-only clarify rounds and cost no credit; the
+   * credit is spent exactly once at the transition out of 'lake_pending'.
+   * Default 'resolved' keeps legacy rows (which were always created resolved)
+   * valid; new rows set 'lake_pending' explicitly at insert.
+   */
+  status: text("status").default("resolved").notNull(),
+  /** Failed Haiku clarify rounds so far; at MAX_RESOLVE_ATTEMPTS → unresolved_area. */
+  resolveAttempts: integer("resolve_attempts").default(0).notNull(),
+  /**
+   * Browser geolocation captured at the first prompt (WGS84), when the user
+   * granted it. Used as a resolution bias and as the unresolved-area coords
+   * fallback. A place named in the prompt always beats these.
+   */
+  userLat: doublePrecision("user_lat"),
+  userLon: doublePrecision("user_lon"),
+  /** Locked Context lake for this conversation. ADR-0004. Null until resolved (or never, for unresolved_area). */
   lakeId: text("lake_id"),
   /** Locked Context target time for this conversation. ADR-0004. */
   targetTime: timestamp("target_time"),
