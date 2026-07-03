@@ -379,6 +379,10 @@ export default function Chat() {
             const { value, done: readerDone } = await reader.read();
             done = readerDone;
             if (value) {
+              // The body is already the assistant's VISIBLE answer as plain
+              // UTF-8 text — the route runs the Anthropic event stream through
+              // toTextStream (drops the model's thinking + the raw JSON frames),
+              // so we append each chunk verbatim. Do NOT parse this as SSE/JSON.
               const chunk = decoder.decode(value, { stream: !done });
               setMessages((prev) => {
                 const updated = [...prev];

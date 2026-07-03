@@ -6,8 +6,10 @@
  * Next.js Response.
  *
  * Streaming pattern: the Anthropic SDK's MessageStream exposes `.toReadableStream()`
- * which returns a standard Web API ReadableStream.  We pass that directly to
- * `new Response(stream)` — the pattern documented in Next.js route.md.
+ * which returns a standard Web API ReadableStream of the raw streaming events
+ * (newline-delimited JSON). We run it through toTextStream (sse-text-stream.ts)
+ * to forward ONLY the visible answer text — dropping the model's private
+ * thinking and the JSON envelope — before it becomes the `new Response` body.
  *
  * Cookie signing: the claimToken cookie (fiska_claim) is HMAC-SHA256 signed with
  * BETTER_AUTH_SECRET before it is set, and its signature is verified on read (see
@@ -41,6 +43,7 @@ import {
   refundCredit,
   spendCredit,
 } from "@/lib/chat/quota";
+import { toTextStream } from "@/lib/chat/sse-text-stream";
 import { ExternalServiceError, TimeoutError } from "@/lib/errors";
 import { getSession } from "@/lib/get-session";
 import { resolveLake } from "@/lib/lakes/resolve";
@@ -408,9 +411,13 @@ export async function POST(request: Request): Promise<Response> {
   // ── Map result to Response ──────────────────────────────────────────────
 
   if (result.type === "stream") {
-    // Stream Anthropic text deltas to the client
-    // Using Anthropic SDK's .toReadableStream() → standard Web ReadableStream
-    const readable = result.stream.toReadableStream();
+    // Stream Anthropic text deltas to the client.
+    // toReadableStream() emits the SDK's raw SSE JSON frames (message_start,
+    // content_block_delta, thinking_delta, …). toTextStream parses those
+    // server-side and forwards ONLY the visible text_delta text — so the client
+    // gets clean text/plain and the model's private `thinking` never leaves the
+    // server (first-turn advice runs with adaptive thinking).
+    const readable = toTextStream(result.stream.toReadableStream());
     const { conversationId: streamConvId, stream } = result;
 
     // H4: persist turns with Next 16's after() so the work survives the
