@@ -15,6 +15,11 @@ ENV DATABASE_URL=postgres://build:build@localhost:5432/build \
     GOOGLE_CLIENT_SECRET=build \
     MICROSOFT_CLIENT_ID=build \
     MICROSOFT_CLIENT_SECRET=build \
+    ANTHROPIC_API_KEY=build \
+    LM_ORDER_ID=build \
+    LM_USERNAME=build \
+    LM_PASSWORD=build \
+    ADMIN_EMAILS=build \
     NEXT_TELEMETRY_DISABLED=1
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
