@@ -35,6 +35,16 @@ const schema = z.object({
    * environments where every registration comes from localhost.
    */
   SIGNUP_IP_LIMIT: z.coerce.number().int().positive().optional(),
+  /**
+   * Discord ops webhooks (channel settings → Integrations → Webhooks).
+   * Optional — unset means notifications are silently skipped. Consumed via
+   * process.env in src/lib/notify/discord.ts (keeps instrumentation.ts free
+   * of the full env schema); declared here for documentation and validation.
+   */
+  DISCORD_WEBHOOK_ALERTS: z.string().url().optional(),
+  DISCORD_WEBHOOK_SIGNUPS: z.string().url().optional(),
+  /** Public Discord invite for the support channel; renders links when set. */
+  NEXT_PUBLIC_DISCORD_INVITE: z.string().url().optional(),
 });
 
 const parsed = schema.safeParse(process.env);

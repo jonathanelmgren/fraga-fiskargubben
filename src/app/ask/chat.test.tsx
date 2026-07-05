@@ -53,6 +53,14 @@ vi.mock("next/link", () => ({
 }));
 
 // ---------------------------------------------------------------------------
+// Mock next/navigation (Chat calls router.refresh() to revalidate the drawer)
+// ---------------------------------------------------------------------------
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ refresh: vi.fn(), push: vi.fn(), replace: vi.fn() }),
+}));
+
+// ---------------------------------------------------------------------------
 // Mock useSession — default: logged out
 // ---------------------------------------------------------------------------
 
@@ -113,7 +121,7 @@ describe("Chat component", () => {
       .spyOn(global, "fetch")
       .mockResolvedValueOnce(makeStreamResponse("Prova maskkroken."));
 
-    render(<Chat />);
+    render(<Chat initialTosAccepted />);
     await typeAndSubmit("Ska jag fiska i Vättern imorgon?");
 
     await waitFor(() => {
@@ -132,7 +140,7 @@ describe("Chat component", () => {
       makeJsonResponse({ type: "chat_limit", text: "Chat limit reached." }),
     );
 
-    render(<Chat />);
+    render(<Chat initialTosAccepted />);
     await typeAndSubmit("En fråga till");
 
     await waitFor(() => {
@@ -154,7 +162,7 @@ describe("Chat component", () => {
       makeJsonResponse({ type: "topic_refused", text: gateText }),
     );
 
-    render(<Chat />);
+    render(<Chat initialTosAccepted />);
     await typeAndSubmit("Vad är meningen med livet?");
 
     await waitFor(() => {
@@ -170,7 +178,7 @@ describe("Chat component", () => {
       makeStreamResponse("Prova maskkroken vid vassen tidigt på morgonen."),
     );
 
-    render(<Chat />);
+    render(<Chat initialTosAccepted />);
     await typeAndSubmit("Tips för abborre?");
 
     await waitFor(() => {
@@ -191,7 +199,7 @@ describe("Chat component", () => {
       }),
     );
 
-    render(<Chat />);
+    render(<Chat initialTosAccepted />);
     await typeAndSubmit("Ännu en fråga");
 
     await waitFor(() => {
@@ -224,7 +232,7 @@ describe("Chat component", () => {
       ),
     );
 
-    render(<Chat />);
+    render(<Chat initialTosAccepted />);
     await typeAndSubmit("Vad biter i sjön?");
 
     await waitFor(() => {
@@ -264,7 +272,7 @@ describe("Chat component", () => {
       }),
     );
 
-    render(<Chat />);
+    render(<Chat initialTosAccepted />);
     await typeAndSubmit("Vad biter i Tolken?");
 
     await waitFor(() => {
@@ -278,6 +286,7 @@ describe("Chat component", () => {
   it("8. renders server-loaded initial messages and badges", () => {
     render(
       <Chat
+        initialTosAccepted
         conversationId="conv-1"
         initialMessages={[
           { role: "user", text: "Vad biter i Tolken?", id: "m1" },
@@ -295,5 +304,45 @@ describe("Chat component", () => {
     expect(document.body.textContent).toContain("Abborren står djupt.");
     const strip = document.querySelector('[aria-label="Fångad data"]');
     expect(strip?.textContent).toContain("Vatten");
+  });
+
+  it("9. terms gate blocks input until accepted, then unlocks", async () => {
+    render(<Chat />);
+
+    // Gate visible from first render, input disabled.
+    expect(document.body.textContent).toContain("genereras av AI");
+    const textarea = document.querySelector<HTMLTextAreaElement>("#chat-input");
+    expect(textarea?.disabled).toBe(true);
+
+    // Accept → gate gone, input enabled, cookie stored.
+    fireEvent.click(screen.getByText("Godkänn och fortsätt"));
+    await waitFor(() => {
+      expect(document.body.textContent).not.toContain("genereras av AI");
+      expect(textarea?.disabled).toBe(false);
+    });
+    expect(document.cookie).toContain("fg_tos_v=1");
+  });
+
+  it("10. first-time gate does NOT show the updated-terms copy", () => {
+    render(<Chat />);
+    expect(document.body.textContent).toContain("genereras av AI");
+    expect(document.body.textContent).not.toContain(
+      "Villkoren har uppdaterats",
+    );
+  });
+
+  it("11. previously accepted older version → updated-terms copy", async () => {
+    // Server resolved: accepted SOME version, but not the current one.
+    render(
+      <Chat initialTosAccepted={false} initialTosPreviouslyAccepted={true} />,
+    );
+
+    expect(document.body.textContent).toContain("Villkoren har uppdaterats");
+    fireEvent.click(screen.getByText("Godkänn och fortsätt"));
+    await waitFor(() => {
+      expect(document.body.textContent).not.toContain(
+        "Villkoren har uppdaterats",
+      );
+    });
   });
 });

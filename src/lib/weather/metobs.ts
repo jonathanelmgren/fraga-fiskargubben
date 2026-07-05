@@ -1,5 +1,5 @@
 import "server-only";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { ExternalServiceError, TimeoutError } from "@/lib/errors";
 import { haversine } from "@/lib/geo/haversine";
 import { db } from "@/shared/db/client";
@@ -265,10 +265,18 @@ export async function nearestStation(
     return cached;
   }
 
+  // Inactive stations remain in the SMHI list but 404 on latest-* data
+  // endpoints (e.g. station 83540, last observation 1996) — only active
+  // stations are candidates.
   const rows = await db
     .select()
     .from(metobsStations)
-    .where(eq(metobsStations.parameter, parameter));
+    .where(
+      and(
+        eq(metobsStations.parameter, parameter),
+        eq(metobsStations.active, true),
+      ),
+    );
 
   if (rows.length === 0) {
     nearestCacheSet(key, null);

@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { useGeolocation } from "@/lib/hooks/use-geolocation";
 
 /** sessionStorage handoff key: landing → /ask (chat auto-submits it). */
 export const PENDING_PROMPT_KEY = "fg:pending-prompt";
@@ -11,43 +12,24 @@ export type PendingPrompt = {
   location?: { lat: number; lon: number };
 };
 
-const SUGGESTIONS = ["Tolken i kväll", "Sämsjön nu", "Åsunden i morgon bitti"];
-
-type GeoState = "off" | "loading" | "on" | "denied";
-
 /**
  * The landing hero's prompt input. Submit stores the prompt (+ optional
  * geolocation) in sessionStorage and navigates to /ask, where the chat
  * auto-submits it and streams the first answer.
  */
-export function HeroPrompt() {
+export function HeroPrompt({
+  suggestions,
+  initialShareLocation = false,
+}: {
+  suggestions: string[];
+  /** Server-read preference cookie — restores the toggle without a flash. */
+  initialShareLocation?: boolean;
+}) {
   const router = useRouter();
   const [text, setText] = useState("");
-  const [geo, setGeo] = useState<GeoState>("off");
-  const [coords, setCoords] = useState<
-    { lat: number; lon: number } | undefined
-  >(undefined);
-
-  function requestLocation() {
-    if (geo === "on") {
-      setGeo("off");
-      setCoords(undefined);
-      return;
-    }
-    if (!("geolocation" in navigator)) {
-      setGeo("denied");
-      return;
-    }
-    setGeo("loading");
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setCoords({ lat: pos.coords.latitude, lon: pos.coords.longitude });
-        setGeo("on");
-      },
-      () => setGeo("denied"),
-      { maximumAge: 300_000, timeout: 8_000 },
-    );
-  }
+  const { geo, coords, toggleLocation } = useGeolocation({
+    initialOn: initialShareLocation,
+  });
 
   function submit(e?: React.FormEvent) {
     e?.preventDefault();
@@ -92,10 +74,10 @@ export function HeroPrompt() {
       </form>
 
       <div className="mt-3 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
-        <span>Gratis första frågan. Funkar för svenska insjöar.</span>
+        <span>Gratis första frågan. Bäst koll har han på svenska insjöar.</span>
         <button
           type="button"
-          onClick={requestLocation}
+          onClick={toggleLocation}
           aria-pressed={geo === "on"}
           className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 font-medium transition-colors ${
             geo === "on"
@@ -125,7 +107,7 @@ export function HeroPrompt() {
       </div>
 
       <div className="mt-6 flex flex-wrap justify-center gap-2.5">
-        {SUGGESTIONS.map((s) => (
+        {suggestions.map((s) => (
           <button
             key={s}
             type="button"

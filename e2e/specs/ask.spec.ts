@@ -19,6 +19,18 @@ const BADGES = {
 };
 
 test.describe("/ask page — anon flows (route-intercepted)", () => {
+  // These specs exercise the chat itself — pre-accept the terms gate via the
+  // preference cookie the server reads. The gate's own flow is covered in
+  // home.spec.ts (hero handoff).
+  test.beforeEach(async ({ context, baseURL }) => {
+    await context.addCookies([
+      {
+        name: "fg_tos_v",
+        value: "1",
+        url: baseURL ?? "http://localhost:3000",
+      },
+    ]);
+  });
   test("renders the ask page with gubbe and input box", async ({ page }) => {
     await page.goto("/ask");
 

@@ -95,7 +95,9 @@ export function adviseFirst({
 
   return client.messages.stream({
     model: ADVICE_MODEL,
-    max_tokens: 1024,
+    // Adaptive thinking tokens share this budget with the visible answer —
+    // 1024 let a long think starve the text and cut answers mid-word.
+    max_tokens: 4096,
     thinking: { type: "adaptive" },
     system: SYSTEM_BLOCK,
     messages,
@@ -147,7 +149,7 @@ export function adviseFollowup({
 
   return client.messages.stream({
     model: FOLLOWUP_MODEL,
-    max_tokens: 1024,
+    max_tokens: 2048,
     system: SYSTEM_BLOCK,
     messages,
   });
@@ -178,7 +180,7 @@ export function isLakeLockViolation(
  * In-persona redirect string for lake-lock violations (ADR-0004).
  */
 export function getLakeLockRedirect(lakeName: string): string {
-  return `Jag känner bara till ${lakeName}, hörru — dra igång en ny chatt för ett annat vatten`;
+  return `I den här chatten håller vi oss till ${lakeName}, hörru. Starta en ny chatt för ett annat vatten.`;
 }
 
 // ---------------------------------------------------------------------------

@@ -5,6 +5,9 @@
  * ask-handler.ts.  Consolidating them here keeps Fiskargubben's voice
  * consistent and makes the copy reviewable in one place.  The original modules
  * re-export from here so existing import sites keep working.
+ *
+ * Copy rules (2026-07-05): no tankstreck, warm rather than gruff, plain
+ * sentences a human would say.
  */
 
 /**
@@ -12,7 +15,7 @@
  * weather/water/nature questions pass — so the refusal names what IS in scope.
  */
 export const CANNED_REFUSAL =
-  "Sånt kan jag inget om, hörru. Fråga mig om fiske, väder eller vatten istället.";
+  "Det där kan jag för lite om, hörru. Men fråga mig gärna om fiske, väder eller vatten.";
 
 /**
  * Chat-turn limit hit — deliberately a PLAIN system alert, NOT Fiskargubben's
@@ -23,11 +26,11 @@ export const CHAT_LIMIT_MESSAGE =
 
 /** Anon free-prompt exhausted → register to continue. */
 export const ANON_REGISTER_MESSAGE =
-  "Registrera dig för att fortsätta — anon-fisket är ett gratisprova, hörru.";
+  "Första frågan bjuder jag på. Skapa ett konto så fortsätter vi prata fiske.";
 
 /** Lake could not be resolved from the user's message. */
 export const LAKE_UNRESOLVED_MESSAGE =
-  "Kände inte igen sjön du nämnde — kan du skriva sjönamnet tydligare, eventuellt med kommunen?";
+  "Jag kände inte igen sjön du nämnde. Kan du skriva namnet tydligare, gärna med kommunen?";
 
 /**
  * Several real lakes share the named body — ask WHICH one (by municipality)
@@ -40,7 +43,7 @@ export function lakeAmbiguousMessage(
   municipalities: string[],
 ): string {
   const options = municipalities.join(", ");
-  return `Det finns flera sjöar som heter ${lakeName}, hörru — vilken menar du? Säg kommunen: ${options}.`;
+  return `Det finns flera sjöar som heter ${lakeName}. Vilken menar du? Säg kommunen: ${options}.`;
 }
 
 /**
@@ -49,8 +52,8 @@ export function lakeAmbiguousMessage(
  * lake-resolution lifecycle.
  */
 export const LAKE_CLARIFY_FALLBACK =
-  "Vilken sjö menar du nu? Säg namnet och kommunen eller närmaste ort, så vet jag vilket vatten vi pratar om.";
+  "Vilket vatten gäller det? Säg namnet och kommunen eller närmaste ort så hänger jag med.";
 
 /** Free credits exhausted. */
 export const OUT_OF_CREDITS_MESSAGE =
-  "Du har förbrukat dina gratiskrediter — uppgradera för att fiska vidare.";
+  "Dina gratisfrågor är slut för den här gången. Uppgradera så fiskar vi vidare.";

@@ -60,7 +60,12 @@ test("hero prompt hands off to /ask", async ({ page }) => {
   await page.getByRole("button", { name: "Fråga" }).click();
 
   await expect(page).toHaveURL(/\/ask/);
-  // The pending prompt auto-submits and renders both bubbles.
+  // First visit: the terms gate holds the pending prompt until accepted.
+  await expect(page.getByText("genereras av AI")).toBeVisible({
+    timeout: 8000,
+  });
+  await page.getByRole("button", { name: "Godkänn och fortsätt" }).click();
+  // The held prompt now auto-submits and renders both bubbles.
   await expect(page.getByText("Ska jag fiska i Tolken ikväll?")).toBeVisible({
     timeout: 8000,
   });

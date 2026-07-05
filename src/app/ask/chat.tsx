@@ -2,9 +2,16 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { PENDING_PROMPT_KEY, type PendingPrompt } from "@/app/hero-prompt";
-import gubbeImg from "@/assets/gubbe.png";
+import gubbeIcon from "@/assets/gubbe-icon.png";
+import { useSession } from "@/lib/auth-client";
+import { useGeolocation } from "@/lib/hooks/use-geolocation";
+import { readShareLocationCookie, writeTosCookie } from "@/lib/prefs-cookies";
+import { TOS_VERSION } from "@/lib/tos-version";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -103,13 +110,15 @@ function Badge({
 function BadgesStrip({ badges }: { badges: Badges }) {
   return (
     <section
-      className="flex flex-wrap items-center gap-2 border-b border-border bg-card/60 px-4 py-2.5"
+      // pl-14 on mobile clears the absolutely-positioned drawer toggle
+      // (chat-drawer.tsx) that sits in the top-left corner.
+      className="flex flex-wrap items-center gap-2 border-b border-border bg-card/60 py-2.5 pr-4 pl-14 md:pl-4"
       aria-label="Fångad data"
     >
       {badges.status === "resolved" ? (
         <Badge icon="🎣" label={badges.lake} />
       ) : (
-        <Badge icon="🗺️" label={`${badges.lake} (okänd sjö)`} tone="muted" />
+        <Badge icon="🗺️" label={badges.lake} tone="muted" />
       )}
       {badges.airTempC !== undefined && (
         <Badge icon="🌡️" label={`Luft ${formatNum(badges.airTempC)}°C`} />
@@ -142,6 +151,11 @@ function UserBubble({ text }: { text: string }) {
   );
 }
 
+/**
+ * Assistant text is rendered as markdown (the persona is allowed light
+ * markdown: bold, lists). Styling lives in globals.css under .chat-markdown
+ * so the streaming partial and the final message render identically.
+ */
 function AssistantBubble({
   text,
   streaming,
@@ -153,38 +167,65 @@ function AssistantBubble({
     <div className="flex items-start gap-3">
       <div className="shrink-0 mt-0.5">
         <Image
-          src={gubbeImg}
+          src={gubbeIcon}
           alt="Fiskargubben"
           width={40}
           height={40}
-          className="rounded-full object-cover border-2 border-amber-700/30 shadow"
+          className="rounded-full object-cover shadow"
         />
       </div>
       <div className="chat-bubble-assistant">
-        <p className="text-sm leading-relaxed whitespace-pre-wrap">
-          {text}
+        <div className="chat-markdown text-sm leading-relaxed">
+          <Markdown remarkPlugins={[remarkGfm]}>{text}</Markdown>
           {streaming && (
             <span
               aria-hidden="true"
               className="inline-block w-2 h-4 ml-0.5 bg-teal-700/60 animate-pulse align-text-bottom rounded-sm"
             />
           )}
-        </p>
+        </div>
       </div>
     </div>
   );
 }
 
+/**
+ * Rotating "what the gubbe is up to" lines while the server extracts,
+ * resolves the lake and builds signals. Purely cosmetic — the client can't
+ * see real progress — but honest about the kind of work happening.
+ */
+const THINKING_PHRASES = [
+  "Gubben kliar sig i skägget…",
+  "Slår upp sjökortet…",
+  "Kollar vinden och lufttrycket…",
+  "Tjuvkikar på vattentemperaturen…",
+  "Hör efter vilka arter som rör sig…",
+  "Väger beteslådan i handen…",
+  "Muttrar lite för sig själv…",
+];
+
+const THINKING_PHRASE_MS = 2200;
+
 function ThinkingIndicator() {
+  const [phraseIndex, setPhraseIndex] = useState(0);
+
+  useEffect(() => {
+    const timer = setInterval(
+      () => setPhraseIndex((i) => (i + 1) % THINKING_PHRASES.length),
+      THINKING_PHRASE_MS,
+    );
+    return () => clearInterval(timer);
+  }, []);
+
   return (
     <div className="flex items-start gap-3">
       <div className="shrink-0 mt-0.5">
         <Image
-          src={gubbeImg}
+          src={gubbeIcon}
           alt="Fiskargubben"
           width={40}
           height={40}
-          className="rounded-full object-cover border-2 border-amber-700/30 shadow opacity-70"
+          className="rounded-full object-cover shadow opacity-70"
         />
       </div>
       <div className="chat-bubble-assistant opacity-75">
@@ -192,7 +233,7 @@ function ThinkingIndicator() {
           <span className="casting-dot" />
           <span className="casting-dot" style={{ animationDelay: "0.2s" }} />
           <span className="casting-dot" style={{ animationDelay: "0.4s" }} />
-          tänker…
+          {THINKING_PHRASES[phraseIndex]}
         </span>
       </div>
     </div>
@@ -258,7 +299,7 @@ function GateBanner({ gateType, text }: { gateType: GateType; text: string }) {
         </p>
         <p className="text-xs text-stone-500 mb-3">
           {text ||
-            "Uppgradering kommer snart — hör av dig om du vill vara med i betan."}
+            "Uppgradering kommer snart. Hör av dig om du vill vara med i betan."}
         </p>
         <Link
           href="/profile"
@@ -273,7 +314,7 @@ function GateBanner({ gateType, text }: { gateType: GateType; text: string }) {
   if (gateType === "error") {
     return (
       <p role="status" className="text-xs text-red-700/80 px-4 italic mx-2">
-        {text || "Något gick snett — försök igen om ett ögonblick."}
+        {text || "Något gick snett. Försök igen om ett ögonblick."}
       </p>
     );
   }
@@ -328,7 +369,34 @@ export type ChatProps = {
    * sessionStorage and auto-submit it on mount.
    */
   autoSubmitPending?: boolean;
+  /**
+   * Server-resolved prefs (account + preference cookies, see
+   * resolveChatPrefs). Authoritative at render time — no client-side
+   * re-derivation, so the gate and geo toggle paint correctly at once.
+   */
+  initialTosAccepted?: boolean;
+  /** Accepted an OLDER terms version → gate shows "updated terms" copy. */
+  initialTosPreviouslyAccepted?: boolean;
+  /** Current acceptance exists on the ACCOUNT (not just the cookie). */
+  initialTosOnAccount?: boolean;
+  initialShareLocation?: boolean;
+  /** Account-side location pref only — drives the cookie→account transfer. */
+  initialShareLocationOnAccount?: boolean;
 };
+
+/** Best-effort account sync; the preference cookie remains the client copy. */
+function postPreferences(body: {
+  tosAccepted?: true;
+  shareLocation?: boolean;
+}): void {
+  void fetch("/api/preferences", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).catch(() => {
+    // non-fatal — retried implicitly next time the pref changes
+  });
+}
 
 export default function Chat({
   conversationId: initialConversationId,
@@ -336,7 +404,17 @@ export default function Chat({
   initialBadges,
   initialFrozen = false,
   autoSubmitPending = false,
+  initialTosAccepted = false,
+  initialTosPreviouslyAccepted = false,
+  initialTosOnAccount = false,
+  initialShareLocation,
+  initialShareLocationOnAccount = false,
 }: ChatProps) {
+  const router = useRouter();
+  // The conversation drawer is only rendered for logged-in users (ask-shell),
+  // so only they need the post-turn RSC refresh. For anon users a refresh
+  // could even 404 (their /ask/[id] ownership rides on the claim cookie).
+  const { data: session } = useSession();
   const [messages, setMessages] = useState<ChatMessage[]>(
     initialMessages ?? [],
   );
@@ -353,6 +431,23 @@ export default function Chat({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // Location rides along on the FIRST prompt only (landing handoff).
   const pendingLocationRef = useRef<PendingPrompt["location"]>(undefined);
+  // Geo toggle for chats started directly on /ask. Location is stored on the
+  // conversation at creation, so the toggle only matters (and only shows)
+  // before the first message of a new chat. The preference persists in a
+  // server-readable cookie (hook) and on the account for logged-in users.
+  const { geo, coords, toggleLocation } = useGeolocation({
+    initialOn: initialShareLocation,
+    onPrefChange: (on) => {
+      if (session) postPreferences({ shareLocation: on });
+    },
+  });
+
+  // Terms gate — server-resolved (account + cookie), so the gate renders in
+  // the right state from the first paint.
+  const [tosAccepted, setTosAccepted] = useState(initialTosAccepted);
+  const tosUpdated = initialTosPreviouslyAccepted;
+  // Hero prompt held back until the terms are accepted.
+  const [heldPrompt, setHeldPrompt] = useState<string | null>(null);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: scroll only on count change
   useEffect(() => {
@@ -363,7 +458,26 @@ export default function Chat({
     bottomRef.current?.scrollIntoView?.({ behavior: "smooth" });
   }, []);
 
-  const isDisabled = streaming || thinking || frozen;
+  const isDisabled = streaming || thinking || frozen || !tosAccepted;
+
+  // One-time transfer: prefs accepted anonymously (cookies) get mirrored to
+  // the account after registration/login, so they survive a new browser.
+  const prefsSyncedRef = useRef(false);
+  useEffect(() => {
+    if (!session || prefsSyncedRef.current) return;
+    prefsSyncedRef.current = true;
+    if (initialTosAccepted && !initialTosOnAccount) {
+      postPreferences({ tosAccepted: true });
+    }
+    if (readShareLocationCookie() === true && !initialShareLocationOnAccount) {
+      postPreferences({ shareLocation: true });
+    }
+  }, [
+    session,
+    initialTosAccepted,
+    initialTosOnAccount,
+    initialShareLocationOnAccount,
+  ]);
 
   const sendMessage = useCallback(
     async (trimmed: string) => {
@@ -380,7 +494,11 @@ export default function Chat({
       let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
       let streamingMsgId: string | null = null;
 
-      const location = pendingLocationRef.current;
+      // Landing handoff wins; otherwise the chat's own geo toggle, but only
+      // for the first message (the server binds coords at creation).
+      const location =
+        pendingLocationRef.current ??
+        (!conversationId && coords ? coords : undefined);
       pendingLocationRef.current = undefined;
 
       try {
@@ -520,6 +638,14 @@ export default function Chat({
           }
           forceScroll();
         }
+
+        // The drawer (ask-shell) is server-rendered; re-fetch the RSC payload
+        // so a just-created conversation (and its title after the lifecycle
+        // transition) shows up without a hard reload. Client chat state is
+        // preserved across refresh.
+        if (session) {
+          router.refresh();
+        }
       } catch {
         setThinking(false);
         setStreaming(false);
@@ -546,14 +672,14 @@ export default function Chat({
           ...prev,
           {
             role: "assistant",
-            text: "Något gick snett — försök igen om ett ögonblick.",
+            text: "Något gick snett. Försök igen om ett ögonblick.",
             id: nextId(),
           },
         ]);
         forceScroll();
       }
     },
-    [conversationId, forceScroll],
+    [conversationId, coords, forceScroll, router, session],
   );
 
   const handleSubmit = useCallback(
@@ -567,7 +693,9 @@ export default function Chat({
     [input, isDisabled, sendMessage],
   );
 
-  // Landing handoff: auto-submit the pending prompt exactly once.
+  // Landing handoff: auto-submit the pending prompt exactly once — unless the
+  // terms gate is still up, in which case the prompt is held and fired from
+  // the accept handler instead.
   const autoSubmittedRef = useRef(false);
   useEffect(() => {
     if (!autoSubmitPending || autoSubmittedRef.current) return;
@@ -582,9 +710,23 @@ export default function Chat({
     }
     if (pending?.text) {
       pendingLocationRef.current = pending.location;
-      void sendMessage(pending.text);
+      if (initialTosAccepted) {
+        void sendMessage(pending.text);
+      } else {
+        setHeldPrompt(pending.text);
+      }
     }
-  }, [autoSubmitPending, sendMessage]);
+  }, [autoSubmitPending, sendMessage, initialTosAccepted]);
+
+  const acceptTos = useCallback(() => {
+    writeTosCookie(TOS_VERSION);
+    setTosAccepted(true);
+    if (session) postPreferences({ tosAccepted: true });
+    if (heldPrompt) {
+      setHeldPrompt(null);
+      void sendMessage(heldPrompt);
+    }
+  }, [session, heldPrompt, sendMessage]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -607,18 +749,19 @@ export default function Chat({
         {messages.length === 0 && !thinking && (
           <div className="flex flex-col items-center justify-center h-full gap-6 py-12 select-none">
             <Image
-              src={gubbeImg}
+              src={gubbeIcon}
               alt="Fiskargubben"
               width={96}
               height={96}
-              className="rounded-full border-4 border-amber-700/20 shadow-lg opacity-90"
+              className="rounded-full shadow-lg opacity-90"
             />
             <div className="text-center space-y-2">
               <p className="text-base text-muted-foreground font-medium">
-                Berätta vilken sjö och vad du undrar
+                Vad undrar du? Sjö, kust eller fisket i stort.
               </p>
               <p className="text-xs text-muted-foreground/60">
-                t.ex. "Ska jag fiska abborre i Vättern imorgon tidigt?"
+                t.ex. "Ska jag fiska abborre i Vättern imorgon tidigt?" eller
+                "Var hittar jag makrillen i skärgården?"
               </p>
             </div>
           </div>
@@ -646,6 +789,41 @@ export default function Chat({
         <div ref={bottomRef} />
       </section>
 
+      {/* Terms gate — blocks the first message until accepted */}
+      {!tosAccepted && (
+        <div className="tos-gate shrink-0 mx-4 mb-2 rounded-xl border border-border bg-card px-5 py-4 text-center shadow-sm">
+          <p className="text-sm font-medium text-foreground">
+            {tosUpdated
+              ? "Villkoren har uppdaterats. Godkänn dem för att fortsätta."
+              : "Fiskargubbens svar genereras av AI och kan innehålla fel. Fisket sker på egen risk."}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Genom att fortsätta godkänner du{" "}
+            <Link
+              href="/termsofservice"
+              className="underline underline-offset-2"
+            >
+              användarvillkoren
+            </Link>{" "}
+            och{" "}
+            <Link
+              href="/privacystatement"
+              className="underline underline-offset-2"
+            >
+              integritetspolicyn
+            </Link>
+            .
+          </p>
+          <button
+            type="button"
+            onClick={acceptTos}
+            className="mt-3 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90"
+          >
+            Godkänn och fortsätt
+          </button>
+        </div>
+      )}
+
       {/* Frozen system notice */}
       {frozen && (
         <ChatLimitBanner
@@ -662,6 +840,44 @@ export default function Chat({
         <label htmlFor="chat-input" className="sr-only">
           Skriv din fråga
         </label>
+        {!conversationId && (
+          <button
+            type="button"
+            onClick={toggleLocation}
+            aria-pressed={geo === "on"}
+            aria-label="Använd min plats"
+            title={
+              geo === "on"
+                ? "Plats används"
+                : geo === "loading"
+                  ? "Hämtar plats…"
+                  : geo === "denied"
+                    ? "Plats nekad"
+                    : "Använd min plats"
+            }
+            // size-11 (44px) matches the single-row textarea height (border +
+            // py-2.5 + text line) so pin, input and submit sit level.
+            className={`flex size-11 shrink-0 items-center justify-center rounded-lg border transition-colors ${
+              geo === "on"
+                ? "border-primary/40 bg-primary/10 text-primary"
+                : geo === "denied"
+                  ? "border-border bg-card text-muted-foreground/50"
+                  : "border-border bg-card text-muted-foreground hover:bg-secondary"
+            } ${geo === "loading" ? "animate-pulse" : ""}`}
+          >
+            <svg
+              viewBox="0 0 24 24"
+              className="size-5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              aria-hidden="true"
+            >
+              <path d="M12 21s-7-5.4-7-11a7 7 0 1 1 14 0c0 5.6-7 11-7 11Z" />
+              <circle cx="12" cy="10" r="2.5" />
+            </svg>
+          </button>
+        )}
         <textarea
           id="chat-input"
           ref={inputRef}
@@ -684,24 +900,11 @@ export default function Chat({
         <button
           type="submit"
           disabled={isDisabled || !input.trim()}
-          className="shrink-0 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground transition-all hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
+          className="h-11 shrink-0 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground transition-all hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
           aria-label="Skicka fråga"
         >
-          {streaming || thinking ? (
-            <span className="flex items-center gap-1.5">
-              <span className="casting-dot" />
-              <span
-                className="casting-dot"
-                style={{ animationDelay: "0.2s" }}
-              />
-              <span
-                className="casting-dot"
-                style={{ animationDelay: "0.4s" }}
-              />
-            </span>
-          ) : (
-            "Kasta"
-          )}
+          <span className="sm:hidden">Fråga</span>
+          <span className="hidden sm:inline">Fråga gubben</span>
         </button>
       </form>
     </div>

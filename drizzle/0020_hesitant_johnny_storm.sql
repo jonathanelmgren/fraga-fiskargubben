@@ -1,0 +1,1 @@
+ALTER TABLE "user" ADD COLUMN "tos_accepted_version" integer;

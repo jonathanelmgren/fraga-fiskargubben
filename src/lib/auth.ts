@@ -10,6 +10,7 @@ import {
 } from "@/lib/auth/signup-ip";
 import { claimConversation } from "@/lib/chat/anon";
 import { verifyClaimToken } from "@/lib/chat/claim-cookie";
+import { notifyDiscord } from "@/lib/notify/discord";
 import { db } from "@/shared/db/client";
 import { accounts, sessions, users, verifications } from "@/shared/db/schema";
 import { env } from "@/shared/env";
@@ -106,6 +107,12 @@ export const auth = betterAuth({
           };
         },
         async after(user, context) {
+          // Ops ping — fire-and-forget, never blocks registration.
+          void notifyDiscord(
+            "signups",
+            `🎣 Ny användare: ${user.name} (${user.email})`,
+          );
+
           // context is null when the user is created outside of a request
           // (e.g. tests, seed scripts) — skip the claim in that case.
           if (!context) return;

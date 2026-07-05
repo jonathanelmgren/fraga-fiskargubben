@@ -72,7 +72,20 @@ export type AskInput = {
    * always outweighs it.
    */
   location?: UserLocation;
+  /**
+   * HMAC of the client IP (route-computed) for anon callers. Caps anon
+   * conversations per IP per window — the incognito loophole around the
+   * one-free-conversation claim cookie. Null/undefined = no determinable IP
+   * (never blocks; same stance as the signup guard).
+   */
+  anonIpHash?: string | null;
 };
+
+/** Max anon conversations per IP hash per rolling window. */
+export const ANON_IP_CONVERSATION_LIMIT = 1;
+
+/** Rolling window for ANON_IP_CONVERSATION_LIMIT. */
+export const ANON_IP_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 export type ConversationStatus =
   | "lake_pending"
@@ -155,6 +168,7 @@ export type AskHandlerDeps = {
     lat: number;
     lon: number;
     askedLakeName?: string;
+    nearbyLakes?: Signals["nearbyLakes"];
     targetTime: Date;
     now: Date;
   }): Promise<Signals>;
@@ -192,7 +206,15 @@ export type AskHandlerDeps = {
     claimToken?: string | null;
     userLat?: number | null;
     userLon?: number | null;
+    /** Short Haiku-extracted headline for the drawer, e.g. "Abborre i Vättern". */
+    title?: string | null;
+    anonIpHash?: string | null;
   }): Promise<string>;
+  /**
+   * Anon conversations created from this IP hash within ANON_IP_WINDOW_MS.
+   * Optional so tests without the abuse guard keep working; absent = no gate.
+   */
+  countRecentAnonConversationsByIp?(ipHash: string): Promise<number>;
   transitionConversation(opts: {
     id: string;
     status: Extract<ConversationStatus, "resolved" | "unresolved_area">;
@@ -264,7 +286,10 @@ export function toBadges(
   status: SignalBadges["status"],
 ): SignalBadges {
   return {
-    lake: signals.lake,
+    // Display rule: bare lake name only ("Åsunden", not "Åsunden (Borås,
+    // Västra Götaland)"). The full label stays in signals.lake for the LLM
+    // and area labels ("trakten kring …") have no bare name to prefer.
+    lake: signals.bareLakeName ?? signals.lake,
     status,
     ...(signals.airTempC ? { airTempC: signals.airTempC.value } : {}),
     ...(signals.windMs ? { windMs: signals.windMs.value } : {}),
@@ -342,6 +367,27 @@ export async function handleAsk(
     return { type: "register_to_continue", text: ANON_REGISTER_MESSAGE };
   }
 
+  // IP-hash cap for anon NEW conversations: incognito wipes the claim
+  // cookie, but the IP hash survives. Follow-ups are unaffected. No
+  // determinable IP → no gate (same stance as the signup guard).
+  if (
+    isAnon &&
+    !conversation &&
+    input.anonIpHash &&
+    deps.countRecentAnonConversationsByIp
+  ) {
+    const recent = await deps.countRecentAnonConversationsByIp(
+      input.anonIpHash,
+    );
+    if (recent >= ANON_IP_CONVERSATION_LIMIT) {
+      await deps.emit({
+        type: "register_gate",
+        payload: { reason: "anon_ip_limit" },
+      });
+      return { type: "register_to_continue", text: ANON_REGISTER_MESSAGE };
+    }
+  }
+
   // ── Step 4: Extract (Haiku) ─────────────────────────────────────────────
 
   const history = conversation
@@ -381,6 +427,8 @@ export async function handleAsk(
       claimToken: newAnonClaimToken,
       userLat: input.location?.lat ?? null,
       userLon: input.location?.lon ?? null,
+      title: extraction.title ?? null,
+      anonIpHash: isAnon ? (input.anonIpHash ?? null) : null,
     });
     conversation = {
       id: newConvId,
@@ -568,12 +616,32 @@ async function resolvePendingConversation(ctx: {
     const coords = userLoc ?? centroidOf(candidates);
     const label = areaLabel(extraction, coords !== undefined);
 
+    // When the user named no lake but shared a location, the candidates ARE
+    // the nearest named lakes (candidateLakes nearby mode) — pass them into
+    // the snapshot so "vilken sjö nära mig?" gets real suggestions.
+    const nearbyLakes =
+      !extraction.lakeName && userLoc
+        ? candidates.slice(0, 5).flatMap((c) =>
+            c.name
+              ? [
+                  {
+                    name: c.name,
+                    municipality: c.municipality,
+                    distanceKm: c.distanceKm,
+                    areaHa: Math.round(c.areaHa),
+                  },
+                ]
+              : [],
+          )
+        : undefined;
+
     const signals = coords
       ? await deps.buildAreaSignals({
           label,
           lat: coords.lat,
           lon: coords.lon,
           askedLakeName: extraction.lakeName,
+          nearbyLakes,
           targetTime,
           now: deps.now,
         })

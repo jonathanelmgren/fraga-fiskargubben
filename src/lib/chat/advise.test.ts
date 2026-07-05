@@ -307,7 +307,7 @@ describe("getLakeLockRedirect()", () => {
   it("returns in-persona redirect string with lake name interpolated", () => {
     const result = getLakeLockRedirect("Tolken");
     expect(result).toBe(
-      "Jag känner bara till Tolken, hörru — dra igång en ny chatt för ett annat vatten",
+      "I den här chatten håller vi oss till Tolken, hörru. Starta en ny chatt för ett annat vatten.",
     );
   });
 

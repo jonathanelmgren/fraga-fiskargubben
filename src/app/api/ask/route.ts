@@ -21,10 +21,11 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import { and, asc, count, eq, sql } from "drizzle-orm";
+import { and, asc, count, eq, gt, sql } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { after } from "next/server";
 import { emit } from "@/lib/analytics/events";
+import { extractClientIp, hashSignupIp } from "@/lib/auth/signup-ip";
 import {
   adviseFirst,
   adviseFollowup,
@@ -36,7 +37,7 @@ import type {
   AskResult,
   ConversationStatus,
 } from "@/lib/chat/ask-handler";
-import { handleAsk } from "@/lib/chat/ask-handler";
+import { ANON_IP_WINDOW_MS, handleAsk } from "@/lib/chat/ask-handler";
 import { signClaimToken, verifyClaimToken } from "@/lib/chat/claim-cookie";
 import { extract } from "@/lib/chat/extractor";
 import {
@@ -57,6 +58,7 @@ import { getSession } from "@/lib/get-session";
 import { isAdminEmail } from "@/lib/is-admin";
 import { candidateLakes } from "@/lib/lakes/candidates";
 import { resolveLakeWithHaiku } from "@/lib/lakes/haiku-resolver";
+import { notifyDiscord } from "@/lib/notify/discord";
 import { buildSignals } from "@/lib/signals/build";
 import { buildAreaSignals } from "@/lib/signals/build-area";
 import { db } from "@/shared/db/client";
@@ -146,7 +148,7 @@ export function parseLocation(
 
 /** H1: in-persona Swedish fallback the chat UI renders as a generic error. */
 const GENERIC_ERROR_MESSAGE =
-  "Något krånglar i tacklingen just nu, hörru — kasta igen om en stund.";
+  "Något krånglar i tacklingen just nu, hörru. Kasta igen om en stund.";
 
 /**
  * H1: classify an unexpected error from handleAsk into a stable in-persona
@@ -171,7 +173,7 @@ export function classifyError(err: unknown): Response {
     return Response.json(
       {
         type: "lake_unresolved",
-        text: "Det är fullt på sjön just nu — vänta en stund och kasta igen.",
+        text: "Det är fullt på sjön just nu. Vänta en stund och kasta igen.",
       },
       { status: 503 },
     );
@@ -318,6 +320,8 @@ function buildDeps(): AskHandlerDeps {
       claimToken,
       userLat,
       userLon,
+      title,
+      anonIpHash,
     }) => {
       const id = randomUUID();
       await db.insert(conversations).values({
@@ -327,8 +331,23 @@ function buildDeps(): AskHandlerDeps {
         status: "lake_pending",
         userLat: userLat ?? null,
         userLon: userLon ?? null,
+        title: title ?? null,
+        anonIpHash: anonIpHash ?? null,
       });
       return id;
+    },
+    countRecentAnonConversationsByIp: async (ipHash) => {
+      const since = new Date(Date.now() - ANON_IP_WINDOW_MS);
+      const rows = await db
+        .select({ n: count() })
+        .from(conversations)
+        .where(
+          and(
+            eq(conversations.anonIpHash, ipHash),
+            gt(conversations.createdAt, since),
+          ),
+        );
+      return rows[0]?.n ?? 0;
     },
     transitionConversation: async ({
       id,
@@ -450,6 +469,11 @@ export async function POST(request: Request): Promise<Response> {
     cookieStore.get(CLAIM_TOKEN_COOKIE)?.value,
   );
 
+  // Anon abuse guard input: hash the client IP (no raw IPs at rest). The
+  // handler only applies it to anon NEW conversations.
+  const clientIp = extractClientIp(request.headers);
+  const anonIpHash = clientIp ? hashSignupIp(clientIp) : null;
+
   // H6: pass the pre-read claimToken into handleAsk on the input rather than
   // mutating a built deps object (the old `deps.getClaimToken = …` hack).
   const deps = buildDeps();
@@ -461,7 +485,7 @@ export async function POST(request: Request): Promise<Response> {
   let result: AskResult;
   try {
     result = await handleAsk(
-      { message, conversationId, claimToken, location },
+      { message, conversationId, claimToken, location, anonIpHash },
       deps,
     );
   } catch (err) {
@@ -473,6 +497,13 @@ export async function POST(request: Request): Promise<Response> {
       ...(conversationId ? { conversationId } : {}),
       payload: { reason: err instanceof Error ? err.message : String(err) },
     }).catch(() => {});
+    // Ops ping (this catch means onRequestError never sees the error).
+    void notifyDiscord(
+      "alerts",
+      `🚨 **/api/ask pipeline_error**\n\`\`\`${
+        err instanceof Error ? err.message : String(err)
+      }\`\`\``,
+    );
     return classifyError(err);
   }
 

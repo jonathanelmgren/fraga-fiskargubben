@@ -1,52 +1,64 @@
+import { cookies } from "next/headers";
 import Image from "next/image";
+import { connection } from "next/server";
 import gubbeImg from "@/assets/gubbe.png";
+import { SHARE_LOCATION_COOKIE } from "@/lib/prefs-cookies";
 import { HeroPrompt } from "./hero-prompt";
+import { pickHeroSuggestions } from "./hero-suggestions";
 
 const STEPS = [
   {
     title: "Säg var och när",
-    body: "Skriv sjön och tiden — eller låt gubben använda din plats. Han vet vilka sjöar som ligger var, även när kommunerna bråkar om det.",
+    body: "Skriv sjön och tiden, eller låt gubben använda din plats. Han vet vilka sjöar som ligger var, även när kommunerna bråkar om det.",
   },
   {
-    title: "Gubben snålkollar",
+    title: "Gubben kollar läget",
     body: "Väder, vind, lufttryck, ljus, vattentemperatur och vilka arter som rör sig i just det vattnet. Inga gissningar där det finns data.",
   },
   {
     title: "Raka besked",
-    body: "Vilket bete, vilket djup, vilken plats och vilken tid. Som en gammal fiskare ger dem — kort och konkret.",
+    body: "Vilket bete, vilket djup, vilken plats och vilken tid. Kort och konkret, som en gammal fiskare ger dem.",
   },
 ];
 
-export default function Home() {
+export default async function Home() {
+  // Render at request time so the suggestion chips rotate per visit and the
+  // geo toggle reflects the preference cookie. No hydration flash either way.
+  await connection();
+  const suggestions = pickHeroSuggestions();
+  const cookieStore = await cookies();
+  const shareLocation = cookieStore.get(SHARE_LOCATION_COOKIE)?.value === "1";
+
   return (
     <main className="flex flex-1 flex-col">
       {/* Hero */}
-      <section className="flex flex-col items-center px-4 pb-20 pt-14 text-center sm:pt-20">
-        <div className="rounded-full border-4 border-primary/15 shadow-lg">
-          <Image
-            src={gubbeImg}
-            alt="Fiskargubben"
-            width={104}
-            height={104}
-            priority
-            className="rounded-full"
-          />
-        </div>
+      <section className="mx-auto flex w-full max-w-5xl flex-col items-center gap-2 px-4 pb-20 pt-10 sm:flex-row sm:items-center sm:justify-center sm:gap-12 sm:pt-16">
+        <Image
+          src={gubbeImg}
+          alt="Fiskargubben"
+          priority
+          className="h-36 w-auto sm:order-2 sm:h-80"
+        />
 
-        <p className="mt-7 text-xs font-bold uppercase tracking-[0.22em] text-destructive/80">
-          Insjöfiske, väderdrivet
-        </p>
-        <h1 className="mt-3 max-w-2xl text-4xl font-extrabold tracking-tight text-foreground sm:text-5xl">
-          Fråga gubben innan du kastar.
-        </h1>
-        <p className="mt-4 max-w-xl text-[15px] leading-relaxed text-foreground/75">
-          Säg var och när du ska ut. Gubben snålkollar väder, lufttryck,
-          vattentemp och vilka arter som rör sig, sen säger han rakt ut hur du
-          bör fiska just nu.
-        </p>
+        <div className="flex max-w-xl flex-col items-center text-center sm:order-1 sm:items-start sm:text-left">
+          <p className="mt-4 text-xs font-bold uppercase tracking-[0.22em] text-destructive/80 sm:mt-0">
+            Fiskeråd med koll på vädret
+          </p>
+          <h1 className="mt-3 text-4xl font-extrabold tracking-tight text-foreground sm:text-5xl">
+            Fråga gubben innan du kastar.
+          </h1>
+          <p className="mt-4 text-[15px] leading-relaxed text-foreground/75">
+            Säg var och när du ska ut. Gubben kollar väder, lufttryck,
+            vattentemp och vilka arter som rör sig, sen säger han rakt ut hur du
+            bör fiska just nu. Sjö, kust eller skärgård, fråga på.
+          </p>
 
-        <div className="mt-8 flex w-full justify-center">
-          <HeroPrompt />
+          <div className="mt-8 w-full">
+            <HeroPrompt
+              suggestions={suggestions}
+              initialShareLocation={shareLocation}
+            />
+          </div>
         </div>
       </section>
 
@@ -96,6 +108,19 @@ export default function Home() {
           <a href="/privacystatement" className="underline underline-offset-2">
             Integritet
           </a>
+          {process.env.NEXT_PUBLIC_DISCORD_INVITE && (
+            <>
+              <span className="mx-2">·</span>
+              <a
+                href={process.env.NEXT_PUBLIC_DISCORD_INVITE}
+                target="_blank"
+                rel="noreferrer"
+                className="underline underline-offset-2"
+              >
+                Support
+              </a>
+            </>
+          )}
         </div>
       </footer>
     </main>

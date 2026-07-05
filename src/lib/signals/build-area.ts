@@ -33,6 +33,8 @@ export interface BuildAreaSignalsInput {
   lon: number;
   /** The lake name the user asked about (for honest "don't know it" answers). */
   askedLakeName?: string;
+  /** Nearest named lakes (user-location mode) — see Signals.nearbyLakes. */
+  nearbyLakes?: Signals["nearbyLakes"];
   targetTime: Date;
   now: Date;
 }
@@ -71,7 +73,8 @@ async function safe<T>(
 export async function buildAreaSignals(
   input: BuildAreaSignalsInput,
 ): Promise<Signals> {
-  const { label, lat, lon, askedLakeName, targetTime, now } = input;
+  const { label, lat, lon, askedLakeName, nearbyLakes, targetTime, now } =
+    input;
   const safeTargetTime = !Number.isNaN(targetTime.getTime()) ? targetTime : now;
   const targetUtc = safeTargetTime.toISOString();
 
@@ -173,6 +176,7 @@ export async function buildAreaSignals(
     timeLocal: formatStockholmLocal(safeTargetTime),
   };
   if (askedLakeName) signals.askedLakeName = askedLakeName;
+  if (nearbyLakes && nearbyLakes.length > 0) signals.nearbyLakes = nearbyLakes;
 
   const assign = (
     key: "airTempC" | "pressureHpa" | "windMs" | "cloudPct",

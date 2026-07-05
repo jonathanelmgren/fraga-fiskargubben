@@ -49,6 +49,19 @@ export const users = pgTable("user", {
    * client IP could be determined.
    */
   signupIpHash: text("signup_ip_hash"),
+  /**
+   * "Använd min plats" preference. Mirrors the anon localStorage pref and is
+   * transferred from it on first logged-in visit. Only a preference — actual
+   * coordinates are read from the browser per conversation, never stored here.
+   */
+  shareLocation: boolean("share_location").default(false).notNull(),
+  /** When the user accepted the terms (chat gate). Null = not yet accepted. */
+  tosAcceptedAt: timestamp("tos_accepted_at"),
+  /**
+   * Which TOS_VERSION (src/lib/tos-version.ts) was accepted. A value below
+   * the current version re-triggers the gate with "updated terms" copy.
+   */
+  tosAcceptedVersion: integer("tos_accepted_version"),
 });
 
 export const sessions = pgTable("session", {
@@ -199,6 +212,12 @@ export const metobsStations = pgTable(
     lon: doublePrecision("lon").notNull(),
     /** Which weather parameter this row represents: 'pressure' or 'temp'. */
     parameter: text("parameter").notNull(),
+    /**
+     * SMHI's active flag. Inactive stations (e.g. 83540, last data 1996) still
+     * appear in the station list but 404 on latest-day/latest-months data, so
+     * nearestStation() must only consider active ones.
+     */
+    active: boolean("active").notNull().default(true),
   },
   (t) => [primaryKey({ columns: [t.id, t.parameter] })],
 );
@@ -254,6 +273,19 @@ export const conversations = pgTable("conversation", {
   userId: text("user_id").references(() => users.id, { onDelete: "cascade" }),
   /** Set for anonymous conversations; matched on registration to claim. ADR-0001. */
   claimToken: text("claim_token"),
+  /**
+   * HMAC-SHA256 of the client IP for ANON conversations (same keying as
+   * users.signupIpHash, no raw IPs at rest). Caps anon conversations per IP
+   * per rolling window — incognito wipes the claim cookie but not the IP.
+   * Null for logged-in conversations and when no client IP was determinable.
+   */
+  anonIpHash: text("anon_ip_hash"),
+  /**
+   * Short Haiku-extracted headline from the first message ("Abborre i
+   * Vättern"), shown in the conversation drawer. Null on legacy rows and when
+   * extraction produced none — titleOf() then falls back to snapshot fields.
+   */
+  title: text("title"),
   /**
    * Lake-resolution lifecycle: 'lake_pending' → 'resolved' | 'unresolved_area'.
    * Pre-transition turns are Haiku-only clarify rounds and cost no credit; the

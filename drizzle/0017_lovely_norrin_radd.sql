@@ -1,0 +1,1 @@
+ALTER TABLE "metobs_station" ADD COLUMN "active" boolean DEFAULT true NOT NULL;

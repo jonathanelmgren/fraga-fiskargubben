@@ -143,6 +143,71 @@
   box-shadow: 0 1px 3px oklch(0 0 0 / 0.06);
 }
 
+/* Markdown inside assistant bubbles (react-markdown output) */
+.chat-markdown > *:first-child {
+  margin-top: 0;
+}
+.chat-markdown > *:last-child {
+  margin-bottom: 0;
+}
+.chat-markdown p {
+  margin: 0.5rem 0;
+  white-space: pre-wrap;
+}
+.chat-markdown ul,
+.chat-markdown ol {
+  margin: 0.5rem 0;
+  padding-left: 1.25rem;
+}
+.chat-markdown ul {
+  list-style: disc;
+}
+.chat-markdown ol {
+  list-style: decimal;
+}
+.chat-markdown li {
+  margin: 0.2rem 0;
+}
+.chat-markdown strong {
+  font-weight: 600;
+}
+.chat-markdown h1,
+.chat-markdown h2,
+.chat-markdown h3,
+.chat-markdown h4 {
+  margin: 0.75rem 0 0.35rem;
+  font-weight: 600;
+  font-size: 0.95em;
+}
+.chat-markdown code {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.85em;
+  background-color: var(--muted);
+  border-radius: 0.25rem;
+  padding: 0.1rem 0.3rem;
+}
+.chat-markdown pre {
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.75rem;
+  background-color: var(--muted);
+  border-radius: 0.5rem;
+  overflow-x: auto;
+}
+.chat-markdown pre code {
+  background: none;
+  padding: 0;
+}
+.chat-markdown blockquote {
+  margin: 0.5rem 0;
+  padding-left: 0.75rem;
+  border-left: 3px solid var(--border);
+  color: var(--muted-foreground);
+}
+.chat-markdown a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 /* Subtle water-ripple background for the ask page */
 .ask-page {
   background-image: radial-gradient(

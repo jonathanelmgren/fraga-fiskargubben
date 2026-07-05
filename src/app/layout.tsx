@@ -16,7 +16,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Fråga Fiskargubben",
   description:
-    "Insjöfiske, väderdrivet. Fråga gubben innan du kastar — han snålkollar väder, vattentemp och vilka arter som rör sig.",
+    "Fiskeråd med koll på vädret. Fråga gubben innan du kastar, han kollar väder, vattentemp och vilka arter som rör sig.",
 };
 
 export default function RootLayout({

@@ -43,7 +43,9 @@ export type AnalyticsEventType =
   // the conversation continues in area mode on SMHI signals only.
   | "lake_unresolved_area"
   // Rebuild: a registration was rejected by the signup IP guard.
-  | "signup_ip_blocked";
+  | "signup_ip_blocked"
+  // The chat terms gate was accepted (stored on the account when logged in).
+  | "tos_accepted";
 
 export interface AnalyticsEvent {
   type: AnalyticsEventType;

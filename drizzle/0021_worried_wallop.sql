@@ -1,0 +1,1 @@
+ALTER TABLE "conversation" ADD COLUMN "anon_ip_hash" text;

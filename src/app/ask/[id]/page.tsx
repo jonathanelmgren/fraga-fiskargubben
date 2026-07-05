@@ -6,9 +6,10 @@ import { getSession } from "@/lib/get-session";
 import { AskShell } from "../ask-shell";
 import Chat from "../chat";
 import { loadConversationView } from "../conversations";
+import { resolveChatPrefs } from "../prefs";
 
 export const metadata: Metadata = {
-  title: "Fråga Fiskargubben — Chatt",
+  title: "Fråga Fiskargubben · Chatt",
 };
 
 const CLAIM_TOKEN_COOKIE = "fiska_claim";
@@ -41,6 +42,8 @@ export default async function ConversationPage({
   });
   if (!view) notFound();
 
+  const prefs = await resolveChatPrefs(cookieStore, session?.user.id ?? null);
+
   return (
     <AskShell>
       <Chat
@@ -52,6 +55,11 @@ export default async function ConversationPage({
         }))}
         initialBadges={view.badges}
         initialFrozen={view.frozen}
+        initialTosAccepted={prefs.tosAccepted}
+        initialTosPreviouslyAccepted={prefs.tosPreviouslyAccepted}
+        initialTosOnAccount={prefs.tosAcceptedOnAccount}
+        initialShareLocation={prefs.shareLocation}
+        initialShareLocationOnAccount={prefs.shareLocationOnAccount}
       />
     </AskShell>
   );

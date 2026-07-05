@@ -62,7 +62,7 @@ export interface RawMetobsStation {
   latitude?: number;
   /** Longitude in WGS84 decimal degrees. */
   longitude?: number;
-  /** Whether the station is currently active (informational only). */
+  /** Whether the station currently reports data. Stored and filtered on. */
   active?: boolean;
   /** Coverage start timestamp (ms epoch). */
   from?: number;
@@ -77,6 +77,7 @@ export interface MetobsStationRow {
   lat: number;
   lon: number;
   parameter: MetobsParameter;
+  active: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -115,6 +116,10 @@ export function mapStation(
     lat: raw.latitude,
     lon: raw.longitude,
     parameter,
+    // Inactive stations 404 on latest-day/latest-months data endpoints, so
+    // the runtime nearest-station lookup filters on this flag. Stations
+    // without the field are assumed active (SMHI always sends it in practice).
+    active: raw.active ?? true,
   };
 }
 
@@ -205,6 +210,7 @@ async function main(): Promise<void> {
               name: sql`excluded.name`,
               lat: sql`excluded.lat`,
               lon: sql`excluded.lon`,
+              active: sql`excluded.active`,
             },
           });
         imported += rows.length;

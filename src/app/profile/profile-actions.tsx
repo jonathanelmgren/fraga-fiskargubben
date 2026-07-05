@@ -51,11 +51,11 @@ export function ProfileActions({
           </div>
           {isPaid || isAdmin ? (
             <span className="rounded-full bg-primary px-4 py-1.5 text-xs font-semibold text-primary-foreground">
-              {isAdmin ? "Admin — allt ingår" : "Premium aktivt"}
+              {isAdmin ? "Admin, allt ingår" : "Premium aktivt"}
             </span>
           ) : premiumClicked ? (
             <span className="text-sm font-medium text-foreground/80">
-              Betalning kommer snart — håll ut, hörru.
+              Betalning kommer snart. Håll ut, hörru.
             </span>
           ) : (
             <button
@@ -63,7 +63,7 @@ export function ProfileActions({
               onClick={() => setPremiumClicked(true)}
               className="rounded-lg bg-accent px-5 py-2.5 text-sm font-bold text-accent-foreground shadow-sm transition hover:brightness-105"
             >
-              Uppgradera — 49 kr
+              Uppgradera för 49 kr
             </button>
           )}
         </div>

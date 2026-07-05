@@ -16,6 +16,18 @@ export type Signals = {
   /** Area mode: the lake name the user asked about, so the answer can name it honestly. */
   askedLakeName?: string;
   /**
+   * Area mode with a known user location: the nearest named lakes from the
+   * register, so "vilken sjö nära mig?" gets real suggestions instead of a
+   * shrug. Names/distances only — no depth/species data, and the persona is
+   * instructed not to invent any.
+   */
+  nearbyLakes?: Array<{
+    name: string;
+    municipality: string;
+    distanceKm?: number;
+    areaHa: number;
+  }>;
+  /**
    * Bare lake name (e.g. "Tolken") without the municipality/county suffix.
    * Used internally for the lake-lock comparison so the lock is not coupled
    * to the formatted label.  Absent on old snapshots (treat as undefined).

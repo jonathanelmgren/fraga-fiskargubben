@@ -313,7 +313,7 @@ describe("new conversation, confident resolution", () => {
     const r = asType(result, "stream");
     expect(r.conversationId).toBe("new-conv-id");
     expect(r.refundUserId).toBe("user-1");
-    expect(r.badges?.lake).toBe(BASE_SIGNALS.lake);
+    expect(r.badges?.lake).toBe(BASE_SIGNALS.bareLakeName);
     expect(r.badges?.status).toBe("resolved");
 
     expect(deps.createPendingConversation).toHaveBeenCalledOnce();
@@ -810,10 +810,10 @@ describe("helpers", () => {
     expect(areaLabel({ onTopic: true }, false)).toBe("okänt vatten");
   });
 
-  it("toBadges unwraps provenance values", () => {
+  it("toBadges unwraps provenance values and shows the bare lake name", () => {
     const badges = toBadges(BASE_SIGNALS, "resolved");
     expect(badges).toEqual({
-      lake: "Tolken (Borås, Västra Götaland)",
+      lake: "Tolken",
       status: "resolved",
       airTempC: 17,
       windMs: 4.2,

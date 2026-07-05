@@ -19,7 +19,14 @@ const dateFmt = new Intl.DateTimeFormat("sv-SE", {
   month: "short",
 });
 
-function titleOf(snapshot: Signals | null, status: string): string {
+function titleOf(
+  explicitTitle: string | null,
+  snapshot: Signals | null,
+  status: string,
+): string {
+  // Haiku-extracted headline from the first message wins; snapshot-derived
+  // lake names cover legacy rows and extraction misses.
+  if (explicitTitle) return explicitTitle;
   if (snapshot?.bareLakeName) return snapshot.bareLakeName;
   if (snapshot?.areaOnly) return snapshot.askedLakeName ?? snapshot.lake;
   if (snapshot?.lake) return snapshot.lake;
@@ -31,6 +38,7 @@ export async function listConversations(userId: string): Promise<DrawerItem[]> {
     .select({
       id: conversations.id,
       status: conversations.status,
+      title: conversations.title,
       snapshot: conversations.signalsSnapshot,
       lastActiveAt: conversations.lastActiveAt,
     })
@@ -41,7 +49,7 @@ export async function listConversations(userId: string): Promise<DrawerItem[]> {
 
   return rows.map((row) => ({
     id: row.id,
-    title: titleOf(row.snapshot ?? null, row.status),
+    title: titleOf(row.title, row.snapshot ?? null, row.status),
     dateLabel: dateFmt.format(row.lastActiveAt),
     status: row.status,
   }));

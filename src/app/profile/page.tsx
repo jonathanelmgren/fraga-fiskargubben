@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 import type { Metadata } from "next";
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { FREE_CREDITS } from "@/lib/chat/quota";
 import { getSession } from "@/lib/get-session";
@@ -9,7 +10,7 @@ import { users } from "@/shared/db/schema";
 import { ProfileActions } from "./profile-actions";
 
 export const metadata: Metadata = {
-  title: "Fråga Fiskargubben — Profil",
+  title: "Fråga Fiskargubben · Profil",
 };
 
 const memberSinceFmt = new Intl.DateTimeFormat("sv-SE", {
@@ -39,9 +40,31 @@ export default async function ProfilePage() {
   const unlimited = user.isPaid || isAdmin;
   const creditsLeft = Math.max(0, FREE_CREDITS - user.creditsUsed);
 
+  const discordInvite = process.env.NEXT_PUBLIC_DISCORD_INVITE;
+
   return (
     <main className="mx-auto w-full max-w-2xl flex-1 px-4 py-10">
-      <h1 className="text-2xl font-bold tracking-tight">Din profil</h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-bold tracking-tight">Din profil</h1>
+        <div className="flex items-center gap-2">
+          <Link
+            href="/ask"
+            className="rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium transition-colors hover:bg-secondary"
+          >
+            Mina chattar
+          </Link>
+          {discordInvite && (
+            <a
+              href={discordInvite}
+              target="_blank"
+              rel="noreferrer"
+              className="rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium transition-colors hover:bg-secondary"
+            >
+              Support
+            </a>
+          )}
+        </div>
+      </div>
 
       {/* Account data */}
       <section

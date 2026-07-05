@@ -1,9 +1,12 @@
 import type { Metadata } from "next";
+import { cookies } from "next/headers";
+import { getSession } from "@/lib/get-session";
 import { AskShell } from "./ask-shell";
 import Chat from "./chat";
+import { resolveChatPrefs } from "./prefs";
 
 export const metadata: Metadata = {
-  title: "Fråga Fiskargubben — Chatt",
+  title: "Fråga Fiskargubben · Chatt",
 };
 
 /**
@@ -11,10 +14,21 @@ export const metadata: Metadata = {
  * sessionStorage); once the server answers, the client swaps the URL to
  * /ask/<id> so the conversation is shareable/refreshable.
  */
-export default function AskPage() {
+export default async function AskPage() {
+  const session = await getSession();
+  const cookieStore = await cookies();
+  const prefs = await resolveChatPrefs(cookieStore, session?.user.id ?? null);
+
   return (
     <AskShell>
-      <Chat autoSubmitPending />
+      <Chat
+        autoSubmitPending
+        initialTosAccepted={prefs.tosAccepted}
+        initialTosPreviouslyAccepted={prefs.tosPreviouslyAccepted}
+        initialTosOnAccount={prefs.tosAcceptedOnAccount}
+        initialShareLocation={prefs.shareLocation}
+        initialShareLocationOnAccount={prefs.shareLocationOnAccount}
+      />
     </AskShell>
   );
 }
