@@ -1,5 +1,6 @@
 /**
- * Next.js instrumentation — central server-error reporting.
+ * Next.js instrumentation — boot-time migrations + central server-error
+ * reporting.
  *
  * onRequestError fires for every error the Next.js server captures (RSC
  * render failures, unhandled route errors, …). Note: /api/ask catches its
@@ -9,6 +10,44 @@
 
 import type { Instrumentation } from "next";
 import { notifyDiscord } from "@/lib/notify/discord";
+
+/**
+ * Runs once per server boot, before any request is served — the only hook
+ * the standalone Docker image gets, so pending drizzle migrations are
+ * applied here. Production only: dev keeps the explicit `pnpm db:migrate`
+ * workflow (compose.yml), and a dev boot must not require Postgres to be up.
+ *
+ * A failed migration exits the process on purpose: serving with a stale
+ * schema is exactly the failure mode this exists to prevent (queries against
+ * columns that don't exist yet). Throwing is not enough — Next logs "Failed
+ * to prepare server" but keeps the already-bound listener alive, serving 500
+ * on every request. exit(1) instead kills the container so the Docker
+ * restart policy retries, which also rides out a transiently unready DB.
+ */
+export async function register() {
+  if (
+    process.env.NEXT_RUNTIME !== "nodejs" ||
+    process.env.NODE_ENV !== "production"
+  ) {
+    return;
+  }
+
+  const { runMigrations } = await import("@/shared/db/migrate");
+  try {
+    await runMigrations();
+    console.log("[instrumentation] drizzle migrations applied");
+  } catch (err) {
+    console.error("[instrumentation] migration failed, exiting", err);
+    await notifyDiscord(
+      "alerts",
+      [
+        "🚨 **Migrations misslyckades vid serverstart** — servern startar inte",
+        `\`\`\`${err instanceof Error ? err.message : String(err)}\`\`\``,
+      ].join("\n"),
+    );
+    process.exit(1);
+  }
+}
 
 export const onRequestError: Instrumentation.onRequestError = async (
   err,
