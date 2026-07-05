@@ -54,7 +54,7 @@ const ExtractionOutputSchema = z.object({
   onTopic: z
     .boolean()
     .describe(
-      "true if the user is asking about fishing in a Swedish lake; false for anything else",
+      "true if the message relates to fishing, weather, water, nature or the outdoors (even loosely); false ONLY for clearly unrelated topics like programming, homework, politics or general chit-chat with no outdoors angle",
     ),
   lakeName: z
     .string()
@@ -120,9 +120,12 @@ export async function extract(
 Din uppgift är att analysera användarens meddelande och returnera ett strukturerat svar.
 
 Regler:
-- onTopic: true BARA om meddelandet handlar om fiske i en svensk sjö. Allt annat är off-topic.
+- onTopic: true om meddelandet rör fiske, väder, vind, vatten, natur eller friluftsliv —
+  även löst kopplat. Frågor som "hur blåser det just nu?" eller "hur kallt är vattnet?"
+  är on-topic. Sätt false BARA för uppenbart orelaterade ämnen: programmering, läxor,
+  matematik, politik, kändisar, recept och liknande. Vid tvekan: true.
 - lakeName: sjönamnet om användaren nämner ett (t.ex. "Tolken", "Vättern", "Hjälmaren").
-- municipality: kommunnamnet om användaren nämner det i samband med sjön.
+- municipality: kommun- eller ortnamnet om användaren nämner ett i samband med platsen.
 - time: när användaren vill fiska (t.ex. "ikväll", "imorgon", "på lördag").
 - intent: kort beskrivning av vad användaren vill göra eller fånga.
 

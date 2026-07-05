@@ -31,6 +31,7 @@ import { ExternalServiceError, TimeoutError } from "@/lib/errors";
 import {
   classifyError,
   isSameOriginRequest,
+  parseLocation,
   serializeClaimCookie,
 } from "./route";
 
@@ -140,5 +141,32 @@ describe("isSameOriginRequest", () => {
 
   it("allows a request with neither header (non-browser caller)", () => {
     expect(isSameOriginRequest(new Headers(), APP)).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// parseLocation (rebuild: optional browser geolocation)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("parseLocation", () => {
+  it("accepts a valid Swedish coordinate", () => {
+    expect(parseLocation({ lat: 57.79, lon: 13.42 })).toEqual({
+      lat: 57.79,
+      lon: 13.42,
+    });
+  });
+
+  it("rejects non-objects, missing fields and non-numbers", () => {
+    expect(parseLocation(undefined)).toBeUndefined();
+    expect(parseLocation(null)).toBeUndefined();
+    expect(parseLocation("57,13")).toBeUndefined();
+    expect(parseLocation({ lat: "57" })).toBeUndefined();
+    expect(parseLocation({ lat: Number.NaN, lon: 13 })).toBeUndefined();
+  });
+
+  it("rejects coordinates outside the Sweden-ish bounding box", () => {
+    expect(parseLocation({ lat: 48.8, lon: 2.3 })).toBeUndefined(); // Paris
+    expect(parseLocation({ lat: 0, lon: 0 })).toBeUndefined();
+    expect(parseLocation({ lat: 71, lon: 20 })).toBeUndefined();
   });
 });

@@ -7,9 +7,12 @@
  * re-export from here so existing import sites keep working.
  */
 
-/** Off-topic refusal (extractor topic gate). */
+/**
+ * Off-topic refusal (extractor topic gate). Rebuild: the gate is loosened —
+ * weather/water/nature questions pass — so the refusal names what IS in scope.
+ */
 export const CANNED_REFUSAL =
-  "Jag snackar bara fiske, hörru. Fråga mig om sjöar, abborre eller gädda istället.";
+  "Sånt kan jag inget om, hörru. Fråga mig om fiske, väder eller vatten istället.";
 
 /**
  * Chat-turn limit hit — deliberately a PLAIN system alert, NOT Fiskargubben's
@@ -39,6 +42,14 @@ export function lakeAmbiguousMessage(
   const options = municipalities.join(", ");
   return `Det finns flera sjöar som heter ${lakeName}, hörru — vilken menar du? Säg kommunen: ${options}.`;
 }
+
+/**
+ * Fallback clarify question when the Haiku resolver could not produce one
+ * (parse failure). In-persona; used by the free clarify rounds of the
+ * lake-resolution lifecycle.
+ */
+export const LAKE_CLARIFY_FALLBACK =
+  "Vilken sjö menar du nu? Säg namnet och kommunen eller närmaste ort, så vet jag vilket vatten vi pratar om.";
 
 /** Free credits exhausted. */
 export const OUT_OF_CREDITS_MESSAGE =

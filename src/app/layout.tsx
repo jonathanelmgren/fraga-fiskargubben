@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { SiteHeader } from "@/components/site-header";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -14,7 +15,8 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Fråga Fiskargubben",
-  description: "Fråga Fiskargubben",
+  description:
+    "Insjöfiske, väderdrivet. Fråga gubben innan du kastar — han snålkollar väder, vattentemp och vilka arter som rör sig.",
 };
 
 export default function RootLayout({
@@ -24,10 +26,13 @@ export default function RootLayout({
 }>) {
   return (
     <html
-      lang="en"
+      lang="sv"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="flex min-h-dvh flex-col">
+        <SiteHeader />
+        {children}
+      </body>
     </html>
   );
 }

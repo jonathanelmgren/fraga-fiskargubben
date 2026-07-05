@@ -3,6 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { PENDING_PROMPT_KEY, type PendingPrompt } from "@/app/hero-prompt";
 import gubbeImg from "@/assets/gubbe.png";
 
 // ---------------------------------------------------------------------------
@@ -12,8 +13,7 @@ import gubbeImg from "@/assets/gubbe.png";
 // L-ui1: GateType / KNOWN_GATE_TYPES / PERSONA_GATES below mirror the server's
 // AskResult union (src/lib/chat/ask-handler.ts) plus the client-only "error"
 // state. There is no compile-time link, so when a gate type is added to
-// AskResult it MUST be added here too (and to asGateType / the GateBanner copy).
-// The asGateType() runtime guard fails safe to "error" for any unknown value.
+// AskResult it MUST be added here too. asGateType() fails safe to "error".
 type GateType =
   | "register_to_continue"
   | "chat_limit"
@@ -21,14 +21,24 @@ type GateType =
   | "lake_unresolved"
   | "out_of_credits"
   | "lake_lock"
-  // L6: distinct generic-error state for non-OK HTTP responses (5xx/503) so a
-  // server error isn't mislabeled as a persona gate.
+  // Rebuild: a free clarify round from the lake resolver — rendered as an
+  // ordinary assistant bubble; the conversation continues.
+  | "clarify"
   | "error";
 
-type Message =
+export type ChatMessage =
   | { role: "user"; text: string; id: string }
   | { role: "assistant"; text: string; streaming?: boolean; id: string }
   | { role: "gate"; gateType: GateType; text: string; id: string };
+
+/** Mirrors SignalBadges from the server (X-Signals header / snapshot). */
+export type Badges = {
+  lake: string;
+  status: "resolved" | "unresolved_area";
+  airTempC?: number;
+  windMs?: number;
+  waterTempC?: number;
+};
 
 // ---------------------------------------------------------------------------
 // Gate response classification
@@ -39,13 +49,13 @@ const PERSONA_GATES: GateType[] = [
   "topic_refused",
   "lake_unresolved",
   "lake_lock",
+  "clarify",
 ];
 
 function isPersonaGate(g: GateType): boolean {
   return PERSONA_GATES.includes(g);
 }
 
-/** All known gate types — used to validate the untrusted server `type` string. */
 const KNOWN_GATE_TYPES: GateType[] = [
   "register_to_continue",
   "chat_limit",
@@ -53,18 +63,69 @@ const KNOWN_GATE_TYPES: GateType[] = [
   "lake_unresolved",
   "out_of_credits",
   "lake_lock",
+  "clarify",
   "error",
 ];
 
-/**
- * Runtime guard for the server-provided gate `type`. An unknown/garbled value
- * must not be blindly cast to GateType (it would fall through to the generic
- * italic fallback silently). Returns a valid GateType or null when unknown.
- */
 function asGateType(value: string): GateType | null {
   return (KNOWN_GATE_TYPES as string[]).includes(value)
     ? (value as GateType)
     : null;
+}
+
+// ---------------------------------------------------------------------------
+// Badges strip
+// ---------------------------------------------------------------------------
+
+function Badge({
+  icon,
+  label,
+  tone = "default",
+}: {
+  icon: string;
+  label: string;
+  tone?: "default" | "muted";
+}) {
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium ${
+        tone === "muted"
+          ? "border-border bg-muted text-muted-foreground"
+          : "border-border bg-card text-foreground/85"
+      }`}
+    >
+      <span aria-hidden="true">{icon}</span>
+      {label}
+    </span>
+  );
+}
+
+function BadgesStrip({ badges }: { badges: Badges }) {
+  return (
+    <section
+      className="flex flex-wrap items-center gap-2 border-b border-border bg-card/60 px-4 py-2.5"
+      aria-label="Fångad data"
+    >
+      {badges.status === "resolved" ? (
+        <Badge icon="🎣" label={badges.lake} />
+      ) : (
+        <Badge icon="🗺️" label={`${badges.lake} (okänd sjö)`} tone="muted" />
+      )}
+      {badges.airTempC !== undefined && (
+        <Badge icon="🌡️" label={`Luft ${formatNum(badges.airTempC)}°C`} />
+      )}
+      {badges.windMs !== undefined && (
+        <Badge icon="💨" label={`Vind ${formatNum(badges.windMs)} m/s`} />
+      )}
+      {badges.waterTempC !== undefined && (
+        <Badge icon="🌊" label={`Vatten ${formatNum(badges.waterTempC)}°C`} />
+      )}
+    </section>
+  );
+}
+
+function formatNum(n: number): string {
+  return (Math.round(n * 10) / 10).toLocaleString("sv-SE");
 }
 
 // ---------------------------------------------------------------------------
@@ -138,11 +199,6 @@ function ThinkingIndicator() {
   );
 }
 
-/**
- * Shared "conversation limit reached / start a new chat" banner. Previously
- * duplicated verbatim in the chat_limit gate and the frozen system notice;
- * extracted so the copy + link live in one place.
- */
 function ChatLimitBanner({
   ariaLabel,
   className,
@@ -177,20 +233,14 @@ function GateBanner({ gateType, text }: { gateType: GateType; text: string }) {
           Ditt gratisfiske är slut för nu
         </p>
         <p className="text-xs text-amber-800/70 mb-4">
-          Registrera dig för att fortsätta fråga Fiskargubben.
+          Logga in eller skapa ett konto för att fortsätta fråga Fiskargubben.
         </p>
         <div className="flex gap-2 justify-center">
           <Link
-            href="/register"
+            href="/?auth=1"
             className="rounded-md bg-teal-700 px-4 py-2 text-xs font-semibold text-white transition-opacity hover:opacity-90"
           >
-            Skapa konto
-          </Link>
-          <Link
-            href="/login"
-            className="rounded-md border border-teal-700/50 px-4 py-2 text-xs font-medium text-teal-800 transition-colors hover:bg-teal-50"
-          >
-            Logga in
+            Logga in / skapa konto
           </Link>
         </div>
       </div>
@@ -206,18 +256,21 @@ function GateBanner({ gateType, text }: { gateType: GateType; text: string }) {
         <p className="text-sm font-medium text-stone-700 mb-2">
           Du har använt dina gratisfrågor
         </p>
-        {/* L7: render the server-provided in-persona text (OUT_OF_CREDITS_MESSAGE)
-            when present, instead of dropping it for hardcoded copy. */}
-        <p className="text-xs text-stone-500">
+        <p className="text-xs text-stone-500 mb-3">
           {text ||
             "Uppgradering kommer snart — hör av dig om du vill vara med i betan."}
         </p>
+        <Link
+          href="/profile"
+          className="text-xs font-semibold text-teal-800 underline underline-offset-2"
+        >
+          Se premium på din profil
+        </Link>
       </div>
     );
   }
 
   if (gateType === "error") {
-    // L6: generic server-error state, distinct from the persona gates.
     return (
       <p role="status" className="text-xs text-red-700/80 px-4 italic mx-2">
         {text || "Något gick snett — försök igen om ett ögonblick."}
@@ -226,7 +279,6 @@ function GateBanner({ gateType, text }: { gateType: GateType; text: string }) {
   }
 
   if (gateType === "chat_limit") {
-    // Plain system notice — NOT Fiskargubben's voice
     return (
       <ChatLimitBanner
         ariaLabel="Chatbegränsning"
@@ -235,12 +287,10 @@ function GateBanner({ gateType, text }: { gateType: GateType; text: string }) {
     );
   }
 
-  // topic_refused, lake_unresolved, lake_lock → in-persona, rendered as assistant bubble
   if (isPersonaGate(gateType)) {
     return <AssistantBubble text={text} />;
   }
 
-  // Fallback
   return (
     <p role="status" className="text-xs text-muted-foreground px-4 italic">
       {text}
@@ -252,26 +302,58 @@ function GateBanner({ gateType, text }: { gateType: GateType; text: string }) {
 // Main Chat component
 // ---------------------------------------------------------------------------
 
-// L13: per-message id generator using crypto.randomUUID (no module-level
-// mutable counter shared across component instances).
 function nextId() {
   return `msg-${crypto.randomUUID()}`;
 }
 
-export default function Chat() {
-  const [messages, setMessages] = useState<Message[]>([]);
+function parseBadgesHeader(value: string | null): Badges | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(decodeURIComponent(value)) as Badges;
+    return typeof parsed.lake === "string" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export type ChatProps = {
+  /** Existing conversation (server-loaded /ask/[id] view). */
+  conversationId?: string;
+  initialMessages?: ChatMessage[];
+  initialBadges?: Badges | null;
+  /** Server-loaded frozen state (chat-turn limit already hit). */
+  initialFrozen?: boolean;
+  /**
+   * New-chat view (/ask): pick up the landing hero's pending prompt from
+   * sessionStorage and auto-submit it on mount.
+   */
+  autoSubmitPending?: boolean;
+};
+
+export default function Chat({
+  conversationId: initialConversationId,
+  initialMessages,
+  initialBadges,
+  initialFrozen = false,
+  autoSubmitPending = false,
+}: ChatProps) {
+  const [messages, setMessages] = useState<ChatMessage[]>(
+    initialMessages ?? [],
+  );
   const [input, setInput] = useState("");
-  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [conversationId, setConversationId] = useState<string | null>(
+    initialConversationId ?? null,
+  );
+  const [badges, setBadges] = useState<Badges | null>(initialBadges ?? null);
   const [streaming, setStreaming] = useState(false);
   const [thinking, setThinking] = useState(false);
-  const [frozen, setFrozen] = useState(false);
+  const [frozen, setFrozen] = useState(initialFrozen);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Location rides along on the FIRST prompt only (landing handoff).
+  const pendingLocationRef = useRef<PendingPrompt["location"]>(undefined);
 
-  // L13: auto-scroll on message count change.  Depending on a ref's .current
-  // (the old code) was inert — refs don't trigger effect re-runs.  `forceScroll`
-  // still scrolls imperatively during streaming (where the count is unchanged).
   // biome-ignore lint/correctness/useExhaustiveDependencies: scroll only on count change
   useEffect(() => {
     bottomRef.current?.scrollIntoView?.({ behavior: "smooth" });
@@ -283,17 +365,8 @@ export default function Chat() {
 
   const isDisabled = streaming || thinking || frozen;
 
-  const handleSubmit = useCallback(
-    async (e?: React.FormEvent) => {
-      // L-ui1: the event is optional so the Enter-key handler can invoke the
-      // same submit core directly, without double-casting a KeyboardEvent to a
-      // FormEvent. Only the real form-submit path passes an event to prevent.
-      e?.preventDefault();
-      const trimmed = input.trim();
-      if (!trimmed || isDisabled) return;
-
-      setInput("");
-
+  const sendMessage = useCallback(
+    async (trimmed: string) => {
       // Append user message
       const userMsgId = nextId();
       setMessages((prev) => [
@@ -303,10 +376,12 @@ export default function Chat() {
       setThinking(true);
       forceScroll();
 
-      // E2: hoisted so the catch can finalize a dangling partial bubble and
-      // cancel the reader if a mid-stream read rejects.
+      // E2: hoisted so the catch can finalize a dangling partial bubble.
       let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
       let streamingMsgId: string | null = null;
+
+      const location = pendingLocationRef.current;
+      pendingLocationRef.current = undefined;
 
       try {
         const response = await fetch("/api/ask", {
@@ -315,13 +390,23 @@ export default function Chat() {
           body: JSON.stringify({
             message: trimmed,
             ...(conversationId ? { conversationId } : {}),
+            ...(location ? { location } : {}),
           }),
         });
 
-        // L6: handle non-OK HTTP first.  A 5xx/503 (e.g. upstream/DB failure
-        // mapped by the route's error boundary) must NOT fall through to the
-        // content-type branch where it would be mislabeled as lake_unresolved.
-        // out_of_credits is a 402 but a legitimate gate, so allow it through.
+        // The conversation id now arrives on stream AND clarify responses.
+        const convId = response.headers.get("X-Conversation-Id");
+        if (convId && !conversationId) {
+          setConversationId(convId);
+          // Make refresh/share land on the persisted conversation.
+          try {
+            window.history.replaceState(null, "", `/ask/${convId}`);
+          } catch {
+            // history unavailable — non-fatal
+          }
+        }
+
+        // L6: non-OK HTTP first (402 out_of_credits is a legitimate gate).
         if (!response.ok && response.status !== 402) {
           setThinking(false);
           let serverText = "";
@@ -339,17 +424,14 @@ export default function Chat() {
           return;
         }
 
-        // Check content-type to decide stream vs gate JSON
         const ct = response.headers.get("content-type") ?? "";
 
         if (ct.startsWith("text/plain")) {
-          // Capture conversation ID from header
-          const convId = response.headers.get("X-Conversation-Id");
-          if (convId && !conversationId) {
-            setConversationId(convId);
-          }
+          const headerBadges = parseBadgesHeader(
+            response.headers.get("X-Signals"),
+          );
+          if (headerBadges) setBadges(headerBadges);
 
-          // Start streaming into a new assistant message
           const assistantMsgId = nextId();
           streamingMsgId = assistantMsgId;
           setMessages((prev) => [
@@ -379,10 +461,8 @@ export default function Chat() {
             const { value, done: readerDone } = await reader.read();
             done = readerDone;
             if (value) {
-              // The body is already the assistant's VISIBLE answer as plain
-              // UTF-8 text — the route runs the Anthropic event stream through
-              // toTextStream (drops the model's thinking + the raw JSON frames),
-              // so we append each chunk verbatim. Do NOT parse this as SSE/JSON.
+              // Body is the visible answer as plain UTF-8 (server strips
+              // thinking + JSON frames). Append verbatim; do NOT parse as SSE.
               const chunk = decoder.decode(value, { stream: !done });
               setMessages((prev) => {
                 const updated = [...prev];
@@ -400,7 +480,6 @@ export default function Chat() {
             }
           }
 
-          // Mark streaming done
           setMessages((prev) => {
             const updated = [...prev];
             const last = updated[updated.length - 1];
@@ -413,25 +492,21 @@ export default function Chat() {
           streamingMsgId = null;
           setStreaming(false);
         } else {
-          // Structured gate JSON response
+          // Structured gate JSON response (incl. clarify rounds)
           setThinking(false);
           let gate: { type: string; text: string };
           try {
             gate = await response.json();
           } catch {
-            gate = { type: "lake_unresolved", text: "Något gick fel." };
+            gate = { type: "error", text: "Något gick fel." };
           }
 
-          // Validate the untrusted server `type` at runtime; an unknown value
-          // falls back to the generic "error" state explicitly rather than
-          // being cast and silently dropped into the italic fallback render.
           const gateType = asGateType(gate.type) ?? "error";
 
           if (gateType === "chat_limit") {
             setFrozen(true);
           }
 
-          // Persona gates go as assistant messages; others as gate messages
           if (isPersonaGate(gateType)) {
             setMessages((prev) => [
               ...prev,
@@ -449,10 +524,6 @@ export default function Chat() {
         setThinking(false);
         setStreaming(false);
 
-        // E2: a mid-stream read rejection leaves a dangling partial assistant
-        // bubble (streaming:true cursor). Cancel the reader and finalize that
-        // bubble (clear the cursor) before appending the error bubble, so we
-        // don't show a frozen blinking cursor next to the error.
         if (activeReader) {
           try {
             await activeReader.cancel();
@@ -482,28 +553,58 @@ export default function Chat() {
         forceScroll();
       }
     },
-    [input, isDisabled, conversationId, forceScroll],
+    [conversationId, forceScroll],
   );
 
-  // Auto-grow textarea
+  const handleSubmit = useCallback(
+    async (e?: React.FormEvent) => {
+      e?.preventDefault();
+      const trimmed = input.trim();
+      if (!trimmed || isDisabled) return;
+      setInput("");
+      await sendMessage(trimmed);
+    },
+    [input, isDisabled, sendMessage],
+  );
+
+  // Landing handoff: auto-submit the pending prompt exactly once.
+  const autoSubmittedRef = useRef(false);
+  useEffect(() => {
+    if (!autoSubmitPending || autoSubmittedRef.current) return;
+    autoSubmittedRef.current = true;
+    let pending: PendingPrompt | null = null;
+    try {
+      const raw = sessionStorage.getItem(PENDING_PROMPT_KEY);
+      sessionStorage.removeItem(PENDING_PROMPT_KEY);
+      pending = raw ? (JSON.parse(raw) as PendingPrompt) : null;
+    } catch {
+      pending = null;
+    }
+    if (pending?.text) {
+      pendingLocationRef.current = pending.location;
+      void sendMessage(pending.text);
+    }
+  }, [autoSubmitPending, sendMessage]);
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      // L-ui1: call the submit core with no event (it already prevented the
-      // keydown default) — no FormEvent cast.
       handleSubmit();
     }
   };
 
   return (
     <div className="chat-root flex flex-col h-full">
+      {/* Signal badges (captured data) */}
+      {badges && <BadgesStrip badges={badges} />}
+
       {/* Message list */}
       <section
         className="chat-messages flex-1 overflow-y-auto px-4 py-6 space-y-4"
         aria-live="polite"
         aria-label="Konversation"
       >
-        {messages.length === 0 && (
+        {messages.length === 0 && !thinking && (
           <div className="flex flex-col items-center justify-center h-full gap-6 py-12 select-none">
             <Image
               src={gubbeImg}
@@ -536,7 +637,6 @@ export default function Chat() {
               />
             );
           }
-          // gate
           return (
             <GateBanner key={msg.id} gateType={msg.gateType} text={msg.text} />
           );

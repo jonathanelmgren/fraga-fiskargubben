@@ -59,11 +59,18 @@ export { CHAT_LIMIT_MESSAGE } from "./gate-messages";
 /**
  * Returns true if the user is allowed to spend a Credit right now.
  * Pure function — no side-effects, safe to call in any context.
+ *
+ * Admins (ADMIN_EMAILS) bypass the cap entirely; the caller also skips
+ * spendCredit for them so their counter never moves.
  */
-export function canSpendCredit(user: {
-  isPaid: boolean;
-  creditsUsed: number;
-}): boolean {
+export function canSpendCredit(
+  user: {
+    isPaid: boolean;
+    creditsUsed: number;
+  },
+  opts?: { isAdmin?: boolean },
+): boolean {
+  if (opts?.isAdmin) return true;
   return user.isPaid || user.creditsUsed < FREE_CREDITS;
 }
 
@@ -71,9 +78,13 @@ export function canSpendCredit(user: {
  * Returns true if a new user turn is allowed in this conversation.
  * messageCount = number of user-role message rows already stored (does NOT
  * include the current incoming turn — the caller checks BEFORE persisting).
- * Pure function — no side-effects.
+ * Pure function — no side-effects. Admins have no turn limit.
  */
-export function chatTurnAllowed(messageCount: number): boolean {
+export function chatTurnAllowed(
+  messageCount: number,
+  opts?: { isAdmin?: boolean },
+): boolean {
+  if (opts?.isAdmin) return true;
   return messageCount < MAX_CHAT_TURNS;
 }
 

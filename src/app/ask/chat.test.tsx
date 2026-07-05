@@ -183,7 +183,7 @@ describe("Chat component", () => {
     expect(bubble).toBeTruthy();
   });
 
-  it("5. register_to_continue gate renders the CTA with login/register links", async () => {
+  it("5. register_to_continue gate renders the CTA opening the auth dialog", async () => {
     vi.spyOn(global, "fetch").mockResolvedValueOnce(
       makeJsonResponse({
         type: "register_to_continue",
@@ -201,8 +201,99 @@ describe("Chat component", () => {
     });
 
     const cta = document.querySelector(".gate-cta") as HTMLElement;
-    expect(cta.textContent).toContain("Registrera");
-    expect(cta.querySelector('a[href="/register"]')).toBeTruthy();
-    expect(cta.querySelector('a[href="/login"]')).toBeTruthy();
+    expect(cta.textContent).toContain("konto");
+    // Auth moved into a dialog — the CTA links to the landing page with the
+    // dialog auto-open param (the old /login + /register pages are gone).
+    expect(cta.querySelector('a[href="/?auth=1"]')).toBeTruthy();
+  });
+
+  it("6. clarify gate renders as an assistant persona bubble and keeps the conversation id", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          type: "clarify",
+          text: "Vilken kommun ligger sjön i?",
+        }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "X-Conversation-Id": "conv-clarify-1",
+          },
+        },
+      ),
+    );
+
+    render(<Chat />);
+    await typeAndSubmit("Vad biter i sjön?");
+
+    await waitFor(() => {
+      const bubbles = document.querySelectorAll(".chat-bubble-assistant");
+      const hasClarify = Array.from(bubbles).some((b) =>
+        b.textContent?.includes("Vilken kommun ligger sjön i?"),
+      );
+      expect(hasClarify).toBe(true);
+    });
+
+    // Not rendered as a banner gate.
+    expect(document.querySelector(".gate-cta")).toBeNull();
+  });
+
+  it("7. X-Signals header renders the badges strip", async () => {
+    const badges = {
+      lake: "Tolken (Borås, Västra Götaland)",
+      status: "resolved",
+      airTempC: 17.3,
+      windMs: 4.2,
+    };
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode("Prova jigg."));
+        controller.close();
+      },
+    });
+    vi.spyOn(global, "fetch").mockResolvedValueOnce(
+      new Response(stream, {
+        status: 200,
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "X-Conversation-Id": "conv-badges-1",
+          "X-Signals": encodeURIComponent(JSON.stringify(badges)),
+        },
+      }),
+    );
+
+    render(<Chat />);
+    await typeAndSubmit("Vad biter i Tolken?");
+
+    await waitFor(() => {
+      const strip = document.querySelector('[aria-label="Fångad data"]');
+      expect(strip).not.toBeNull();
+      expect(strip?.textContent).toContain("Tolken");
+      expect(strip?.textContent).toContain("m/s");
+    });
+  });
+
+  it("8. renders server-loaded initial messages and badges", () => {
+    render(
+      <Chat
+        conversationId="conv-1"
+        initialMessages={[
+          { role: "user", text: "Vad biter i Tolken?", id: "m1" },
+          { role: "assistant", text: "Abborren står djupt.", id: "m2" },
+        ]}
+        initialBadges={{
+          lake: "Tolken (Borås, Västra Götaland)",
+          status: "resolved",
+          waterTempC: 16,
+        }}
+      />,
+    );
+
+    expect(document.body.textContent).toContain("Vad biter i Tolken?");
+    expect(document.body.textContent).toContain("Abborren står djupt.");
+    const strip = document.querySelector('[aria-label="Fångad data"]');
+    expect(strip?.textContent).toContain("Vatten");
   });
 });
