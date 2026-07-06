@@ -54,9 +54,9 @@ In `src/shared/env.ts`, add to the `z.object({...})` (after the `MICROSOFT_CLIEN
   RESEND_API_KEY: z.string().min(1).optional(),
   /**
    * From-address for transactional mail. The domain must be verified in the
-   * Resend dashboard (fragagubben.se).
+   * Resend dashboard (fragafiskargubben.se).
    */
-  EMAIL_FROM: z.string().default("Fiskargubben <noreply@fragagubben.se>"),
+  EMAIL_FROM: z.string().default("Fiskargubben <noreply@fragafiskargubben.se>"),
 ```
 
 - [ ] **Step 3: Document in `.env.example`**
@@ -68,7 +68,7 @@ Add after the `MICROSOFT_CLIENT_SECRET=` block:
 # Optional: unset in dev/CI logs the verification URL to console instead.
 # EMAIL_FROM domain must be verified in the Resend dashboard.
 RESEND_API_KEY=
-EMAIL_FROM=Fiskargubben <noreply@fragagubben.se>
+EMAIL_FROM=Fiskargubben <noreply@fragafiskargubben.se>
 ```
 
 - [ ] **Step 4: Write the failing test**
@@ -100,7 +100,7 @@ vi.mock("@/lib/notify/discord", () => ({ notifyDiscord: vi.fn() }));
 
 const envState = {
   RESEND_API_KEY: undefined as string | undefined,
-  EMAIL_FROM: "Fiskargubben <noreply@fragagubben.se>",
+  EMAIL_FROM: "Fiskargubben <noreply@fragafiskargubben.se>",
 };
 vi.mock("@/shared/env", () => ({ env: envState }));
 
@@ -135,7 +135,7 @@ describe("sendVerificationEmail", () => {
 
     expect(sendMock).toHaveBeenCalledTimes(1);
     const payload = sendMock.mock.calls[0][0];
-    expect(payload.from).toBe("Fiskargubben <noreply@fragagubben.se>");
+    expect(payload.from).toBe("Fiskargubben <noreply@fragafiskargubben.se>");
     expect(payload.to).toBe("anna@example.com");
     expect(payload.subject).toContain("Bekräfta");
     expect(payload.html).toContain(args.url);
@@ -714,6 +714,6 @@ docker compose exec -T db psql -U postgres -d fiskargubben -c "delete from \"use
 
 Not part of the code tasks — needed before this works in prod:
 
-1. Resend account: verify the `fragagubben.se` domain (SPF + DKIM DNS records shown in the Resend dashboard).
+1. Resend account: verify the `fragafiskargubben.se` domain (SPF + DKIM DNS records shown in the Resend dashboard).
 2. Create an API key and add `RESEND_API_KEY=` to the prod env file on the VPS (the fragagubben deployment reads env at runtime via `--env-file`; no image rebuild needed for env-only changes, just a container restart).
-3. Optionally set `EMAIL_FROM` if a different sender name is wanted (defaults to `Fiskargubben <noreply@fragagubben.se>`).
+3. Optionally set `EMAIL_FROM` if a different sender name is wanted (defaults to `Fiskargubben <noreply@fragafiskargubben.se>`).

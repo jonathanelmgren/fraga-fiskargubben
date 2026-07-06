@@ -34,7 +34,7 @@ vi.mock("@/shared/env", () => {
   return {
     env: {
       RESEND_API_KEY: undefined as string | undefined,
-      EMAIL_FROM: "Fiskargubben <noreply@fragagubben.se>",
+      EMAIL_FROM: "Fiskargubben <noreply@fragafiskargubben.se>",
     },
   };
 });
@@ -87,7 +87,7 @@ describe("sendVerificationEmail", () => {
 
     expect(sendMock).toHaveBeenCalledTimes(1);
     const payload = sendMock.mock.calls[0][0];
-    expect(payload.from).toBe("Fiskargubben <noreply@fragagubben.se>");
+    expect(payload.from).toBe("Fiskargubben <noreply@fragafiskargubben.se>");
     expect(payload.to).toBe("anna@example.com");
     expect(payload.subject).toContain("Bekräfta");
     expect(payload.html).toContain(args.url);

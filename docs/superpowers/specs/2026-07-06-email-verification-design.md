@@ -20,7 +20,7 @@ Require email verification for accounts registered with email/password. Social s
 | Email provider | Resend |
 | Unverified accounts | Blocked from sign-in (`requireEmailVerification: true`) |
 | Existing users | Nothing — no real prod users |
-| From-address | `noreply@fragagubben.se`, via env var |
+| From-address | `noreply@fragafiskargubben.se`, via env var |
 | Verification style | Link (better-auth built-in), not OTP code |
 
 ## Components
@@ -35,7 +35,7 @@ Require email verification for accounts registered with email/password. Social s
 ### 2. Environment
 
 - `RESEND_API_KEY` (required in prod)
-- `EMAIL_FROM` (default `noreply@fragagubben.se`)
+- `EMAIL_FROM` (default `noreply@fragafiskargubben.se`)
 - Added to `src/shared/env.ts` validation and `.env.example`.
 
 ### 3. Auth config — `src/lib/auth.ts`

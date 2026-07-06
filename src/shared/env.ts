@@ -17,9 +17,9 @@ const schema = z.object({
   RESEND_API_KEY: z.string().min(1).optional(),
   /**
    * From-address for transactional mail. The domain must be verified in the
-   * Resend dashboard (fragagubben.se).
+   * Resend dashboard (fragafiskargubben.se).
    */
-  EMAIL_FROM: z.string().default("Fiskargubben <noreply@fragagubben.se>"),
+  EMAIL_FROM: z.string().default("Fiskargubben <noreply@fragafiskargubben.se>"),
   /**
    * SLU Miljödata-MVM public ticket — import-time only (ETL).
    * To obtain: register as a web-service user at Artdatabanken UserAdmin
