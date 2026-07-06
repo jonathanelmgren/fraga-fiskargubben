@@ -31,6 +31,7 @@ export function AuthDialog({
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const [verifySent, setVerifySent] = useState(false);
 
   // Reset transient state whenever the dialog opens.
   useEffect(() => {
@@ -38,6 +39,7 @@ export function AuthDialog({
       setMode(initialMode);
       setError(null);
       setPassword("");
+      setVerifySent(false);
     }
   }, [open, initialMode]);
 
@@ -63,15 +65,35 @@ export function AuthDialog({
     const { error } =
       mode === "login"
         ? await signIn.email({ email, password })
-        : await signUp.email({ email, password, name: name.trim() });
+        : await signUp.email({
+            email,
+            password,
+            name: name.trim(),
+            // Landing page after the verification link is clicked
+            // (autoSignInAfterVerification signs the user in there).
+            callbackURL: "/",
+          });
     setPending(false);
     if (error) {
+      // requireEmailVerification: unverified login is rejected with 403
+      // EMAIL_NOT_VERIFIED and (sendOnSignIn) a fresh mail is on its way.
+      if (error.code === "EMAIL_NOT_VERIFIED") {
+        setError(
+          "Din e-postadress är inte bekräftad. Vi har skickat ett nytt bekräftelsemejl — kolla din inkorg.",
+        );
+        return;
+      }
       setError(
         error.message ??
           (mode === "login"
             ? "Inloggningen misslyckades"
             : "Registreringen misslyckades"),
       );
+      return;
+    }
+    if (mode === "signup") {
+      // No session yet — the account must be verified via the mail link.
+      setVerifySent(true);
       return;
     }
     onClose();
@@ -85,7 +107,13 @@ export function AuthDialog({
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
       role="dialog"
       aria-modal="true"
-      aria-label={isLogin ? "Logga in" : "Skapa konto"}
+      aria-label={
+        verifySent
+          ? "Bekräfta din e-post"
+          : isLogin
+            ? "Logga in"
+            : "Skapa konto"
+      }
     >
       {/* Backdrop */}
       <button
@@ -115,122 +143,151 @@ export function AuthDialog({
           </svg>
         </button>
 
-        <h2 className="mb-1 text-xl font-semibold tracking-tight text-card-foreground">
-          {isLogin ? "Logga in" : "Skapa konto"}
-        </h2>
-        <p className="mb-5 text-xs text-muted-foreground">
-          {isLogin
-            ? "Välkommen tillbaka till bryggan."
-            : "Tre gratisfrågor att börja med."}
-        </p>
-
-        <div className="flex flex-col gap-2">
-          <GoogleButton
-            label={isLogin ? "Logga in med Google" : "Skapa konto med Google"}
-          />
-          <MicrosoftButton
-            label={
-              isLogin ? "Logga in med Microsoft" : "Skapa konto med Microsoft"
-            }
-          />
-        </div>
-
-        <div className="my-5 flex items-center gap-3 text-xs text-muted-foreground">
-          <span className="h-px flex-1 bg-border" />
-          eller
-          <span className="h-px flex-1 bg-border" />
-        </div>
-
-        <form onSubmit={onSubmit} className="flex flex-col gap-4">
-          {!isLogin && (
-            <label className="flex flex-col gap-1.5 text-sm font-medium">
-              Namn
-              <input
-                type="text"
-                required
-                autoComplete="name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                className={inputClass}
-              />
-            </label>
-          )}
-          <label className="flex flex-col gap-1.5 text-sm font-medium">
-            E-post
-            <input
-              type="email"
-              required
-              autoComplete="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className={inputClass}
-            />
-          </label>
-          <label className="flex flex-col gap-1.5 text-sm font-medium">
-            Lösenord
-            <input
-              type="password"
-              required
-              minLength={8}
-              autoComplete={isLogin ? "current-password" : "new-password"}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className={inputClass}
-            />
-          </label>
-
-          {error && (
-            <p role="alert" className="text-sm text-destructive">
-              {error}
+        {verifySent ? (
+          <>
+            <h2 className="mb-1 text-xl font-semibold tracking-tight text-card-foreground">
+              Bekräfta din e-post
+            </h2>
+            <p className="mb-5 text-sm text-muted-foreground">
+              Vi har skickat ett mejl till{" "}
+              <span className="font-medium text-foreground">{email}</span>.
+              Klicka på länken i mejlet för att aktivera ditt konto. Länken
+              gäller i en timme.
             </p>
-          )}
+            <button
+              type="button"
+              onClick={close}
+              className="w-full rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90"
+            >
+              Stäng
+            </button>
+          </>
+        ) : (
+          <>
+            <h2 className="mb-1 text-xl font-semibold tracking-tight text-card-foreground">
+              {isLogin ? "Logga in" : "Skapa konto"}
+            </h2>
+            <p className="mb-5 text-xs text-muted-foreground">
+              {isLogin
+                ? "Välkommen tillbaka till bryggan."
+                : "Tre gratisfrågor att börja med."}
+            </p>
 
-          <button
-            type="submit"
-            disabled={pending}
-            className="mt-1 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
-          >
-            {pending
-              ? isLogin
-                ? "Loggar in…"
-                : "Skapar konto…"
-              : isLogin
-                ? "Logga in"
-                : "Skapa konto"}
-          </button>
-        </form>
+            <div className="flex flex-col gap-2">
+              <GoogleButton
+                label={
+                  isLogin ? "Logga in med Google" : "Skapa konto med Google"
+                }
+              />
+              <MicrosoftButton
+                label={
+                  isLogin
+                    ? "Logga in med Microsoft"
+                    : "Skapa konto med Microsoft"
+                }
+              />
+            </div>
 
-        <p className="mt-5 text-center text-sm text-muted-foreground">
-          {isLogin ? (
-            <>
-              Inte registrerad?{" "}
+            <div className="my-5 flex items-center gap-3 text-xs text-muted-foreground">
+              <span className="h-px flex-1 bg-border" />
+              eller
+              <span className="h-px flex-1 bg-border" />
+            </div>
+
+            <form onSubmit={onSubmit} className="flex flex-col gap-4">
+              {!isLogin && (
+                <label className="flex flex-col gap-1.5 text-sm font-medium">
+                  Namn
+                  <input
+                    type="text"
+                    required
+                    autoComplete="name"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    className={inputClass}
+                  />
+                </label>
+              )}
+              <label className="flex flex-col gap-1.5 text-sm font-medium">
+                E-post
+                <input
+                  type="email"
+                  required
+                  autoComplete="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className={inputClass}
+                />
+              </label>
+              <label className="flex flex-col gap-1.5 text-sm font-medium">
+                Lösenord
+                <input
+                  type="password"
+                  required
+                  minLength={8}
+                  autoComplete={isLogin ? "current-password" : "new-password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className={inputClass}
+                />
+              </label>
+
+              {error && (
+                <p role="alert" className="text-sm text-destructive">
+                  {error}
+                </p>
+              )}
+
               <button
-                type="button"
-                onClick={() => {
-                  setMode("signup");
-                  setError(null);
-                }}
-                className="font-medium text-foreground underline underline-offset-2"
+                type="submit"
+                disabled={pending}
+                className="mt-1 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
               >
-                Skapa konto här
+                {pending
+                  ? isLogin
+                    ? "Loggar in…"
+                    : "Skapar konto…"
+                  : isLogin
+                    ? "Logga in"
+                    : "Skapa konto"}
               </button>
-            </>
-          ) : (
-            <>
-              Har du redan ett konto?{" "}
-              <button
-                type="button"
-                onClick={() => {
-                  setMode("login");
-                  setError(null);
-                }}
-                className="font-medium text-foreground underline underline-offset-2"
-              >
-                Logga in
-              </button>
-            </>
-          )}
-        </p>
+            </form>
+
+            <p className="mt-5 text-center text-sm text-muted-foreground">
+              {isLogin ? (
+                <>
+                  Inte registrerad?{" "}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMode("signup");
+                      setError(null);
+                      setVerifySent(false);
+                    }}
+                    className="font-medium text-foreground underline underline-offset-2"
+                  >
+                    Skapa konto här
+                  </button>
+                </>
+              ) : (
+                <>
+                  Har du redan ett konto?{" "}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMode("login");
+                      setError(null);
+                      setVerifySent(false);
+                    }}
+                    className="font-medium text-foreground underline underline-offset-2"
+                  >
+                    Logga in
+                  </button>
+                </>
+              )}
+            </p>
+          </>
+        )}
       </div>
     </div>
   );

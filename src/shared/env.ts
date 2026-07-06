@@ -10,6 +10,17 @@ const schema = z.object({
   MICROSOFT_CLIENT_ID: z.string().min(1),
   MICROSOFT_CLIENT_SECRET: z.string().min(1),
   /**
+   * Resend API key for transactional mail (email verification). Optional so
+   * dev/CI boot without it — when unset, src/lib/email.ts logs the
+   * verification URL to the console instead of sending (local testing path).
+   */
+  RESEND_API_KEY: z.string().min(1).optional(),
+  /**
+   * From-address for transactional mail. The domain must be verified in the
+   * Resend dashboard (fragagubben.se).
+   */
+  EMAIL_FROM: z.string().default("Fiskargubben <noreply@fragagubben.se>"),
+  /**
    * SLU Miljödata-MVM public ticket — import-time only (ETL).
    * To obtain: register as a web-service user at Artdatabanken UserAdmin
    * (https://accounts.artdatabanken.se), then activate the ticket under
