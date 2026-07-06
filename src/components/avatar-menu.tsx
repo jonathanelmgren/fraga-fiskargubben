@@ -62,7 +62,7 @@ export function AvatarMenu({
       {open && (
         <div
           role="menu"
-          className="absolute right-0 top-11 z-40 w-44 overflow-hidden rounded-lg border border-border bg-popover py-1 text-sm text-popover-foreground shadow-lg"
+          className="absolute right-0 top-11 w-44 overflow-hidden rounded-lg border border-border bg-popover py-1 text-sm text-popover-foreground shadow-lg"
         >
           <div className="border-b border-border px-3 py-2">
             <p className="truncate text-xs font-medium">{name}</p>
