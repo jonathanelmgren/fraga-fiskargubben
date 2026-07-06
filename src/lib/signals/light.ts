@@ -45,8 +45,17 @@ export type SunTimes =
  * @returns    SunTimes — { sunrise, sunset } or { sunrise: null, sunset: null, polarDay }
  */
 export function sunTimes(lat: number, lon: number, date: Date): SunTimes {
-  // Julian Day at UTC midnight for this date (from Unix epoch: JD 2440587.5 = 1970-01-01T00:00:00Z)
-  const jdMidnight = date.getTime() / 86400000 + 2440587.5;
+  // Julian Day at UTC midnight for this date (from Unix epoch: JD 2440587.5 = 1970-01-01T00:00:00Z).
+  // Truncate to midnight FIRST: the Julian Day number increments at 12:00 UTC,
+  // so feeding the raw timestamp into ceil() below rolls any afternoon/evening
+  // query over to the NEXT day's n — sunrise/sunset came back one day late and
+  // a July 16:53 query classified as "night" (before "tomorrow's" sunrise).
+  const utcMidnight = Date.UTC(
+    date.getUTCFullYear(),
+    date.getUTCMonth(),
+    date.getUTCDate(),
+  );
+  const jdMidnight = utcMidnight / 86400000 + 2440587.5;
 
   // n = integer number of days since J2000.0 noon (2451545.0)
   // Per the Wikipedia sunrise equation, n = ceil(jdMidnight − 2451545.0 + 0.0008)

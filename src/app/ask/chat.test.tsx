@@ -213,9 +213,9 @@ describe("Chat component", () => {
 
     const cta = document.querySelector(".gate-cta") as HTMLElement;
     expect(cta.textContent).toContain("konto");
-    // Auth moved into a dialog — the CTA links to the landing page with the
-    // dialog auto-open param (the old /login + /register pages are gone).
-    expect(cta.querySelector('a[href="/?auth=1"]')).toBeTruthy();
+    // Auth lives in a dialog — the CTA stays on the current page and opens it
+    // via the header's ?auth=1 auto-open param (no homepage round-trip).
+    expect(cta.querySelector('a[href="?auth=1"]')).toBeTruthy();
   });
 
   it("6. clarify gate renders as an assistant persona bubble and keeps the conversation id", async () => {

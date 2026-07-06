@@ -43,6 +43,26 @@ describe("sunTimes", () => {
     expect(minutesAfterMidnight).toBeLessThan(1090); // 18:10 UTC
   });
 
+  it("ignores time-of-day: afternoon query returns the SAME day's sun times", () => {
+    // Regression: the Julian Day number increments at 12:00 UTC, so feeding
+    // the raw timestamp into the day-number ceil() rolled every afternoon/
+    // evening query over to the NEXT day's sunrise/sunset. A July 16:53
+    // Swedish query then landed before "tomorrow's" sunrise → "night".
+    const afternoon = new Date("2026-07-06T14:53:00Z");
+    const midnight = new Date("2026-07-06T00:00:00Z");
+    const a = sunTimes(LAT, LON, afternoon);
+    const m = sunTimes(LAT, LON, midnight);
+    expect(a.sunrise?.getTime()).toBe(m.sunrise?.getTime());
+    expect(a.sunset?.getTime()).toBe(m.sunset?.getTime());
+    // And sunrise belongs to July 6, not July 7.
+    expect(a.sunrise?.toISOString().slice(0, 10)).toBe("2026-07-06");
+  });
+
+  it("classifies a Swedish July afternoon as day, not night (Hjälmaren regression)", () => {
+    const t = new Date("2026-07-06T14:53:00Z"); // 16:53 Europe/Stockholm
+    expect(lightWindow(t, sunTimes(59.23, 15.77, t))).toBe("day");
+  });
+
   it("handles polar day — returns null sunrise/sunset for Tromsø in midsummer", () => {
     // Tromsø 69.65°N: sun never sets around summer solstice
     const { sunrise, sunset } = sunTimes(

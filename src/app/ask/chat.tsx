@@ -160,13 +160,7 @@ function UserBubble({ text }: { text: string }) {
  * markdown: bold, lists). Styling lives in globals.css under .chat-markdown
  * so the streaming partial and the final message render identically.
  */
-function AssistantBubble({
-  text,
-  streaming,
-}: {
-  text: string;
-  streaming?: boolean;
-}) {
+function AssistantBubble({ text }: { text: string }) {
   return (
     <div className="flex items-start gap-3">
       <div className="shrink-0 mt-0.5">
@@ -181,12 +175,6 @@ function AssistantBubble({
       <div className="chat-bubble-assistant">
         <div className="chat-markdown text-sm leading-relaxed">
           <Markdown remarkPlugins={[remarkGfm]}>{text}</Markdown>
-          {streaming && (
-            <span
-              aria-hidden="true"
-              className="inline-block w-2 h-4 ml-0.5 bg-teal-700/60 animate-pulse align-text-bottom rounded-sm"
-            />
-          )}
         </div>
       </div>
     </div>
@@ -215,16 +203,17 @@ const THINKING_PHRASES = [
 
 const THINKING_PHRASE_MS = 3500;
 
-function ThinkingIndicator() {
+function ThinkingIndicator({ withPhrases }: { withPhrases: boolean }) {
   const [phraseIndex, setPhraseIndex] = useState(0);
 
   useEffect(() => {
+    if (!withPhrases) return;
     const timer = setInterval(
       () => setPhraseIndex((i) => (i + 1) % THINKING_PHRASES.length),
       THINKING_PHRASE_MS,
     );
     return () => clearInterval(timer);
-  }, []);
+  }, [withPhrases]);
 
   return (
     <div className="flex items-start gap-3">
@@ -242,7 +231,7 @@ function ThinkingIndicator() {
           <span className="casting-dot" />
           <span className="casting-dot" style={{ animationDelay: "0.2s" }} />
           <span className="casting-dot" style={{ animationDelay: "0.4s" }} />
-          {THINKING_PHRASES[phraseIndex]}
+          {withPhrases && THINKING_PHRASES[phraseIndex]}
         </span>
       </div>
     </div>
@@ -252,9 +241,11 @@ function ThinkingIndicator() {
 function ChatLimitBanner({
   ariaLabel,
   className,
+  loggedIn,
 }: {
   ariaLabel: string;
   className: string;
+  loggedIn: boolean;
 }) {
   return (
     <section aria-label={ariaLabel} className={className}>
@@ -268,19 +259,37 @@ function ChatLimitBanner({
           Starta en ny chatt
         </Link>{" "}
         eller{" "}
-        <Link
-          href="/profile"
-          className="underline underline-offset-2 hover:text-stone-800"
-        >
-          uppgradera till premium
-        </Link>{" "}
+        {loggedIn ? (
+          <Link
+            href="/profile"
+            className="underline underline-offset-2 hover:text-stone-800"
+          >
+            uppgradera till premium
+          </Link>
+        ) : (
+          <Link
+            href="?auth=1"
+            scroll={false}
+            className="underline underline-offset-2 hover:text-stone-800"
+          >
+            logga in / skapa konto
+          </Link>
+        )}{" "}
         för obegränsade följdfrågor.
       </span>
     </section>
   );
 }
 
-function GateBanner({ gateType, text }: { gateType: GateType; text: string }) {
+function GateBanner({
+  gateType,
+  text,
+  loggedIn,
+}: {
+  gateType: GateType;
+  text: string;
+  loggedIn: boolean;
+}) {
   if (gateType === "register_to_continue") {
     return (
       <div
@@ -295,7 +304,8 @@ function GateBanner({ gateType, text }: { gateType: GateType; text: string }) {
         </p>
         <div className="flex gap-2 justify-center">
           <Link
-            href="/?auth=1"
+            href="?auth=1"
+            scroll={false}
             className="rounded-md bg-teal-700 px-4 py-2 text-xs font-semibold text-white transition-opacity hover:opacity-90"
           >
             Logga in / skapa konto
@@ -358,6 +368,7 @@ function GateBanner({ gateType, text }: { gateType: GateType; text: string }) {
       <ChatLimitBanner
         ariaLabel="Chatbegränsning"
         className="chat-limit-banner flex items-center gap-3 rounded-lg border border-stone-300/70 bg-stone-100/60 px-4 py-3 text-xs text-stone-600 mx-2"
+        loggedIn={loggedIn}
       />
     );
   }
@@ -459,6 +470,10 @@ export default function Chat({
   const [badges, setBadges] = useState<Badges | null>(initialBadges ?? null);
   const [streaming, setStreaming] = useState(false);
   const [thinking, setThinking] = useState(false);
+  // The rotating "gubben rotar i masklådan" phrases only make sense on the
+  // first message of a new chat, where the server actually fetches weather
+  // and builds signals. Follow-up turns are fast — plain dots are enough.
+  const [thinkingWithPhrases, setThinkingWithPhrases] = useState(false);
   const [frozen, setFrozen] = useState(initialFrozen);
 
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -525,6 +540,7 @@ export default function Chat({
         { role: "user", text: trimmed, id: userMsgId },
       ]);
       setThinking(true);
+      setThinkingWithPhrases(!conversationId);
       forceScroll();
 
       // E2: hoisted so the catch can finalize a dangling partial bubble.
@@ -815,20 +831,19 @@ export default function Chat({
             return <UserBubble key={msg.id} text={msg.text} />;
           }
           if (msg.role === "assistant") {
-            return (
-              <AssistantBubble
-                key={msg.id}
-                text={msg.text}
-                streaming={msg.streaming}
-              />
-            );
+            return <AssistantBubble key={msg.id} text={msg.text} />;
           }
           return (
-            <GateBanner key={msg.id} gateType={msg.gateType} text={msg.text} />
+            <GateBanner
+              key={msg.id}
+              gateType={msg.gateType}
+              text={msg.text}
+              loggedIn={!!session}
+            />
           );
         })}
 
-        {thinking && <ThinkingIndicator />}
+        {thinking && <ThinkingIndicator withPhrases={thinkingWithPhrases} />}
         <div ref={bottomRef} />
       </section>
 
@@ -872,6 +887,7 @@ export default function Chat({
         <ChatLimitBanner
           ariaLabel="Chatt fryst"
           className="frozen-banner shrink-0 mx-4 mb-2 flex items-center gap-3 rounded-lg border border-stone-300/70 bg-stone-100/60 px-4 py-3 text-xs text-stone-600"
+          loggedIn={!!session}
         />
       )}
 

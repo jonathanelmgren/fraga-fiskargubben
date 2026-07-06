@@ -57,6 +57,16 @@ describe("FISKARGUBBEN_SYSTEM", () => {
     ).toBe(true);
   });
 
+  it("requires compass directions to be written out in Swedish, never abbreviated", () => {
+    // Users don't read meteorological shorthand: a reply saying "vinden
+    // kommer från WNW" is noise to them. The prompt must carry the full
+    // 16-point translation table and forbid abbreviations in replies.
+    expect(/aldrig förkortningar/i.test(FISKARGUBBEN_SYSTEM)).toBe(true);
+    expect(FISKARGUBBEN_SYSTEM).toContain("WNW = väst-nordväst");
+    expect(FISKARGUBBEN_SYSTEM).toContain("NNE = nord-nordost");
+    expect(FISKARGUBBEN_SYSTEM).toContain("SSW = syd-sydväst");
+  });
+
   it("defines the remaining signal fields the model must interpret", () => {
     // Every unit/enum the snapshot carries needs a definition in the frozen
     // prompt — undefined fields get guessed (the cloudPct-octas and

@@ -46,6 +46,11 @@ COPY --from=builder /app/public ./public
 # (the standalone bundle has the drizzle-orm migrator but reads these via fs).
 COPY --from=builder /app/drizzle ./drizzle
 
+# The next/image optimizer writes to .next/cache at runtime. Everything else
+# under /app stays root-owned read-only on purpose — only the cache dir needs
+# to be writable by the runtime user.
+RUN mkdir -p /app/.next/cache && chown -R nextjs:nodejs /app/.next/cache
+
 USER nextjs
 EXPOSE 3000
 CMD ["node", "server.js"]
