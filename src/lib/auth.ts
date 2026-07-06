@@ -13,7 +13,7 @@ import {
 } from "@/lib/auth/signup-ip";
 import { claimConversation } from "@/lib/chat/anon";
 import { verifyClaimToken } from "@/lib/chat/claim-cookie";
-import { sendVerificationEmail } from "@/lib/email";
+import { sendExistingAccountEmail, sendVerificationEmail } from "@/lib/email";
 import { notifyDiscord } from "@/lib/notify/discord";
 import { db } from "@/shared/db/client";
 import {
@@ -77,6 +77,32 @@ export const auth = betterAuth({
     // path is src/lib/email.ts (Resend). OAuth (Google/Microsoft) accounts
     // are treated as verified by better-auth and are unaffected.
     requireEmailVerification: true,
+    // With requireEmailVerification, a signup for an EXISTING email returns
+    // the same generic "check your inbox" response as a fresh one (anti-
+    // enumeration) and creates nothing — so without this hook the real owner
+    // (e.g. a Google-SSO user re-registering with a password) waits for a
+    // verification mail that never comes. Tell them by mail instead, with the
+    // sign-in methods their account actually has.
+    onExistingUserSignUp: async ({ user }) => {
+      // Never throws: a failed notice mail must not turn the (deliberately
+      // successful-looking) duplicate-signup response into a 500.
+      try {
+        const linked = await db
+          .select({ providerId: accounts.providerId })
+          .from(accounts)
+          .where(eq(accounts.userId, user.id));
+        await sendExistingAccountEmail({
+          to: user.email,
+          name: user.name,
+          providers: linked.map((a) => a.providerId),
+        });
+      } catch (err) {
+        console.error(
+          `[auth] existing-account notice for ${user.email} failed:`,
+          err,
+        );
+      }
+    },
   },
   emailVerification: {
     sendVerificationEmail: async ({ user, url }) => {

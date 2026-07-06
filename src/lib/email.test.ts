@@ -41,7 +41,7 @@ vi.mock("@/shared/env", () => {
 
 import { notifyDiscord } from "@/lib/notify/discord";
 import { env } from "@/shared/env";
-import { sendVerificationEmail } from "./email";
+import { sendExistingAccountEmail, sendVerificationEmail } from "./email";
 
 const args = {
   to: "anna@example.com",
@@ -132,5 +132,52 @@ describe("sendVerificationEmail", () => {
     const payload = sendMock.mock.calls[0][0];
     expect(payload.html).not.toContain("<img");
     expect(payload.html).toContain("&lt;img");
+  });
+});
+
+describe("sendExistingAccountEmail", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    env.RESEND_API_KEY = undefined;
+  });
+
+  const existingArgs = {
+    to: "anna@example.com",
+    name: "Anna",
+    providers: ["google"],
+  };
+
+  it("does not send when RESEND_API_KEY is unset", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await sendExistingAccountEmail(existingArgs);
+    expect(sendMock).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("names the user's actual sign-in methods in the body", async () => {
+    env.RESEND_API_KEY = "re_test";
+    sendMock.mockResolvedValue({ data: { id: "1" }, error: null });
+
+    await sendExistingAccountEmail({
+      ...existingArgs,
+      providers: ["google", "credential"],
+    });
+
+    const payload = sendMock.mock.calls[0][0];
+    expect(payload.to).toBe("anna@example.com");
+    expect(payload.subject).toContain("redan ett konto");
+    expect(payload.text).toContain("Google eller e-post och lösenord");
+    expect(payload.html).toContain("Google eller e-post och lösenord");
+  });
+
+  it("does not throw when Resend rejects", async () => {
+    env.RESEND_API_KEY = "re_test";
+    sendMock.mockRejectedValue(new Error("ECONNRESET"));
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(
+      sendExistingAccountEmail(existingArgs),
+    ).resolves.toBeUndefined();
+    error.mockRestore();
   });
 });
