@@ -22,6 +22,7 @@ import { analyticsEvents, conversations, lakes } from "@/shared/db/schema";
  *   out_of_credits     payload { userId, reason }
  *   persistence_failure conversationId, payload { reason }
  *   pipeline_error     conversationId?, payload { reason }
+ *   feedback_prompt_* payload { userId, chatCount }, submitted adds { message }
  *
  * Query style matches `lib/lakes/resolve.ts`: raw `db.execute<Row>(sql\`\`)` with
  * `${table}` interpolation.  `deps` is injectable (mirrors `EmitDeps` in
@@ -750,5 +751,42 @@ export async function analyticsOverview(
     byType,
     llmCost,
     costPerUser,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Feedback prompt funnel
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface FeedbackPromptFunnel {
+  shown: number;
+  dismissed: number;
+  discordClicked: number;
+  submitted: number;
+}
+
+/**
+ * The feedback prompt funnel in one query: how many prompts were shown, and
+ * per channel what happened next (dismissed / went to Discord / submitted the
+ * inline form). Spec 2026-07-06-feedback-prompt-design.md.
+ */
+export async function feedbackPromptFunnel(
+  window?: Window,
+  deps: QueryDeps = defaultDeps(),
+): Promise<FeedbackPromptFunnel> {
+  const rows = await deps.db.execute<{ type: string; n: number }>(sql`
+    SELECT type, COUNT(*)::int AS n
+    FROM ${analyticsEvents}
+    WHERE type IN ('feedback_prompt_shown', 'feedback_prompt_dismissed',
+                   'feedback_prompt_discord_clicked', 'feedback_prompt_submitted')
+    ${sinceClause(window)}
+    GROUP BY type
+  `);
+  const by = new Map(rows.map((r) => [r.type, r.n]));
+  return {
+    shown: by.get("feedback_prompt_shown") ?? 0,
+    dismissed: by.get("feedback_prompt_dismissed") ?? 0,
+    discordClicked: by.get("feedback_prompt_discord_clicked") ?? 0,
+    submitted: by.get("feedback_prompt_submitted") ?? 0,
   };
 }

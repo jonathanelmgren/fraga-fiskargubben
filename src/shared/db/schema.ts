@@ -68,6 +68,17 @@ export const users = pgTable("user", {
    * the current version re-triggers the gate with "updated terms" copy.
    */
   tosAcceptedVersion: integer("tos_accepted_version"),
+  /**
+   * Feedback prompt gate (spec 2026-07-06-feedback-prompt-design.md): when the
+   * prompt was last SHOWN (stamped by /api/feedback-prompt action=shown), and
+   * the user's conversation count at that moment. Null promptedAt = never
+   * prompted. Next prompt requires count >= promptedChatCount + 5 AND > 30
+   * days since promptedAt.
+   */
+  feedbackPromptedAt: timestamp("feedback_prompted_at"),
+  feedbackPromptedChatCount: integer("feedback_prompted_chat_count")
+    .default(0)
+    .notNull(),
 });
 
 export const sessions = pgTable("session", {
