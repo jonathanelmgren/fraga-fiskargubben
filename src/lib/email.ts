@@ -3,6 +3,15 @@ import { Resend } from "resend";
 import { notifyDiscord } from "@/lib/notify/discord";
 import { env } from "@/shared/env";
 
+/** Minimal HTML entity escape for user-supplied text in the HTML body. */
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 /**
  * Transactional mail via Resend. Only one mail exists today: the email
  * verification link for email/password signups (better-auth wires it in
@@ -47,7 +56,7 @@ export async function sendVerificationEmail({
         "Länken gäller i en timme. Om du inte skapade ett konto kan du ignorera det här mejlet.",
       ].join("\n"),
       html: `
-        <p>Hej ${name}!</p>
+        <p>Hej ${escapeHtml(name)}!</p>
         <p>Bekräfta din e-postadress genom att klicka på knappen nedan:</p>
         <p><a href="${url}" style="display:inline-block;padding:10px 20px;background:#1a1a1a;color:#ffffff;text-decoration:none;border-radius:6px">Bekräfta e-postadress</a></p>
         <p>Eller öppna länken: <a href="${url}">${url}</a></p>

@@ -105,4 +105,15 @@ describe("sendVerificationEmail", () => {
     expect(notifyDiscord).toHaveBeenCalled();
     error.mockRestore();
   });
+
+  it("escapes HTML in the user-supplied name", async () => {
+    env.RESEND_API_KEY = "re_test";
+    sendMock.mockResolvedValue({ data: { id: "1" }, error: null });
+
+    await sendVerificationEmail({ ...args, name: '<img src=x onerror="x">' });
+
+    const payload = sendMock.mock.calls[0][0];
+    expect(payload.html).not.toContain("<img");
+    expect(payload.html).toContain("&lt;img");
+  });
 });
