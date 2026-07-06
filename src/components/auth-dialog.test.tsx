@@ -125,6 +125,13 @@ describe("AuthDialog — email verification", () => {
     });
   });
 
+  it("portals to document.body so ancestor backdrop-filter (site header) can't trap its fixed positioning", () => {
+    render(<AuthDialog open onClose={vi.fn()} />);
+
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.parentElement).toBe(document.body);
+  });
+
   it("resets the verify-sent panel when the dialog re-opens", async () => {
     vi.mocked(signUp.email).mockResolvedValue({
       data: {},

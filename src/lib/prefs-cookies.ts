@@ -28,8 +28,7 @@ function readCookie(name: string): string | undefined {
 
 function writeCookie(name: string, value: string): void {
   if (typeof document === "undefined") return;
-  // biome-ignore lint/suspicious/noDocumentCookie: the async CookieStore API
-  // is Chromium-only; these are simple, non-sensitive preference cookies.
+  // biome-ignore lint/suspicious/noDocumentCookie: the async CookieStore API is Chromium-only; these are simple, non-sensitive preference cookies.
   document.cookie = `${name}=${value}; path=/; max-age=${ONE_YEAR_S}; SameSite=Lax`;
 }
 

@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { GoogleButton, MicrosoftButton } from "@/app/social-buttons";
 import { signIn, signUp } from "@/lib/auth-client";
 
@@ -102,7 +103,10 @@ export function AuthDialog({
 
   const isLogin = mode === "login";
 
-  return (
+  // Portaled to <body>: the site header's backdrop-filter makes it a
+  // containing block for fixed descendants, which would trap the overlay
+  // inside the header box.
+  return createPortal(
     <div
       className="fixed inset-0 flex items-center justify-center p-4"
       role="dialog"
@@ -289,6 +293,7 @@ export function AuthDialog({
           </>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
