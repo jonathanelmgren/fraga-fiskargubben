@@ -15,8 +15,8 @@ vi.mock("server-only", () => ({}));
 import {
   isActive,
   resetRegistryForTests,
-  startStream,
   StreamConflictError,
+  startStream,
   subscribe,
 } from "./stream-registry";
 

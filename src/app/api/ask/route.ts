@@ -65,8 +65,8 @@ import {
 import { toTextStream } from "@/lib/chat/sse-text-stream";
 import {
   isActive,
-  startStream,
   StreamConflictError,
+  startStream,
   subscribe,
 } from "@/lib/chat/stream-registry";
 import { ExternalServiceError, TimeoutError } from "@/lib/errors";

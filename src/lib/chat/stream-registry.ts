@@ -211,10 +211,7 @@ function settle(
     }
   }
   entry.subscribers.clear();
-  entry.graceTimer = setTimeout(
-    () => evict(conversationId, entry),
-    GRACE_MS,
-  );
+  entry.graceTimer = setTimeout(() => evict(conversationId, entry), GRACE_MS);
 }
 
 function evict(conversationId: string, entry: ActiveStream): void {

@@ -23,10 +23,7 @@ vi.mock("drizzle-orm", async (importOriginal) => ({
 import { cookies } from "next/headers";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { verifyClaimToken } from "@/lib/chat/claim-cookie";
-import {
-  resetRegistryForTests,
-  startStream,
-} from "@/lib/chat/stream-registry";
+import { resetRegistryForTests, startStream } from "@/lib/chat/stream-registry";
 import { getSession } from "@/lib/get-session";
 import { db } from "@/shared/db/client";
 import { GET } from "./route";
@@ -100,9 +97,7 @@ describe("GET /api/ask/stream", () => {
     // Let the registry consumer ingest the first chunk.
     await new Promise((r) => setTimeout(r, 0));
 
-    const res = await GET(
-      streamRequest(`conversationId=${CONV_ID}&offset=3`),
-    );
+    const res = await GET(streamRequest(`conversationId=${CONV_ID}&offset=3`));
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/plain");
     live.end();

@@ -47,16 +47,13 @@ import {
   persistAssistantTurn,
   persistUserTurn,
 } from "@/lib/chat/persist-turns";
-import {
-  resetRegistryForTests,
-  subscribe,
-} from "@/lib/chat/stream-registry";
+import { resetRegistryForTests, subscribe } from "@/lib/chat/stream-registry";
 import { ExternalServiceError, TimeoutError } from "@/lib/errors";
 import {
   classifyError,
   isSameOriginRequest,
-  parseLocation,
   POST,
+  parseLocation,
   serializeClaimCookie,
 } from "./route";
 

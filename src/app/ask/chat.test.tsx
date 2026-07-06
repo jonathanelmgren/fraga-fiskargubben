@@ -385,9 +385,7 @@ describe("Chat component", () => {
     vi.spyOn(global, "fetch").mockResolvedValueOnce(
       makeJsonResponse({ error: "no active stream" }, 404),
     );
-    const reload = vi
-      .spyOn(pageReload, "trigger")
-      .mockImplementation(() => {});
+    const reload = vi.spyOn(pageReload, "trigger").mockImplementation(() => {});
 
     render(
       <Chat

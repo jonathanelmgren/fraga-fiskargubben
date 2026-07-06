@@ -675,8 +675,7 @@ export default function Chat({
       void recoverStream(dangling);
     };
     document.addEventListener("visibilitychange", onVisibility);
-    return () =>
-      document.removeEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
   }, [recoverStream]);
 
   // Page loaded while the server was still generating (initialActiveStream):

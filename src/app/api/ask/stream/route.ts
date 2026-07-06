@@ -35,8 +35,7 @@ export async function GET(request: Request): Promise<Response> {
     return Response.json({ error: "invalid conversationId" }, { status: 400 });
   }
   const rawOffset = Number(url.searchParams.get("offset") ?? "0");
-  const offset =
-    Number.isInteger(rawOffset) && rawOffset > 0 ? rawOffset : 0;
+  const offset = Number.isInteger(rawOffset) && rawOffset > 0 ? rawOffset : 0;
 
   const session = await getSession();
   const cookieStore = await cookies();

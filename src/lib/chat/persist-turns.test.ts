@@ -60,7 +60,10 @@ describe("persistUserTurn", () => {
     });
 
     await expect(
-      persistUserTurn(deps, { conversationId: "conv-1", message: "Vad biter?" }),
+      persistUserTurn(deps, {
+        conversationId: "conv-1",
+        message: "Vad biter?",
+      }),
     ).resolves.toBeUndefined();
 
     expect(deps.emit).toHaveBeenCalledWith(
