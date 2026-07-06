@@ -8,6 +8,7 @@ import {
   analyticsOverview,
   countByType,
   creditSpend,
+  feedbackPromptFunnel,
   recentErrors,
   recentResolutionFailures,
   recentTopicRefusals,
@@ -322,5 +323,23 @@ describe("analyticsOverview", () => {
     expect(out.costPerUser).toEqual([
       { userId: "user-1", conversations: 4, costUsd: 0.5 },
     ]);
+  });
+});
+
+describe("feedbackPromptFunnel", () => {
+  it("maps event-type counts and defaults missing types to 0", async () => {
+    const deps = stubDb([
+      [
+        { type: "feedback_prompt_shown", n: 40 },
+        { type: "feedback_prompt_submitted", n: 5 },
+      ],
+    ]);
+    const out = await feedbackPromptFunnel(undefined, deps);
+    expect(out).toEqual({
+      shown: 40,
+      dismissed: 0,
+      discordClicked: 0,
+      submitted: 5,
+    });
   });
 });
