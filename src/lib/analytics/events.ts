@@ -59,7 +59,15 @@ export type AnalyticsEventType =
   // payload { kind, model, inputTokens, outputTokens, cacheCreationInputTokens,
   // cacheReadInputTokens, costUsd } — conversationId set when known, so cost
   // rolls up per conversation and (via conversations.user_id) per account.
-  | "llm_usage";
+  | "llm_usage"
+  // Feedback prompt funnel (spec 2026-07-06-feedback-prompt-design.md). All
+  // payloads { userId, chatCount }; submitted adds { message } — the feedback
+  // text lives HERE (no dedicated table). dismissed = closed with no prior
+  // discord click or submit.
+  | "feedback_prompt_shown"
+  | "feedback_prompt_dismissed"
+  | "feedback_prompt_discord_clicked"
+  | "feedback_prompt_submitted";
 
 export interface AnalyticsEvent {
   type: AnalyticsEventType;
