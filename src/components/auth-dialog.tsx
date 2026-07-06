@@ -107,7 +107,13 @@ export function AuthDialog({
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
       role="dialog"
       aria-modal="true"
-      aria-label={isLogin ? "Logga in" : "Skapa konto"}
+      aria-label={
+        verifySent
+          ? "Bekräfta din e-post"
+          : isLogin
+            ? "Logga in"
+            : "Skapa konto"
+      }
     >
       {/* Backdrop */}
       <button

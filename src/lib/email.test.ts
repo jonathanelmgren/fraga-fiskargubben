@@ -62,7 +62,21 @@ describe("sendVerificationEmail", () => {
     await sendVerificationEmail(args);
     expect(sendMock).not.toHaveBeenCalled();
     expect(warn.mock.calls.flat().join(" ")).toContain(args.url);
+    expect(notifyDiscord).not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  it("pings Discord when RESEND_API_KEY is unset in production", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await sendVerificationEmail(args);
+    expect(sendMock).not.toHaveBeenCalled();
+    expect(notifyDiscord).toHaveBeenCalledWith(
+      "alerts",
+      expect.stringContaining("anna@example.com"),
+    );
+    warn.mockRestore();
+    vi.unstubAllEnvs();
   });
 
   it("sends via Resend with from/to/subject and the URL in the body", async () => {
@@ -102,7 +116,10 @@ describe("sendVerificationEmail", () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
 
     await expect(sendVerificationEmail(args)).resolves.toBeUndefined();
-    expect(notifyDiscord).toHaveBeenCalled();
+    expect(notifyDiscord).toHaveBeenCalledWith(
+      "alerts",
+      expect.stringContaining("ECONNRESET"),
+    );
     error.mockRestore();
   });
 

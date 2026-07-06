@@ -38,6 +38,12 @@ export async function sendVerificationEmail({
     console.warn(
       `[email] RESEND_API_KEY not set — verification mail NOT sent to ${to}. Verify manually: ${url}`,
     );
+    if (process.env.NODE_ENV === "production") {
+      void notifyDiscord(
+        "alerts",
+        `⚠️ RESEND_API_KEY saknas i prod — verifieringsmejl till ${to} skickades ALDRIG.`,
+      ).catch(() => {});
+    }
     return;
   }
 
@@ -74,7 +80,7 @@ export async function sendVerificationEmail({
     console.error(`[email] verification mail to ${to} threw:`, err);
     void notifyDiscord(
       "alerts",
-      `⚠️ Verifieringsmejl till ${to} misslyckades (exception)`,
+      `⚠️ Verifieringsmejl till ${to} misslyckades: ${err instanceof Error ? err.message : String(err)}`,
     ).catch(() => {});
   }
 }

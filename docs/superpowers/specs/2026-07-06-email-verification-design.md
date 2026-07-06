@@ -59,8 +59,7 @@ Resend failure during signup: user is still created, mail missing. Self-healing 
 
 ## Testing
 
-- Skip unit tests for the thin Resend wrapper.
-- Integration test: signup via email/password → `emailVerified=false` and sign-in is blocked; follows existing integration-test patterns.
+- Config-level tests (auth.test.ts) assert the verification wiring; behavioral signup→blocked-login→verify flow was verified by a live smoke test (2026-07-06). A DB-backed integration test is deferred — revisit if a better-auth upgrade changes verification semantics.
 
 ## Out of scope
 
