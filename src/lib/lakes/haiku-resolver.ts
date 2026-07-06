@@ -22,6 +22,7 @@ import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
+import { type LlmCallUsage, usageOf } from "@/lib/analytics/llm-cost";
 import type { HistoryMessage } from "@/lib/chat/extractor";
 import { LAKE_CLARIFY_FALLBACK } from "@/lib/chat/gate-messages";
 import { RESOLVER_MODEL } from "@/lib/claude/models";
@@ -46,6 +47,11 @@ export type HaikuResolution = {
   noSuchLake: boolean;
   /** In-persona Swedish question to ask when we cannot lock a lake. */
   clarifyQuestion: string;
+  /**
+   * Token usage of the Haiku call, threaded back so the caller (ask-handler)
+   * can emit an `llm_usage` analytics event with the conversation id.
+   */
+  usage?: LlmCallUsage;
 };
 
 const ResolutionOutputSchema = z.object({
@@ -189,6 +195,12 @@ export async function resolveLakeWithHaiku(params: {
     });
   }
 
+  // Guarded: injected test fakes may omit model/usage.
+  const usage =
+    response.model && response.usage
+      ? usageOf({ model: response.model, usage: response.usage })
+      : undefined;
+
   // Parse failure → zero confidence, generic clarify. The caller treats this
   // as an ordinary "not sure" round rather than an error.
   if (response.parsed_output == null) {
@@ -197,6 +209,7 @@ export async function resolveLakeWithHaiku(params: {
       confidence: 0,
       noSuchLake: false,
       clarifyQuestion: LAKE_CLARIFY_FALLBACK,
+      usage,
     };
   }
 
@@ -216,5 +229,6 @@ export async function resolveLakeWithHaiku(params: {
         : parsed.confidence,
     noSuchLake: parsed.noSuchLake,
     clarifyQuestion: parsed.clarifyQuestion.trim() || LAKE_CLARIFY_FALLBACK,
+    usage,
   };
 }

@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { SupportButton } from "@/components/support-dialog";
 import { FREE_CREDITS } from "@/lib/chat/quota";
 import { getSession } from "@/lib/get-session";
 import { isAdminEmail } from "@/lib/is-admin";
@@ -40,8 +41,6 @@ export default async function ProfilePage() {
   const unlimited = user.isPaid || isAdmin;
   const creditsLeft = Math.max(0, FREE_CREDITS - user.creditsUsed);
 
-  const discordInvite = process.env.NEXT_PUBLIC_DISCORD_INVITE;
-
   return (
     <main className="mx-auto w-full max-w-2xl flex-1 px-4 py-10">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -53,16 +52,9 @@ export default async function ProfilePage() {
           >
             Mina chattar
           </Link>
-          {discordInvite && (
-            <a
-              href={discordInvite}
-              target="_blank"
-              rel="noreferrer"
-              className="rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium transition-colors hover:bg-secondary"
-            >
-              Support
-            </a>
-          )}
+          <SupportButton className="rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium transition-colors hover:bg-secondary">
+            Support
+          </SupportButton>
         </div>
       </div>
 

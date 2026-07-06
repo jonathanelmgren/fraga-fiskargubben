@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { LocationTip } from "@/components/location-tip";
 import { useGeolocation } from "@/lib/hooks/use-geolocation";
 
 /** sessionStorage handoff key: landing → /ask (chat auto-submits it). */
@@ -74,7 +75,7 @@ export function HeroPrompt({
       </form>
 
       <div className="mt-3 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
-        <span>Gratis första frågan. Bäst koll har han på svenska insjöar.</span>
+        <span>Prova gratis. Bäst koll har han på svenska insjöar.</span>
         <button
           type="button"
           onClick={toggleLocation}
@@ -105,6 +106,10 @@ export function HeroPrompt({
                 : "Använd min plats"}
         </button>
       </div>
+
+      {geo === "off" && (
+        <LocationTip className="mt-2 text-center text-muted-foreground/80" />
+      )}
 
       <div className="mt-6 flex flex-wrap justify-center gap-2.5">
         {suggestions.map((s) => (

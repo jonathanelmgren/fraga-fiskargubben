@@ -17,7 +17,7 @@ export function initialsOf(name: string): string {
 
 /**
  * Logged-in header control: initials avatar with a small dropdown
- * (Profil, Admin for admins, Logga ut).
+ * (Mina chattar, Profil, Statistik for admins, Logga ut).
  */
 export function AvatarMenu({
   name,
@@ -67,6 +67,14 @@ export function AvatarMenu({
           <div className="border-b border-border px-3 py-2">
             <p className="truncate text-xs font-medium">{name}</p>
           </div>
+          <Link
+            href="/ask"
+            role="menuitem"
+            onClick={() => setOpen(false)}
+            className="block px-3 py-2 transition-colors hover:bg-secondary"
+          >
+            Mina chattar
+          </Link>
           <Link
             href="/profile"
             role="menuitem"

@@ -23,8 +23,8 @@ describe("constants", () => {
     expect(FREE_CREDITS).toBe(3);
   });
 
-  it("MAX_CHAT_TURNS is 20", () => {
-    expect(MAX_CHAT_TURNS).toBe(20);
+  it("MAX_CHAT_TURNS is 3", () => {
+    expect(MAX_CHAT_TURNS).toBe(3);
   });
 });
 
@@ -94,12 +94,16 @@ describe("chatTurnAllowed", () => {
     expect(chatTurnAllowed(MAX_CHAT_TURNS + 5)).toBe(false);
   });
 
-  it("wind-down turn 15 is NOT blocked (soft taper, handled elsewhere)", () => {
-    expect(chatTurnAllowed(15)).toBe(true);
-  });
-
   it("admin has no turn limit", () => {
     expect(chatTurnAllowed(MAX_CHAT_TURNS + 100, { isAdmin: true })).toBe(true);
+  });
+
+  it("paid user has no turn limit", () => {
+    expect(chatTurnAllowed(MAX_CHAT_TURNS + 100, { isPaid: true })).toBe(true);
+  });
+
+  it("isPaid:false behaves like free tier", () => {
+    expect(chatTurnAllowed(MAX_CHAT_TURNS, { isPaid: false })).toBe(false);
   });
 });
 

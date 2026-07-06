@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import Image from "next/image";
 import { connection } from "next/server";
 import gubbeImg from "@/assets/gubbe.png";
+import { SupportButton } from "@/components/support-dialog";
 import { SHARE_LOCATION_COOKIE } from "@/lib/prefs-cookies";
 import { HeroPrompt } from "./hero-prompt";
 import { pickHeroSuggestions } from "./hero-suggestions";
@@ -108,19 +109,10 @@ export default async function Home() {
           <a href="/privacystatement" className="underline underline-offset-2">
             Integritet
           </a>
-          {process.env.NEXT_PUBLIC_DISCORD_INVITE && (
-            <>
-              <span className="mx-2">·</span>
-              <a
-                href={process.env.NEXT_PUBLIC_DISCORD_INVITE}
-                target="_blank"
-                rel="noreferrer"
-                className="underline underline-offset-2"
-              >
-                Support
-              </a>
-            </>
-          )}
+          <span className="mx-2">·</span>
+          <SupportButton className="underline underline-offset-2">
+            Support
+          </SupportButton>
         </div>
       </footer>
     </main>

@@ -16,7 +16,8 @@
  *  1. Identity: session OR anon claim token
  *  2. Anon quota gate — blocks NEW conversations only (follow-ups on the
  *     anon's own conversation are allowed; the clarify loop needs them)
- *  3. Chat-turn limit / frozen check (follow-ups; admins bypass the limit)
+ *  3. Chat-turn limit / frozen check (follow-ups; free tier only — paid
+ *     users and admins bypass the limit)
  *  4. Extractor (Haiku) → topic gate (loosened: outdoors/weather is on-topic)
  *  5. By status:
  *     - lake_pending → candidate SQL + Haiku resolver. Confident → transition
@@ -33,6 +34,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { AnalyticsEvent } from "@/lib/analytics/events";
+import { llmUsagePayload } from "@/lib/analytics/llm-cost";
 import type { Extraction, HistoryMessage } from "@/lib/chat/extractor";
 import type { CandidateLake, UserLocation } from "@/lib/lakes/candidates";
 import type { HaikuResolution } from "@/lib/lakes/haiku-resolver";
@@ -121,7 +123,21 @@ export type UserRow = {
 /** Minimal stream interface returned by advise functions. */
 export type AdviceStream = {
   toReadableStream(): ReadableStream;
-  finalMessage(): Promise<{ content: Array<{ type: string; text?: string }> }>;
+  /**
+   * model + usage are present on the real Anthropic finalMessage() payload;
+   * optional here so test fakes without them keep working. persist-turns uses
+   * them for the `llm_usage` cost event.
+   */
+  finalMessage(): Promise<{
+    content: Array<{ type: string; text?: string }>;
+    model?: string;
+    usage?: {
+      input_tokens: number;
+      output_tokens: number;
+      cache_creation_input_tokens?: number | null;
+      cache_read_input_tokens?: number | null;
+    };
+  }>;
 };
 
 // ---------------------------------------------------------------------------
@@ -197,7 +213,10 @@ export type AskHandlerDeps = {
    * (raced past the free limit) — caller treats false as out-of-credits (E5).
    */
   spendCredit(userId: string): Promise<boolean>;
-  chatTurnAllowed(messageCount: number, opts?: { isAdmin?: boolean }): boolean;
+  chatTurnAllowed(
+    messageCount: number,
+    opts?: { isAdmin?: boolean; isPaid?: boolean },
+  ): boolean;
   freezeConversation(id: string): Promise<void>;
 
   // DB writes (lifecycle)
@@ -346,10 +365,14 @@ export async function handleAsk(
       return { type: "chat_limit", text: CHAT_LIMIT_MESSAGE };
     }
 
-    // Chat-turn limit (admins bypass)
+    // Chat-turn limit (free tier only — paid users and admins bypass)
     if (conversation) {
       messageCount = await deps.countUserMessages(conversationId);
-      if (!deps.chatTurnAllowed(messageCount, { isAdmin })) {
+      const isPaid =
+        userId && !isAdmin
+          ? ((await deps.getUserRow(userId))?.isPaid ?? false)
+          : false;
+      if (!deps.chatTurnAllowed(messageCount, { isAdmin, isPaid })) {
         await deps.freezeConversation(conversationId);
         return { type: "chat_limit", text: CHAT_LIMIT_MESSAGE };
       }
@@ -397,6 +420,15 @@ export async function handleAsk(
   const extraction = await deps.extract(message, history);
 
   if (!extraction.onTopic) {
+    // Refusals on brand-new prompts have no conversation yet — the usage is
+    // still recorded (cost analytics), just unattributed.
+    if (extraction.usage) {
+      await deps.emit({
+        type: "llm_usage",
+        ...(conversation ? { conversationId: conversation.id } : {}),
+        payload: llmUsagePayload("extract", extraction.usage),
+      });
+    }
     await deps.emit({ type: "topic_refused" });
     return {
       type: "topic_refused",
@@ -416,6 +448,13 @@ export async function handleAsk(
       const userRow = await deps.getUserRow(userId);
       const creditUser = userRow ?? { isPaid: false, creditsUsed: 0 };
       if (!deps.canSpendCredit(creditUser, { isAdmin })) {
+        // No conversation gets created — record the extract cost unattributed.
+        if (extraction.usage) {
+          await deps.emit({
+            type: "llm_usage",
+            payload: llmUsagePayload("extract", extraction.usage),
+          });
+        }
         await deps.emit({ type: "out_of_credits" });
         return { type: "out_of_credits", text: OUT_OF_CREDITS_MESSAGE };
       }
@@ -443,6 +482,16 @@ export async function handleAsk(
       lakeId: null,
       bareLakeName: null,
     };
+  }
+
+  // Cost analytics: attribute the extractor call to the conversation (which
+  // exists by now, whether loaded or just created).
+  if (extraction.usage) {
+    await deps.emit({
+      type: "llm_usage",
+      conversationId: conversation.id,
+      payload: llmUsagePayload("extract", extraction.usage),
+    });
   }
 
   // ── Step 6: Branch on lifecycle status ──────────────────────────────────
@@ -551,6 +600,15 @@ async function resolvePendingConversation(ctx: {
     candidates,
     history,
   });
+
+  // Cost analytics: attribute the resolver call to the conversation.
+  if (resolution.usage) {
+    await deps.emit({
+      type: "llm_usage",
+      conversationId: conversation.id,
+      payload: llmUsagePayload("resolve", resolution.usage),
+    });
+  }
 
   const claimTokenPart =
     newAnonClaimToken !== null ? { claimToken: newAnonClaimToken } : {};

@@ -41,6 +41,11 @@ function pct(n: number): string {
   return `${(n * 100).toFixed(1)}%`;
 }
 
+/** Sub-cent costs matter here — 4 decimals keeps a $0.0038 Haiku call visible. */
+function usd(n: number): string {
+  return `$${n.toFixed(4)}`;
+}
+
 export default async function AnalyticsDashboard({
   searchParams,
 }: {
@@ -118,6 +123,55 @@ function Overview({ data }: { data: AnalyticsOverview }) {
           <Stat label="Lake lock" value={data.lakeLocks} />
           <Stat label="Out of credits" value={data.outOfCredits} />
         </div>
+      </section>
+
+      {/* LLM cost — the premium-pricing input */}
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold tracking-tight">
+          LLM cost (llm_usage)
+        </h2>
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <Stat label="Total cost" value={usd(data.llmCost.totalCostUsd)} />
+          <Stat
+            label="Cost / conversation"
+            value={usd(data.llmCost.avgCostPerConversationUsd)}
+          />
+          <Stat label="API calls" value={data.llmCost.calls} />
+          <Stat
+            label="Unpriced calls"
+            value={data.llmCost.unpricedCalls}
+            alert={data.llmCost.unpricedCalls > 0}
+          />
+        </div>
+        {data.llmCost.byKind.length === 0 ? (
+          <Empty />
+        ) : (
+          <Table
+            head={["Kind", "Model", "Calls", "Cost (USD)"]}
+            rows={data.llmCost.byKind.map((r) => ({
+              key: `${r.kind}-${r.model}`,
+              cells: [r.kind, r.model, String(r.calls), usd(r.costUsd)],
+            }))}
+          />
+        )}
+        <h3 className="text-xs font-semibold tracking-tight text-muted-foreground">
+          Top accounts by cost
+        </h3>
+        {data.costPerUser.length === 0 ? (
+          <Empty />
+        ) : (
+          <Table
+            head={["User", "Conversations", "Cost (USD)"]}
+            rows={data.costPerUser.map((r) => ({
+              key: r.userId ?? "anon",
+              cells: [
+                r.userId ?? "(anonym)",
+                String(r.conversations),
+                usd(r.costUsd),
+              ],
+            }))}
+          />
+        )}
       </section>
 
       {/* Top lakes */}

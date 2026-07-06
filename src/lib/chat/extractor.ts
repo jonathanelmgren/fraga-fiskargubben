@@ -16,6 +16,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
+import { type LlmCallUsage, usageOf } from "@/lib/analytics/llm-cost";
 import { EXTRACTOR_MODEL } from "@/lib/claude/models";
 import { ExternalServiceError, TimeoutError } from "@/lib/errors";
 // L8: gate strings consolidated in ./gate-messages (single source of truth).
@@ -46,6 +47,12 @@ export type Extraction = {
   title?: string;
   /** Set when onTopic=false. Canned in-persona Swedish refusal. */
   refusal?: string;
+  /**
+   * Token usage of the Haiku call, threaded back so the caller (ask-handler)
+   * can emit an `llm_usage` analytics event with the conversation id — the
+   * extractor itself doesn't know the conversation.
+   */
+  usage?: LlmCallUsage;
 };
 
 // ---------------------------------------------------------------------------
@@ -195,11 +202,18 @@ Svara ENBART med det strukturerade JSON-objektet — ingen annan text.`;
     });
   }
 
+  // Guarded: injected test fakes may omit model/usage.
+  const usage =
+    response.model && response.usage
+      ? usageOf({ model: response.model, usage: response.usage })
+      : undefined;
+
   // Null guard: parse failure → treat as off-topic with canned refusal
   if (response.parsed_output == null) {
     return {
       onTopic: false,
       refusal: CANNED_REFUSAL,
+      usage,
     };
   }
 
@@ -210,6 +224,7 @@ Svara ENBART med det strukturerade JSON-objektet — ingen annan text.`;
     return {
       onTopic: false,
       refusal: CANNED_REFUSAL,
+      usage,
     };
   }
 
@@ -220,5 +235,6 @@ Svara ENBART med det strukturerade JSON-objektet — ingen annan text.`;
     time: parsed.time,
     intent: parsed.intent,
     title: parsed.title,
+    usage,
   };
 }

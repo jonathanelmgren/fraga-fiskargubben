@@ -248,7 +248,7 @@ describe("chat-turn limit", () => {
     expect(deps.extract).not.toHaveBeenCalled();
   });
 
-  it("passes isAdmin to chatTurnAllowed so admins bypass the limit", async () => {
+  it("passes isAdmin to chatTurnAllowed so admins bypass the limit (no user-row fetch)", async () => {
     const deps = makeDeps({
       getSession: loggedIn("admin-1", true),
       getConversation: vi
@@ -257,7 +257,45 @@ describe("chat-turn limit", () => {
       countUserMessages: vi.fn().mockResolvedValue(25),
     });
     await handleAsk({ message: "Mer?", conversationId: "conv-1" }, deps);
-    expect(deps.chatTurnAllowed).toHaveBeenCalledWith(25, { isAdmin: true });
+    expect(deps.chatTurnAllowed).toHaveBeenCalledWith(25, {
+      isAdmin: true,
+      isPaid: false,
+    });
+    expect(deps.getUserRow).not.toHaveBeenCalled();
+  });
+
+  it("passes isPaid to chatTurnAllowed so paid users bypass the limit", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      getConversation: vi.fn().mockResolvedValue(resolvedConversation()),
+      countUserMessages: vi.fn().mockResolvedValue(25),
+      getUserRow: vi.fn().mockResolvedValue({ isPaid: true, creditsUsed: 99 }),
+    });
+    await handleAsk({ message: "Mer?", conversationId: "conv-1" }, deps);
+    expect(deps.chatTurnAllowed).toHaveBeenCalledWith(25, {
+      isAdmin: false,
+      isPaid: true,
+    });
+  });
+
+  it("anon follow-ups are checked as free tier (isPaid: false)", async () => {
+    const deps = makeDeps({
+      getConversation: vi
+        .fn()
+        .mockResolvedValue(
+          resolvedConversation({ userId: null, claimToken: "token-abc" }),
+        ),
+      countUserMessages: vi.fn().mockResolvedValue(2),
+    });
+    await handleAsk(
+      { message: "Mer?", conversationId: "conv-1", claimToken: "token-abc" },
+      deps,
+    );
+    expect(deps.chatTurnAllowed).toHaveBeenCalledWith(2, {
+      isAdmin: false,
+      isPaid: false,
+    });
+    expect(deps.getUserRow).not.toHaveBeenCalled();
   });
 
   it("returns CHAT_LIMIT_MESSAGE immediately when already frozen", async () => {

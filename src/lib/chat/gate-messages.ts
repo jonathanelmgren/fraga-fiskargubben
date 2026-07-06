@@ -22,7 +22,7 @@ export const CANNED_REFUSAL =
  * voice (a system boundary).
  */
 export const CHAT_LIMIT_MESSAGE =
-  "Du har nått gränsen för den här chatten. Starta en ny chatt.";
+  "Du har nått gränsen för den här chatten. Starta en ny chatt, eller uppgradera till premium för obegränsade följdfrågor.";
 
 /** Anon free-prompt exhausted → register to continue. */
 export const ANON_REGISTER_MESSAGE =

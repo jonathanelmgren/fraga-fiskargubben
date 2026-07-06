@@ -73,7 +73,7 @@ export function ChatDrawer({ items }: { items: DrawerItem[] }) {
         type="button"
         onClick={() => setMobileOpen(true)}
         aria-label="Visa dina chattar"
-        className="absolute left-3 top-3 rounded-md border border-border bg-card p-2 shadow-sm md:hidden"
+        className="absolute left-3 top-3 z-20 rounded-md border border-border bg-card p-2 shadow-sm md:hidden"
       >
         <svg
           viewBox="0 0 24 24"
@@ -94,7 +94,7 @@ export function ChatDrawer({ items }: { items: DrawerItem[] }) {
 
       {/* Mobile overlay drawer */}
       {mobileOpen && (
-        <div className="fixed inset-0 md:hidden">
+        <div className="fixed inset-0 z-40 md:hidden">
           <button
             type="button"
             aria-label="Stäng"

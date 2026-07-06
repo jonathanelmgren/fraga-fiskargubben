@@ -8,6 +8,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { PENDING_PROMPT_KEY, type PendingPrompt } from "@/app/hero-prompt";
 import gubbeIcon from "@/assets/gubbe-icon.png";
+import { LocationTip } from "@/components/location-tip";
 import { useSession } from "@/lib/auth-client";
 import { useGeolocation } from "@/lib/hooks/use-geolocation";
 import { readShareLocationCookie, writeTosCookie } from "@/lib/prefs-cookies";
@@ -262,7 +263,15 @@ function ChatLimitBanner({
           className="underline underline-offset-2 hover:text-stone-800"
         >
           Starta en ny chatt
-        </Link>
+        </Link>{" "}
+        eller{" "}
+        <Link
+          href="/profile"
+          className="underline underline-offset-2 hover:text-stone-800"
+        >
+          uppgradera till premium
+        </Link>{" "}
+        för obegränsade följdfrågor.
       </span>
     </section>
   );
@@ -446,6 +455,9 @@ export default function Chat({
       if (session) postPreferences({ shareLocation: on });
     },
   });
+  // Location nudge: shown on a coin flip per visit (only while the geo toggle
+  // is off and still matters, i.e. before the first message of a new chat).
+  const [showLocationTip] = useState(() => Math.random() < 0.5);
 
   // Terms gate — server-resolved (account + cookie), so the gate renders in
   // the right state from the first paint.
@@ -835,6 +847,11 @@ export default function Chat({
           ariaLabel="Chatt fryst"
           className="frozen-banner shrink-0 mx-4 mb-2 flex items-center gap-3 rounded-lg border border-stone-300/70 bg-stone-100/60 px-4 py-3 text-xs text-stone-600"
         />
+      )}
+
+      {/* Location nudge — only before the first message binds the coords */}
+      {showLocationTip && !conversationId && geo === "off" && tosAccepted && (
+        <LocationTip className="shrink-0 px-4 pb-1" />
       )}
 
       {/* Input area */}

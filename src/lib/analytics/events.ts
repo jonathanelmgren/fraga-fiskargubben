@@ -45,7 +45,12 @@ export type AnalyticsEventType =
   // Rebuild: a registration was rejected by the signup IP guard.
   | "signup_ip_blocked"
   // The chat terms gate was accepted (stored on the account when logged in).
-  | "tos_accepted";
+  | "tos_accepted"
+  // One Anthropic API call's token usage + USD cost (see lib/analytics/llm-cost.ts).
+  // payload { kind, model, inputTokens, outputTokens, cacheCreationInputTokens,
+  // cacheReadInputTokens, costUsd } — conversationId set when known, so cost
+  // rolls up per conversation and (via conversations.user_id) per account.
+  | "llm_usage";
 
 export interface AnalyticsEvent {
   type: AnalyticsEventType;

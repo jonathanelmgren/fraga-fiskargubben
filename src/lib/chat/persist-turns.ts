@@ -12,6 +12,7 @@
  */
 
 import type { AnalyticsEvent } from "@/lib/analytics/events";
+import { llmUsagePayload, usageOf } from "@/lib/analytics/llm-cost";
 import type { AdviceStream } from "@/lib/chat/ask-handler";
 
 export type PersistTurnsDeps = {
@@ -113,6 +114,20 @@ export async function persistTurns(
     // never produced a final message).
     const final = await stream.finalMessage();
     const assistantText = assistantTextOf(final);
+
+    // Cost analytics: one llm_usage event per advice stream (Sonnet first
+    // answer / Haiku follow-up — the model field tells them apart). Guarded:
+    // test fakes and degenerate payloads may lack model/usage.
+    if (final.model && final.usage) {
+      await deps.emit({
+        type: "llm_usage",
+        conversationId,
+        payload: llmUsagePayload(
+          "advise",
+          usageOf({ model: final.model, usage: final.usage }),
+        ),
+      });
+    }
 
     await deps.persistMessage({
       conversationId,

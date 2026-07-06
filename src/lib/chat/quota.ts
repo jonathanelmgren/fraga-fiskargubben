@@ -7,8 +7,9 @@
  *    A Credit is spent once per new conversation (fresh Signals fetch).
  *    isPaid users are unlimited.
  *
- * 2. Chat-turn limit: a hard cap of MAX_CHAT_TURNS (20) user turns per
- *    conversation.  messageCount = number of user-role message rows already
+ * 2. Chat-turn limit: a hard cap of MAX_CHAT_TURNS (3) user turns per
+ *    conversation for FREE users (anon + logged-in non-paid). Paid users and
+ *    admins are unlimited.  messageCount = number of user-role message rows already
  *    in the conversation (caller counts only role='user' rows — keeping it
  *    simple and consistent with what the user experiences as "turns").
  *    On hitting the limit the conversation is frozen and a plain, non-persona
@@ -33,15 +34,17 @@ import { conversations, users } from "@/shared/db/schema";
 export const FREE_CREDITS = 3;
 
 /**
- * Maximum user turns per conversation before it is frozen (ADR-0004).
+ * Maximum user turns per conversation before it is frozen (ADR-0004) —
+ * applies to FREE users only (anon + logged-in non-paid); paid users and
+ * admins have no turn limit.
  * messageCount should be the count of role='user' message rows already stored.
  */
-export const MAX_CHAT_TURNS = 20;
+export const MAX_CHAT_TURNS = 3;
 
 /**
  * Turn index at which the assistant starts "winding down" a conversation
- * (nudging toward a fresh chat) ahead of the hard MAX_CHAT_TURNS cap.
- * Co-located with MAX_CHAT_TURNS so the two limits stay coupled.
+ * (nudging toward a fresh chat). Free conversations freeze at MAX_CHAT_TURNS
+ * long before this, so the taper only ever fires for paid/admin users.
  */
 export const WINDING_DOWN_TURN = 15;
 
@@ -78,13 +81,13 @@ export function canSpendCredit(
  * Returns true if a new user turn is allowed in this conversation.
  * messageCount = number of user-role message rows already stored (does NOT
  * include the current incoming turn — the caller checks BEFORE persisting).
- * Pure function — no side-effects. Admins have no turn limit.
+ * Pure function — no side-effects. Paid users and admins have no turn limit.
  */
 export function chatTurnAllowed(
   messageCount: number,
-  opts?: { isAdmin?: boolean },
+  opts?: { isAdmin?: boolean; isPaid?: boolean },
 ): boolean {
-  if (opts?.isAdmin) return true;
+  if (opts?.isAdmin || opts?.isPaid) return true;
   return messageCount < MAX_CHAT_TURNS;
 }
 

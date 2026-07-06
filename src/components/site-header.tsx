@@ -23,7 +23,10 @@ export async function SiteHeader() {
 
   return (
     // Fixed h-14: the /ask pages size their chat column as calc(100dvh - 3.5rem).
-    <header className="sticky top-0 flex h-14 items-center justify-between border-b border-border bg-background/85 px-4 backdrop-blur-sm sm:px-6">
+    // z-30 is load-bearing: the avatar dropdown hangs below the header over the
+    // positioned .ask-page (later in DOM), which would otherwise paint on top
+    // and swallow its clicks.
+    <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-border bg-background/85 px-4 backdrop-blur-sm sm:px-6">
       <Link href="/" className="group flex items-center gap-2.5">
         <Image
           src={gubbeIconImg}

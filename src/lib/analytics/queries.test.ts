@@ -118,8 +118,8 @@ describe("countByType", () => {
 
 describe("analyticsOverview", () => {
   it("assembles every tile from the fan-out reads", async () => {
-    // 11 queries fan out via Promise.all — queue a result per query in the
-    // order they appear in analyticsOverview().
+    // The queries fan out via Promise.all — queue a result per execute() in
+    // invocation order (llmCostSummary issues two executes itself).
     const deps = stubDb([
       [], // topLakesAsked
       [{ resolved: 10, unresolved: 2 }], // unresolvedLakeRate
@@ -132,6 +132,9 @@ describe("analyticsOverview", () => {
       [{ count: 5 }], // out_of_credits
       [{ count: 6 }], // persistence_failure
       [{ type: "lake_resolved", count: 10 }], // eventCountsByType
+      [{ total_cost: 0.5, calls: 10, unpriced: 0, conversations: 4 }], // llmCostSummary totals
+      [{ kind: "advise", model: "claude-sonnet-4-6", calls: 4, cost_usd: 0.4 }], // llmCostSummary byKind
+      [{ user_id: "user-1", conversations: 4, cost_usd: 0.5 }], // llmCostPerUser
     ]);
 
     const out = await analyticsOverview(
@@ -149,5 +152,18 @@ describe("analyticsOverview", () => {
     expect(out.outOfCredits).toBe(5);
     expect(out.persistenceFailures).toBe(6);
     expect(out.byType).toEqual([{ type: "lake_resolved", count: 10 }]);
+    expect(out.llmCost).toEqual({
+      totalCostUsd: 0.5,
+      calls: 10,
+      unpricedCalls: 0,
+      conversations: 4,
+      avgCostPerConversationUsd: 0.125,
+      byKind: [
+        { kind: "advise", model: "claude-sonnet-4-6", calls: 4, costUsd: 0.4 },
+      ],
+    });
+    expect(out.costPerUser).toEqual([
+      { userId: "user-1", conversations: 4, costUsd: 0.5 },
+    ]);
   });
 });

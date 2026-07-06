@@ -1,7 +1,7 @@
 import "server-only";
 import { sql } from "drizzle-orm";
 import { db as realDb } from "@/shared/db/client";
-import { analyticsEvents, lakes } from "@/shared/db/schema";
+import { analyticsEvents, conversations, lakes } from "@/shared/db/schema";
 
 /**
  * Read-side aggregation layer over the append-only `analytics_event` table
@@ -234,6 +234,142 @@ export async function creditSpend(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// LLM cost (llm_usage events — see lib/analytics/llm-cost.ts)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface LlmCostByKindRow {
+  /** payload.kind: extract | resolve | advise. */
+  kind: string;
+  model: string;
+  calls: number;
+  costUsd: number;
+}
+
+export interface LlmCostSummary {
+  /** Sum of payload.costUsd across all llm_usage events in the window. */
+  totalCostUsd: number;
+  /** Total API calls recorded. */
+  calls: number;
+  /** Calls whose model had no price row (costUsd null) — should stay 0. */
+  unpricedCalls: number;
+  /** Distinct conversations that incurred any cost. */
+  conversations: number;
+  /** totalCostUsd / conversations (attributed rows only); 0 without traffic. */
+  avgCostPerConversationUsd: number;
+  byKind: LlmCostByKindRow[];
+}
+
+/**
+ * Token-cost rollup from `llm_usage` events. costUsd is snapshotted at emit
+ * time (price-table changes don't rewrite history). Rows without a
+ * conversationId (refusals / out-of-credits on brand-new prompts) count toward
+ * the totals but not the per-conversation average.
+ */
+export async function llmCostSummary(
+  window?: Window,
+  deps: QueryDeps = defaultDeps(),
+): Promise<LlmCostSummary> {
+  const [totals, byKind] = await Promise.all([
+    deps.db.execute<{
+      total_cost: number | null;
+      calls: number;
+      unpriced: number;
+      conversations: number;
+    }>(sql`
+      SELECT
+        sum((payload->>'costUsd')::float)                                AS total_cost,
+        count(*)::int                                                    AS calls,
+        count(*) FILTER (WHERE payload->>'costUsd' IS NULL)::int         AS unpriced,
+        count(DISTINCT conversation_id)::int                             AS conversations
+      FROM ${analyticsEvents}
+      WHERE type = 'llm_usage'
+        ${sinceClause(window)}
+    `),
+    deps.db.execute<{
+      kind: string;
+      model: string;
+      calls: number;
+      cost_usd: number | null;
+    }>(sql`
+      SELECT
+        coalesce(payload->>'kind', 'unknown')       AS kind,
+        coalesce(payload->>'model', 'unknown')      AS model,
+        count(*)::int                               AS calls,
+        sum((payload->>'costUsd')::float)           AS cost_usd
+      FROM ${analyticsEvents}
+      WHERE type = 'llm_usage'
+        ${sinceClause(window)}
+      GROUP BY 1, 2
+      ORDER BY cost_usd DESC NULLS LAST, kind ASC
+    `),
+  ]);
+
+  const t = totals[0];
+  const totalCostUsd = t?.total_cost ?? 0;
+  const convCount = t?.conversations ?? 0;
+  return {
+    totalCostUsd,
+    calls: t?.calls ?? 0,
+    unpricedCalls: t?.unpriced ?? 0,
+    conversations: convCount,
+    avgCostPerConversationUsd: convCount === 0 ? 0 : totalCostUsd / convCount,
+    byKind: byKind.map((r) => ({
+      kind: r.kind,
+      model: r.model,
+      calls: r.calls,
+      costUsd: r.cost_usd ?? 0,
+    })),
+  };
+}
+
+export interface UserCostRow {
+  /** null = anonymous conversations (no account). */
+  userId: string | null;
+  conversations: number;
+  costUsd: number;
+}
+
+/**
+ * Cost per account: llm_usage events joined to conversations for user_id.
+ * The premium-pricing input — compare a user's monthly cost against the
+ * subscription price. Anonymous traffic groups under userId null.
+ */
+export async function llmCostPerUser(
+  limit = 50,
+  window?: Window,
+  deps: QueryDeps = defaultDeps(),
+): Promise<UserCostRow[]> {
+  // sinceClause is unqualified — ambiguous once conversations (which also has
+  // created_at) is joined, so the window fragment is inlined qualified here.
+  const since = window?.since
+    ? sql`AND e.created_at >= ${window.since.toISOString()}`
+    : sql``;
+  const rows = await deps.db.execute<{
+    user_id: string | null;
+    conversations: number;
+    cost_usd: number | null;
+  }>(sql`
+    SELECT
+      c.user_id                              AS user_id,
+      count(DISTINCT e.conversation_id)::int AS conversations,
+      sum((e.payload->>'costUsd')::float)    AS cost_usd
+    FROM ${analyticsEvents} e
+    JOIN ${conversations} c ON c.id = e.conversation_id
+    WHERE e.type = 'llm_usage'
+      ${since}
+    GROUP BY c.user_id
+    ORDER BY cost_usd DESC NULLS LAST
+    LIMIT ${limit}
+  `);
+
+  return rows.map((r) => ({
+    userId: r.user_id,
+    conversations: r.conversations,
+    costUsd: r.cost_usd ?? 0,
+  }));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Simple per-type counts (topic refusals, chat-limit hits, gate funnel, …)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -299,6 +435,10 @@ export interface AnalyticsOverview {
   /** H4 dropped assistant turns. */
   persistenceFailures: number;
   byType: EventCount[];
+  /** Token cost rollup (llm_usage). */
+  llmCost: LlmCostSummary;
+  /** Top accounts by LLM cost (premium-pricing input). */
+  costPerUser: UserCostRow[];
 }
 
 /**
@@ -321,6 +461,8 @@ export async function analyticsOverview(
     outOfCredits,
     persistenceFailures,
     byType,
+    llmCost,
+    costPerUser,
   ] = await Promise.all([
     topLakesAsked(20, window, deps),
     unresolvedLakeRate(window, deps),
@@ -333,6 +475,8 @@ export async function analyticsOverview(
     countByType("out_of_credits", window, deps),
     countByType("persistence_failure", window, deps),
     eventCountsByType(window, deps),
+    llmCostSummary(window, deps),
+    llmCostPerUser(20, window, deps),
   ]);
 
   return {
@@ -348,5 +492,7 @@ export async function analyticsOverview(
     outOfCredits,
     persistenceFailures,
     byType,
+    llmCost,
+    costPerUser,
   };
 }
