@@ -7,6 +7,7 @@ import "server-only";
 import { asc, desc, eq } from "drizzle-orm";
 import type { DrawerItem } from "@/components/chat-drawer";
 import { toBadges } from "@/lib/chat/ask-handler";
+import { isActive } from "@/lib/chat/stream-registry";
 import type { Signals } from "@/lib/signals/types";
 import { db } from "@/shared/db/client";
 import { conversations, messages } from "@/shared/db/schema";
@@ -60,6 +61,12 @@ export type ConversationView = {
   frozen: boolean;
   badges: ReturnType<typeof toBadges> | null;
   messages: Array<{ role: "user" | "assistant"; text: string; id: string }>;
+  /**
+   * True when the stream registry is still generating this conversation's
+   * assistant reply (resumable streams) — the client attaches on mount via
+   * GET /api/ask/stream instead of waiting for a reload.
+   */
+  activeStream: boolean;
 };
 
 /**
@@ -106,6 +113,7 @@ export async function loadConversationView(
     id: row.id,
     frozen: row.frozen,
     badges,
+    activeStream: isActive(row.id),
     messages: messageRows.map((m) => ({
       id: m.id,
       role: m.role as "user" | "assistant",

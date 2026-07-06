@@ -55,6 +55,7 @@ export default async function ConversationPage({
         }))}
         initialBadges={view.badges}
         initialFrozen={view.frozen}
+        initialActiveStream={view.activeStream}
         initialTosAccepted={prefs.tosAccepted}
         initialTosPreviouslyAccepted={prefs.tosPreviouslyAccepted}
         initialTosOnAccount={prefs.tosAcceptedOnAccount}

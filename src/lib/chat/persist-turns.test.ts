@@ -1,14 +1,19 @@
 /**
- * persist-turns.test.ts — covers the post-stream persistence helper (H3a/M11).
+ * persist-turns.test.ts — covers the turn-persistence helpers.
  *
- * The after() body in route.ts had zero tests despite being the ONLY place
- * user+assistant turns and lastActiveAt are written. These exercise the
- * branching: happy path, empty assistant text, finalMessage() rejection, and
- * the M11 contract that lastActiveAt always rolls forward.
+ * Resumable-streams split: the user turn is persisted up-front by the route
+ * (persistUserTurn), the assistant turn after finalMessage() settles
+ * (persistAssistantTurn). These exercise the branching: happy path, empty
+ * assistant text, finalMessage() rejection, the credit-refund contract
+ * (ADR-0004) and the M11 contract that lastActiveAt always rolls forward.
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { type PersistTurnsDeps, persistTurns } from "./persist-turns";
+import {
+  type PersistTurnsDeps,
+  persistAssistantTurn,
+  persistUserTurn,
+} from "./persist-turns";
 
 function makeDeps(overrides: Partial<PersistTurnsDeps> = {}): PersistTurnsDeps {
   return {
@@ -32,14 +37,13 @@ function streamReturning(text: string) {
   };
 }
 
-describe("persistTurns", () => {
-  it("happy path persists user + assistant turns and rolls lastActiveAt", async () => {
+describe("persistUserTurn", () => {
+  it("persists the user message", async () => {
     const deps = makeDeps();
 
-    await persistTurns(deps, {
+    await persistUserTurn(deps, {
       conversationId: "conv-1",
       message: "Vad biter?",
-      stream: streamReturning("Prova maskkroken."),
     });
 
     expect(deps.persistMessage).toHaveBeenCalledWith({
@@ -47,6 +51,44 @@ describe("persistTurns", () => {
       role: "user",
       content: "Vad biter?",
     });
+    expect(deps.emit).not.toHaveBeenCalled();
+  });
+
+  it("never throws — emits persistence_failure when the write fails", async () => {
+    const deps = makeDeps({
+      persistMessage: vi.fn().mockRejectedValue(new Error("db down")),
+    });
+
+    await expect(
+      persistUserTurn(deps, {
+        conversationId: "conv-1",
+        message: "Vad biter?",
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(deps.emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "persistence_failure",
+        conversationId: "conv-1",
+        payload: expect.objectContaining({
+          reason: expect.stringContaining("db down"),
+        }),
+      }),
+    );
+  });
+});
+
+describe("persistAssistantTurn", () => {
+  it("happy path persists the assistant turn and rolls lastActiveAt", async () => {
+    const deps = makeDeps();
+
+    await persistAssistantTurn(deps, {
+      conversationId: "conv-1",
+      stream: streamReturning("Prova maskkroken."),
+    });
+
+    // ONLY the assistant turn — the user turn is written up-front by the route.
+    expect(deps.persistMessage).toHaveBeenCalledTimes(1);
     expect(deps.persistMessage).toHaveBeenCalledWith({
       conversationId: "conv-1",
       role: "assistant",
@@ -56,36 +98,25 @@ describe("persistTurns", () => {
     expect(deps.emit).not.toHaveBeenCalled();
   });
 
-  it("skips the assistant insert when assistantText is empty", async () => {
+  it("skips the insert when assistantText is empty", async () => {
     const deps = makeDeps();
 
-    await persistTurns(deps, {
+    await persistAssistantTurn(deps, {
       conversationId: "conv-1",
-      message: "Vad biter?",
       stream: streamReturning(""),
     });
 
-    // user persisted, assistant skipped
-    expect(deps.persistMessage).toHaveBeenCalledTimes(1);
-    expect(deps.persistMessage).toHaveBeenCalledWith({
-      conversationId: "conv-1",
-      role: "user",
-      content: "Vad biter?",
-    });
+    expect(deps.persistMessage).not.toHaveBeenCalled();
     expect(deps.updateLastActive).toHaveBeenCalledWith("conv-1");
   });
 
-  it("emits exactly one persistence_failure and does not throw when finalMessage rejects (M11)", async () => {
+  it("emits exactly one persistence_failure and does not throw when finalMessage rejects", async () => {
     const deps = makeDeps();
-    const stream = {
-      finalMessage: vi.fn().mockRejectedValue(new Error("stream broke")),
-    };
 
     await expect(
-      persistTurns(deps, {
+      persistAssistantTurn(deps, {
         conversationId: "conv-1",
-        message: "Vad biter?",
-        stream,
+        stream: streamRejecting(new Error("stream broke")),
       }),
     ).resolves.toBeUndefined();
 
@@ -97,21 +128,15 @@ describe("persistTurns", () => {
         payload: expect.objectContaining({ reason: "stream broke" }),
       }),
     );
-    // M11: no user-without-assistant — nothing is persisted before finalMessage
-    // resolves, so neither turn is written on a stream that never finalized.
     expect(deps.persistMessage).not.toHaveBeenCalled();
   });
 
   it("still rolls lastActiveAt forward even when finalMessage rejects (M11)", async () => {
     const deps = makeDeps();
-    const stream = {
-      finalMessage: vi.fn().mockRejectedValue(new Error("stream broke")),
-    };
 
-    await persistTurns(deps, {
+    await persistAssistantTurn(deps, {
       conversationId: "conv-1",
-      message: "Vad biter?",
-      stream,
+      stream: streamRejecting(),
     });
 
     expect(deps.updateLastActive).toHaveBeenCalledWith("conv-1");
@@ -122,9 +147,8 @@ describe("persistTurns", () => {
       persistMessage: vi.fn().mockRejectedValue(new Error("db down")),
     });
 
-    await persistTurns(deps, {
+    await persistAssistantTurn(deps, {
       conversationId: "conv-1",
-      message: "Vad biter?",
       stream: streamReturning("svar"),
     });
 
@@ -140,9 +164,8 @@ describe("persistTurns", () => {
   it("refunds the credit when the stream fails and refundUserId is set", async () => {
     const deps = makeDeps();
 
-    await persistTurns(deps, {
+    await persistAssistantTurn(deps, {
       conversationId: "conv-1",
-      message: "Vad biter?",
       stream: streamRejecting(),
       refundUserId: "user-42",
     });
@@ -153,9 +176,8 @@ describe("persistTurns", () => {
   it("does NOT refund when the stream SUCCEEDS", async () => {
     const deps = makeDeps();
 
-    await persistTurns(deps, {
+    await persistAssistantTurn(deps, {
       conversationId: "conv-1",
-      message: "Vad biter?",
       stream: streamReturning("Prova maskkroken."),
       refundUserId: "user-42",
     });
@@ -166,9 +188,8 @@ describe("persistTurns", () => {
   it("does NOT refund when refundUserId is absent (follow-up / free turn)", async () => {
     const deps = makeDeps();
 
-    await persistTurns(deps, {
+    await persistAssistantTurn(deps, {
       conversationId: "conv-1",
-      message: "Vad biter?",
       stream: streamRejecting(),
     });
 
@@ -180,9 +201,8 @@ describe("persistTurns", () => {
       refundCredit: vi.fn().mockRejectedValue(new Error("refund down")),
     });
 
-    await persistTurns(deps, {
+    await persistAssistantTurn(deps, {
       conversationId: "conv-1",
-      message: "Vad biter?",
       stream: streamRejecting(),
       refundUserId: "user-42",
     });
