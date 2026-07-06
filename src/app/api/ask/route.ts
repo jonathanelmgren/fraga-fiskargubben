@@ -25,7 +25,7 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import { and, asc, count, eq, gt, sql } from "drizzle-orm";
+import { and, asc, count, eq, gt, inArray, sql } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { after } from "next/server";
 import { emit } from "@/lib/analytics/events";
@@ -75,6 +75,7 @@ import { isAdminEmail } from "@/lib/is-admin";
 import { candidateLakes } from "@/lib/lakes/candidates";
 import { resolveLakeWithHaiku } from "@/lib/lakes/haiku-resolver";
 import { notifyDiscord } from "@/lib/notify/discord";
+import { checkRateLimit } from "@/lib/rate-limit";
 import { buildSignals } from "@/lib/signals/build";
 import { buildAreaSignals } from "@/lib/signals/build-area";
 import { db } from "@/shared/db/client";
@@ -82,6 +83,7 @@ import {
   analyticsEvents,
   conversations,
   messages,
+  subscriptions,
   users,
 } from "@/shared/db/schema";
 import { env } from "@/shared/env";
@@ -403,7 +405,22 @@ function buildDeps(): AskHandlerDeps {
       // Sum of llm_usage costUsd attributed via conversations — the annual
       // cost-budget gate input. Unpriced rows (costUsd null) sum as 0 here;
       // the dashboard's "Unpriced calls" tile alerts on those separately.
-      const since = new Date(Date.now() - PAID_COST_WINDOW_MS);
+      //
+      // Window anchor: the active subscription's periodStart when present
+      // (renewal resets the budget — Stripe advances periodStart each cycle);
+      // rolling 365d fallback for rows without one (admin/dev accounts).
+      const [sub] = await db
+        .select({ periodStart: subscriptions.periodStart })
+        .from(subscriptions)
+        .where(
+          and(
+            eq(subscriptions.referenceId, userId),
+            inArray(subscriptions.status, ["active", "trialing"]),
+          ),
+        )
+        .limit(1);
+      const since =
+        sub?.periodStart ?? new Date(Date.now() - PAID_COST_WINDOW_MS);
       const rows = await db.execute<{ cost: number | null }>(sql`
         SELECT sum((e.payload->>'costUsd')::float) AS cost
         FROM ${analyticsEvents} e
@@ -480,6 +497,23 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
+  // Burst limiter: 10 asks/min per IP, checked before any parsing or gate
+  // logic. The credit/quota gates in ask-handler bound total cost; this stops
+  // scripted bursts from reaching them (and the LLM) at all.
+  const burstIp = extractClientIp(request.headers);
+  if (burstIp) {
+    const burst = checkRateLimit(`ask:${burstIp}`, 10, 60_000);
+    if (!burst.allowed) {
+      return Response.json(
+        { error: "too many requests" },
+        {
+          status: 429,
+          headers: { "Retry-After": String(burst.retryAfterSeconds) },
+        },
+      );
+    }
+  }
+
   // M7: reject an oversized body via Content-Length BEFORE buffering/parsing it,
   // so a multi-MB payload can't be fully read just to be rejected by the
   // post-parse length check. The post-parse MAX_MESSAGE_LENGTH check below
@@ -543,8 +577,7 @@ export async function POST(request: Request): Promise<Response> {
 
   // Anon abuse guard input: hash the client IP (no raw IPs at rest). The
   // handler only applies it to anon NEW conversations.
-  const clientIp = extractClientIp(request.headers);
-  const anonIpHash = clientIp ? hashSignupIp(clientIp) : null;
+  const anonIpHash = burstIp ? hashSignupIp(burstIp) : null;
 
   // H6: pass the pre-read claimToken into handleAsk on the input rather than
   // mutating a built deps object (the old `deps.getClaimToken = …` hack).
@@ -567,7 +600,12 @@ export async function POST(request: Request): Promise<Response> {
     await emit({
       type: "pipeline_error",
       ...(conversationId ? { conversationId } : {}),
-      payload: { reason: err instanceof Error ? err.message : String(err) },
+      // prompt: the input that triggered the failure — reproduces the crash
+      // without grepping server logs. Already route-capped (MAX_MESSAGE_LENGTH).
+      payload: {
+        reason: err instanceof Error ? err.message : String(err),
+        prompt: message,
+      },
     }).catch(() => {});
     // Ops ping (this catch means onRequestError never sees the error).
     void notifyDiscord(

@@ -67,7 +67,21 @@ const schema = z.object({
   STRIPE_WEBHOOK_SECRET: z.string().min(1).optional(),
 });
 
-const parsed = schema.safeParse(process.env);
+const refined = schema.superRefine((v, ctx) => {
+  // The stripe plugin registers whenever STRIPE_SECRET_KEY is set. An unset
+  // webhook secret would then silently disable webhook signature validation
+  // (empty-string fallback in src/lib/auth.ts) — fail the boot instead.
+  if (v.STRIPE_SECRET_KEY && !v.STRIPE_WEBHOOK_SECRET) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["STRIPE_WEBHOOK_SECRET"],
+      message:
+        "required when STRIPE_SECRET_KEY is set (webhook signature validation)",
+    });
+  }
+});
+
+const parsed = refined.safeParse(process.env);
 
 if (!parsed.success) {
   const issues = parsed.error.issues

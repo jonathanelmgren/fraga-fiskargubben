@@ -122,8 +122,9 @@ export const PAID_ANNUAL_COST_BUDGET_USD =
   PAID_ANNUAL_COST_BUDGET_SEK / SEK_PER_USD_GUARD;
 
 /**
- * Rolling window for the cost budget. When Stripe lands, anchor this to the
- * actual subscription period (renewal resets the budget) instead.
+ * Fallback window for the cost budget: users with an active subscription are
+ * anchored to its periodStart (renewal resets the budget — see route.ts);
+ * this rolling window covers rows without one (admin/dev accounts).
  */
 export const PAID_COST_WINDOW_MS = 365 * 24 * 60 * 60 * 1000;
 
@@ -437,7 +438,12 @@ export async function handleAsk(
   // conversation is blocked.
 
   if (isAnon && claimToken !== null && !conversation) {
-    await deps.emit({ type: "register_gate" });
+    // reason distinguishes this (claim cookie already used) from the IP-hash
+    // gate below, which carries reason: "anon_ip_limit".
+    await deps.emit({
+      type: "register_gate",
+      payload: { reason: "anon_claim_used" },
+    });
     return { type: "register_to_continue", text: ANON_REGISTER_MESSAGE };
   }
 
@@ -480,7 +486,18 @@ export async function handleAsk(
         payload: llmUsagePayload("extract", extraction.usage),
       });
     }
-    await deps.emit({ type: "topic_refused" });
+    // The refused prompt is captured in the payload — the refusal path never
+    // persists a message row, so without this the "what are people actually
+    // trying?" question is unanswerable. `message` is already length-capped at
+    // the route boundary (MAX_MESSAGE_LENGTH), so the payload stays bounded.
+    await deps.emit({
+      type: "topic_refused",
+      ...(conversation ? { conversationId: conversation.id } : {}),
+      payload: {
+        prompt: message,
+        ...(userId ? { userId } : {}),
+      },
+    });
     return {
       type: "topic_refused",
       text: extraction.refusal ?? CANNED_REFUSAL,
@@ -506,7 +523,10 @@ export async function handleAsk(
             payload: llmUsagePayload("extract", extraction.usage),
           });
         }
-        await deps.emit({ type: "out_of_credits" });
+        await deps.emit({
+          type: "out_of_credits",
+          payload: { userId, reason: "pre_check" },
+        });
         return { type: "out_of_credits", text: OUT_OF_CREDITS_MESSAGE };
       }
 
@@ -612,7 +632,14 @@ export async function handleAsk(
       : null;
   if (lockKey !== null && deps.isLakeLockViolation(extraction, lockKey)) {
     const redirect = deps.getLakeLockRedirect(lockKey);
-    await deps.emit({ type: "lake_lock", conversationId: conversation.id });
+    // lockKey = the lake this conversation is bound to; attemptedLake = what
+    // the user tried to switch to. Together they answer "which lake pairs
+    // trip the lock?" — the signal for whether the lock is too aggressive.
+    await deps.emit({
+      type: "lake_lock",
+      conversationId: conversation.id,
+      payload: { lockKey, attemptedLake: extraction.lakeName ?? null },
+    });
     return { type: "lake_lock", text: redirect };
   }
 
@@ -694,6 +721,19 @@ async function resolvePendingConversation(ctx: {
   const claimTokenPart =
     newAnonClaimToken !== null ? { claimToken: newAnonClaimToken } : {};
 
+  // Resolver-input context attached to every non-resolved outcome below —
+  // troubleshooting "why didn't this resolve?" needs what Haiku actually SAW
+  // (prompt + candidate list), not just the outcome. Capped at 5 candidates
+  // to keep the payload bounded; candidateCount preserves the full size.
+  const resolutionContext = {
+    prompt: message,
+    candidateCount: candidates.length,
+    candidates: candidates
+      .slice(0, 5)
+      .map((c) => (c.name ? `${c.name} (${c.municipality})` : c.id)),
+    hasUserLocation: userLoc !== undefined,
+  };
+
   // ── Confident pick → resolved ─────────────────────────────────────────
 
   const picked =
@@ -703,7 +743,11 @@ async function resolvePendingConversation(ctx: {
       : null;
 
   if (picked) {
-    const targetTime = await resolveTargetTime(extraction, deps);
+    const targetTime = await resolveTargetTime(
+      extraction,
+      conversation.id,
+      deps,
+    );
 
     const lakeWithLabel: Lake & { label: string } = {
       ...picked,
@@ -732,7 +776,18 @@ async function resolvePendingConversation(ctx: {
       targetTime,
       signalsSnapshot: signals,
     });
-    await deps.emit({ type: "lake_resolved", lakeId: picked.id });
+    // conversationId makes "distinct conversations per lake" queryable (the
+    // TopLakeRow doc note); confidence/attempt profile the resolver itself.
+    await deps.emit({
+      type: "lake_resolved",
+      lakeId: picked.id,
+      conversationId: conversation.id,
+      payload: {
+        lakeName: extraction.lakeName ?? null,
+        confidence: resolution.confidence,
+        attempt: conversation.resolveAttempts + 1,
+      },
+    });
 
     const stream = deps.adviseFirst({ signals, message, history, gender });
     return {
@@ -749,7 +804,11 @@ async function resolvePendingConversation(ctx: {
 
   const attemptsAfterThis = conversation.resolveAttempts + 1;
   if (resolution.noSuchLake || attemptsAfterThis >= MAX_RESOLVE_ATTEMPTS) {
-    const targetTime = await resolveTargetTime(extraction, deps);
+    const targetTime = await resolveTargetTime(
+      extraction,
+      conversation.id,
+      deps,
+    );
 
     // Area coords fallback: browser location → candidate centroid → none.
     const coords = userLoc ?? centroidOf(candidates);
@@ -796,10 +855,18 @@ async function resolvePendingConversation(ctx: {
       targetTime,
       signalsSnapshot: signals,
     });
+    // reason separates "the resolver is sure it doesn't exist" from "we gave
+    // up after N rounds" — very different product problems.
     await deps.emit({
       type: "lake_unresolved_area",
       conversationId: conversation.id,
-      payload: { askedLakeName: extraction.lakeName ?? null },
+      payload: {
+        askedLakeName: extraction.lakeName ?? null,
+        reason: resolution.noSuchLake ? "no_such_lake" : "attempts_exhausted",
+        attempts: attemptsAfterThis,
+        confidence: resolution.confidence,
+        ...resolutionContext,
+      },
     });
 
     const stream = deps.adviseFirst({ signals, message, history, gender });
@@ -819,7 +886,13 @@ async function resolvePendingConversation(ctx: {
   await deps.emit({
     type: "lake_clarify",
     conversationId: conversation.id,
-    payload: { attempt: attemptsAfterThis, confidence: resolution.confidence },
+    payload: {
+      attempt: attemptsAfterThis,
+      confidence: resolution.confidence,
+      lakeName: extraction.lakeName ?? null,
+      clarifyQuestion: resolution.clarifyQuestion,
+      ...resolutionContext,
+    },
   });
 
   return {
@@ -848,7 +921,12 @@ async function chargeCredit(ctx: {
   if (!userId || isAdmin) return {};
   const spent = await deps.spendCredit(userId);
   if (!spent) {
-    await deps.emit({ type: "out_of_credits" });
+    // reason: "spend_race" = the guarded UPDATE lost the race past the free
+    // limit (E5), as opposed to the cheap "pre_check" gate in handleAsk.
+    await deps.emit({
+      type: "out_of_credits",
+      payload: { userId, reason: "spend_race" },
+    });
     return {
       blocked: { type: "out_of_credits", text: OUT_OF_CREDITS_MESSAGE },
     };
@@ -859,6 +937,7 @@ async function chargeCredit(ctx: {
 /** Swedish relative time → Date, with ISO tolerance and `now` fallback. */
 async function resolveTargetTime(
   extraction: Extraction,
+  conversationId: string,
   deps: AskHandlerDeps,
 ): Promise<Date> {
   const resolvedTime = resolveSwedishTime(extraction.time, deps.now);
@@ -867,6 +946,7 @@ async function resolveTargetTime(
   if (extraction.time && resolvedTime === null && !isoParsed) {
     await deps.emit({
       type: "time_parse_fallback",
+      conversationId,
       payload: { time: extraction.time },
     });
   }

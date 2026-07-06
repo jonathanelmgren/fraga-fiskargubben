@@ -5,9 +5,9 @@ import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { GoogleButton, MicrosoftButton } from "@/app/social-buttons";
 import { track } from "@/lib/analytics";
-import { signIn, signUp } from "@/lib/auth-client";
+import { authClient, signIn, signUp } from "@/lib/auth-client";
 
-type Mode = "login" | "signup";
+type Mode = "login" | "signup" | "forgot";
 
 const inputClass =
   "rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -31,9 +31,11 @@ export function AuthDialog({
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [verifySent, setVerifySent] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
 
   // Reset transient state whenever the dialog opens.
   useEffect(() => {
@@ -41,7 +43,9 @@ export function AuthDialog({
       setMode(initialMode);
       setError(null);
       setPassword("");
+      setConfirmPassword("");
       setVerifySent(false);
+      setResetSent(false);
     }
   }, [open, initialMode]);
 
@@ -63,6 +67,22 @@ export function AuthDialog({
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    if (mode === "forgot") {
+      setPending(true);
+      // Deliberately ignore the result: same "check your inbox" regardless of
+      // whether the email has an account (anti-enumeration, matches signup).
+      await authClient.requestPasswordReset({
+        email,
+        redirectTo: "/reset-password",
+      });
+      setPending(false);
+      setResetSent(true);
+      return;
+    }
+    if (mode === "signup" && password !== confirmPassword) {
+      setError("Lösenorden matchar inte.");
+      return;
+    }
     setPending(true);
     const { error } =
       mode === "login"
@@ -117,9 +137,13 @@ export function AuthDialog({
       aria-label={
         verifySent
           ? "Bekräfta din e-post"
-          : isLogin
-            ? "Logga in"
-            : "Skapa konto"
+          : resetSent
+            ? "Återställningsmejl skickat"
+            : isLogin
+              ? "Logga in"
+              : mode === "forgot"
+                ? "Återställ lösenord"
+                : "Skapa konto"
       }
     >
       {/* Backdrop */}
@@ -150,7 +174,25 @@ export function AuthDialog({
           </svg>
         </button>
 
-        {verifySent ? (
+        {resetSent ? (
+          <>
+            <h2 className="mb-1 text-xl font-semibold tracking-tight text-card-foreground">
+              Kolla din inkorg
+            </h2>
+            <p className="mb-5 text-sm text-muted-foreground">
+              Om <span className="font-medium text-foreground">{email}</span>{" "}
+              har ett konto med lösenord skickar vi en återställningslänk dit.
+              Länken gäller i en timme.
+            </p>
+            <button
+              type="button"
+              onClick={close}
+              className="w-full rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90"
+            >
+              Stäng
+            </button>
+          </>
+        ) : verifySent ? (
           <>
             <h2 className="mb-1 text-xl font-semibold tracking-tight text-card-foreground">
               Bekräfta din e-post
@@ -172,37 +214,47 @@ export function AuthDialog({
         ) : (
           <>
             <h2 className="mb-1 text-xl font-semibold tracking-tight text-card-foreground">
-              {isLogin ? "Logga in" : "Skapa konto"}
+              {isLogin
+                ? "Logga in"
+                : mode === "forgot"
+                  ? "Återställ lösenord"
+                  : "Skapa konto"}
             </h2>
             <p className="mb-5 text-xs text-muted-foreground">
               {isLogin
                 ? "Välkommen tillbaka till bryggan."
-                : "Tre gratisfrågor att börja med."}
+                : mode === "forgot"
+                  ? "Ange din e-postadress så mejlar vi en återställningslänk."
+                  : "Tre gratisfrågor att börja med."}
             </p>
 
-            <div className="flex flex-col gap-2">
-              <GoogleButton
-                label={
-                  isLogin ? "Logga in med Google" : "Skapa konto med Google"
-                }
-              />
-              <MicrosoftButton
-                label={
-                  isLogin
-                    ? "Logga in med Microsoft"
-                    : "Skapa konto med Microsoft"
-                }
-              />
-            </div>
+            {mode !== "forgot" && (
+              <>
+                <div className="flex flex-col gap-2">
+                  <GoogleButton
+                    label={
+                      isLogin ? "Logga in med Google" : "Skapa konto med Google"
+                    }
+                  />
+                  <MicrosoftButton
+                    label={
+                      isLogin
+                        ? "Logga in med Microsoft"
+                        : "Skapa konto med Microsoft"
+                    }
+                  />
+                </div>
 
-            <div className="my-5 flex items-center gap-3 text-xs text-muted-foreground">
-              <span className="h-px flex-1 bg-border" />
-              eller
-              <span className="h-px flex-1 bg-border" />
-            </div>
+                <div className="my-5 flex items-center gap-3 text-xs text-muted-foreground">
+                  <span className="h-px flex-1 bg-border" />
+                  eller
+                  <span className="h-px flex-1 bg-border" />
+                </div>
+              </>
+            )}
 
             <form onSubmit={onSubmit} className="flex flex-col gap-4">
-              {!isLogin && (
+              {mode === "signup" && (
                 <label className="flex flex-col gap-1.5 text-sm font-medium">
                   Namn
                   <input
@@ -226,18 +278,46 @@ export function AuthDialog({
                   className={inputClass}
                 />
               </label>
-              <label className="flex flex-col gap-1.5 text-sm font-medium">
-                Lösenord
-                <input
-                  type="password"
-                  required
-                  minLength={8}
-                  autoComplete={isLogin ? "current-password" : "new-password"}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className={inputClass}
-                />
-              </label>
+              {mode !== "forgot" && (
+                <label className="flex flex-col gap-1.5 text-sm font-medium">
+                  Lösenord
+                  <input
+                    type="password"
+                    required
+                    minLength={8}
+                    autoComplete={isLogin ? "current-password" : "new-password"}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className={inputClass}
+                  />
+                </label>
+              )}
+              {mode === "signup" && (
+                <label className="flex flex-col gap-1.5 text-sm font-medium">
+                  Bekräfta lösenord
+                  <input
+                    type="password"
+                    required
+                    minLength={8}
+                    autoComplete="new-password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    className={inputClass}
+                  />
+                </label>
+              )}
+              {isLogin && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMode("forgot");
+                    setError(null);
+                  }}
+                  className="-mt-2 self-start text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                >
+                  Glömt lösenord?
+                </button>
+              )}
 
               {error && (
                 <p role="alert" className="text-sm text-destructive">
@@ -253,15 +333,30 @@ export function AuthDialog({
                 {pending
                   ? isLogin
                     ? "Loggar in…"
-                    : "Skapar konto…"
+                    : mode === "forgot"
+                      ? "Skickar…"
+                      : "Skapar konto…"
                   : isLogin
                     ? "Logga in"
-                    : "Skapa konto"}
+                    : mode === "forgot"
+                      ? "Skicka återställningslänk"
+                      : "Skapa konto"}
               </button>
             </form>
 
             <p className="mt-5 text-center text-sm text-muted-foreground">
-              {isLogin ? (
+              {mode === "forgot" ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMode("login");
+                    setError(null);
+                  }}
+                  className="font-medium text-foreground underline underline-offset-2"
+                >
+                  Tillbaka till inloggning
+                </button>
+              ) : isLogin ? (
                 <>
                   Inte registrerad?{" "}
                   <button

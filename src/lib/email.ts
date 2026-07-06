@@ -85,6 +85,70 @@ export async function sendVerificationEmail({
   }
 }
 
+/**
+ * Password reset link (better-auth emailAndPassword.sendResetPassword).
+ * Same never-throws contract as sendVerificationEmail.
+ */
+export async function sendPasswordResetEmail({
+  to,
+  name,
+  url,
+}: {
+  to: string;
+  name: string;
+  url: string;
+}): Promise<void> {
+  if (!env.RESEND_API_KEY) {
+    console.warn(
+      `[email] RESEND_API_KEY not set — password-reset mail NOT sent to ${to}. Reset manually: ${url}`,
+    );
+    if (process.env.NODE_ENV === "production") {
+      void notifyDiscord(
+        "alerts",
+        `⚠️ RESEND_API_KEY saknas i prod — återställningsmejl till ${to} skickades ALDRIG.`,
+      ).catch(() => {});
+    }
+    return;
+  }
+
+  try {
+    const resend = new Resend(env.RESEND_API_KEY);
+    const { error } = await resend.emails.send({
+      from: env.EMAIL_FROM,
+      to,
+      subject: "Återställ ditt lösenord – Fiskargubben",
+      text: [
+        `Hej ${name}!`,
+        "",
+        "Någon (förhoppningsvis du) bad om att återställa lösenordet för ditt konto. Öppna länken nedan för att välja ett nytt:",
+        url,
+        "",
+        "Länken gäller i en timme. Om det inte var du kan du ignorera det här mejlet — ditt lösenord är oförändrat.",
+      ].join("\n"),
+      html: `
+        <p>Hej ${escapeHtml(name)}!</p>
+        <p>Någon (förhoppningsvis du) bad om att återställa lösenordet för ditt konto. Klicka på knappen nedan för att välja ett nytt:</p>
+        <p><a href="${url}" style="display:inline-block;padding:10px 20px;background:#1a1a1a;color:#ffffff;text-decoration:none;border-radius:6px">Välj nytt lösenord</a></p>
+        <p>Eller öppna länken: <a href="${url}">${url}</a></p>
+        <p>Länken gäller i en timme. Om det inte var du kan du ignorera det här mejlet — ditt lösenord är oförändrat.</p>
+      `,
+    });
+    if (error) {
+      console.error(`[email] password-reset mail to ${to} failed:`, error);
+      void notifyDiscord(
+        "alerts",
+        `⚠️ Återställningsmejl till ${to} misslyckades: ${error.message}`,
+      ).catch(() => {});
+    }
+  } catch (err) {
+    console.error(`[email] password-reset mail to ${to} threw:`, err);
+    void notifyDiscord(
+      "alerts",
+      `⚠️ Återställningsmejl till ${to} misslyckades: ${err instanceof Error ? err.message : String(err)}`,
+    ).catch(() => {});
+  }
+}
+
 /** Swedish sign-in method names per better-auth account.providerId. */
 const PROVIDER_LABELS: Record<string, string> = {
   credential: "e-post och lösenord",
@@ -145,8 +209,16 @@ export async function sendExistingAccountEmail({
     });
     if (error) {
       console.error(`[email] existing-account mail to ${to} failed:`, error);
+      void notifyDiscord(
+        "alerts",
+        `⚠️ Befintligt-konto-mejl till ${to} misslyckades: ${error.message}`,
+      ).catch(() => {});
     }
   } catch (err) {
     console.error(`[email] existing-account mail to ${to} threw:`, err);
+    void notifyDiscord(
+      "alerts",
+      `⚠️ Befintligt-konto-mejl till ${to} misslyckades: ${err instanceof Error ? err.message : String(err)}`,
+    ).catch(() => {});
   }
 }

@@ -407,6 +407,23 @@ describe("topic gate", () => {
     expect(deps.createPendingConversation).not.toHaveBeenCalled();
     expect(deps.adviseFirst).not.toHaveBeenCalled();
   });
+
+  it("captures the refused prompt (and userId) in the event payload", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      extract: vi.fn().mockResolvedValue({ onTopic: false }),
+    });
+    await handleAsk({ message: "Skriv min läxa" }, deps);
+    expect(deps.emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "topic_refused",
+        payload: expect.objectContaining({
+          prompt: "Skriv min läxa",
+          userId: "user-1",
+        }),
+      }),
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -548,7 +565,15 @@ describe("clarify rounds", () => {
     expect(deps.adviseFirst).not.toHaveBeenCalled();
     expect(deps.transitionConversation).not.toHaveBeenCalled();
     expect(deps.emit).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "lake_clarify" }),
+      expect.objectContaining({
+        type: "lake_clarify",
+        payload: expect.objectContaining({
+          prompt: "Vad biter i sjön?",
+          candidateCount: 2,
+          candidates: ["Tolken (Borås)", "Åsunden (Borås)"],
+          clarifyQuestion: "Vilken kommun ligger sjön i?",
+        }),
+      }),
     );
   });
 

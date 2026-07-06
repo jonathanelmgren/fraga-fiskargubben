@@ -15,9 +15,26 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://fragafiskargubben.se"),
+  manifest: "/site.webmanifest",
   title: "Fråga Fiskargubben",
   description:
     "Fiskeråd med koll på vädret. Fråga gubben innan du kastar, han kollar väder, vattentemp och vilka arter som rör sig.",
+  openGraph: {
+    title: "Fråga Fiskargubben",
+    description:
+      "Fiskeråd med koll på vädret. Fråga gubben innan du kastar, han kollar väder, vattentemp och vilka arter som rör sig.",
+    url: "/",
+    siteName: "Fråga Fiskargubben",
+    locale: "sv_SE",
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Fråga Fiskargubben",
+    description:
+      "Fiskeråd med koll på vädret. Fråga gubben innan du kastar, han kollar väder, vattentemp och vilka arter som rör sig.",
+  },
 };
 
 export default function RootLayout({

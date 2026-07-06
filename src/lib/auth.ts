@@ -13,7 +13,11 @@ import {
 } from "@/lib/auth/signup-ip";
 import { claimConversation } from "@/lib/chat/anon";
 import { verifyClaimToken } from "@/lib/chat/claim-cookie";
-import { sendExistingAccountEmail, sendVerificationEmail } from "@/lib/email";
+import {
+  sendExistingAccountEmail,
+  sendPasswordResetEmail,
+  sendVerificationEmail,
+} from "@/lib/email";
 import { notifyDiscord } from "@/lib/notify/discord";
 import { db } from "@/shared/db/client";
 import {
@@ -77,6 +81,15 @@ export const auth = betterAuth({
     // path is src/lib/email.ts (Resend). OAuth (Google/Microsoft) accounts
     // are treated as verified by better-auth and are unaffected.
     requireEmailVerification: true,
+    // Password reset: mail a link that lands on /reset-password?token=…
+    // (better-auth's GET /reset-password/:token callback appends the token).
+    // Same never-throws contract as the other mails (src/lib/email.ts).
+    sendResetPassword: async ({ user, url }) => {
+      await sendPasswordResetEmail({ to: user.email, name: user.name, url });
+    },
+    // A reset proves control of the email — kick out anyone else holding a
+    // session (e.g. a stolen cookie, or the reason the user is resetting).
+    revokeSessionsOnPasswordReset: true,
     // With requireEmailVerification, a signup for an EXISTING email returns
     // the same generic "check your inbox" response as a fresh one (anti-
     // enumeration) and creates nothing — so without this hook the real owner
@@ -150,7 +163,9 @@ export const auth = betterAuth({
       ? [
           stripe({
             stripeClient,
-            stripeWebhookSecret: env.STRIPE_WEBHOOK_SECRET ?? "",
+            // env.ts superRefine guarantees this is set whenever
+            // STRIPE_SECRET_KEY is (stripeClient non-null ⇒ secret present).
+            stripeWebhookSecret: env.STRIPE_WEBHOOK_SECRET as string,
             // Customer is created lazily at first checkout — signup stays a
             // single-purpose flow (and works when Stripe is down).
             createCustomerOnSignUp: false,

@@ -15,12 +15,13 @@ import { analyticsEvents, conversations, lakes } from "@/shared/db/schema";
  *   source_miss        lakeId, payload { source, reason: error|empty|no_row }
  *   signals_built      lakeId
  *   credit_spent       payload { userId }
- *   topic_refused      —
+ *   topic_refused      conversationId?, payload { prompt, userId? }
  *   chat_limit_hit     conversationId
- *   register_gate      —
- *   lake_lock          conversationId
- *   out_of_credits     —
- *   persistence_failure conversationId, payload { error }
+ *   register_gate      payload { reason }
+ *   lake_lock          conversationId, payload { lockKey, attemptedLake }
+ *   out_of_credits     payload { userId, reason }
+ *   persistence_failure conversationId, payload { reason }
+ *   pipeline_error     conversationId?, payload { reason }
  *
  * Query style matches `lib/lakes/resolve.ts`: raw `db.execute<Row>(sql\`\`)` with
  * `${table}` interpolation.  `deps` is injectable (mirrors `EmitDeps` in
@@ -114,9 +115,10 @@ export interface ResolutionRate {
 }
 
 /**
- * Share of lake-resolution attempts that failed.  `lake_resolved` and
- * `lake_unresolved` are the two mutually-exclusive outcomes of a resolution
- * attempt (see ask-handler), so their counts form the denominator.
+ * Share of lake-resolution attempts that failed.  Post-rebuild the terminal
+ * failure event is `lake_unresolved_area` (the conversation continues in area
+ * mode); `lake_unresolved` is the pre-rebuild name, counted too so historical
+ * rows keep contributing.  Clarify rounds are neither — not terminal.
  */
 export async function unresolvedLakeRate(
   window?: Window,
@@ -127,10 +129,10 @@ export async function unresolvedLakeRate(
     unresolved: number;
   }>(sql`
     SELECT
-      count(*) FILTER (WHERE type = 'lake_resolved')::int   AS resolved,
-      count(*) FILTER (WHERE type = 'lake_unresolved')::int AS unresolved
+      count(*) FILTER (WHERE type = 'lake_resolved')::int AS resolved,
+      count(*) FILTER (WHERE type IN ('lake_unresolved', 'lake_unresolved_area'))::int AS unresolved
     FROM ${analyticsEvents}
-    WHERE type IN ('lake_resolved', 'lake_unresolved')
+    WHERE type IN ('lake_resolved', 'lake_unresolved', 'lake_unresolved_area')
       ${sinceClause(window)}
   `);
 
@@ -417,6 +419,242 @@ export async function eventCountsByType(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Recent-event feeds — troubleshooting views (raw payloads, newest first)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface RecentRefusalRow {
+  id: number;
+  /** Stockholm wall-clock, "YYYY-MM-DD HH24:MI" (formatted in SQL). */
+  createdAt: string;
+  conversationId: string | null;
+  /** The refused user prompt (payload.prompt); null on pre-capture rows. */
+  prompt: string | null;
+  /** payload.userId when the caller was logged in. */
+  userId: string | null;
+}
+
+/**
+ * Latest topic refusals WITH the refused prompt — the "what are people
+ * actually trying?" feed.  Rows emitted before prompt capture landed have a
+ * null prompt and still show up (the count stays honest).
+ */
+export async function recentTopicRefusals(
+  limit = 20,
+  window?: Window,
+  deps: QueryDeps = defaultDeps(),
+): Promise<RecentRefusalRow[]> {
+  const rows = await deps.db.execute<{
+    id: number;
+    created_at: string;
+    conversation_id: string | null;
+    prompt: string | null;
+    user_id: string | null;
+  }>(sql`
+    SELECT
+      id,
+      to_char(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Stockholm',
+              'YYYY-MM-DD HH24:MI') AS created_at,
+      conversation_id,
+      payload->>'prompt'  AS prompt,
+      payload->>'userId'  AS user_id
+    FROM ${analyticsEvents}
+    WHERE type = 'topic_refused'
+      ${sinceClause(window)}
+    ORDER BY id DESC
+    LIMIT ${limit}
+  `);
+  return rows.map((r) => ({
+    id: r.id,
+    createdAt: r.created_at,
+    conversationId: r.conversation_id,
+    prompt: r.prompt,
+    userId: r.user_id,
+  }));
+}
+
+export interface RecentErrorRow {
+  id: number;
+  /** Stockholm wall-clock, "YYYY-MM-DD HH24:MI" (formatted in SQL). */
+  createdAt: string;
+  /** persistence_failure | pipeline_error */
+  type: string;
+  conversationId: string | null;
+  /** payload.reason — both error events standardize on this key (L-rt1). */
+  reason: string | null;
+}
+
+/**
+ * Latest pipeline errors and persistence failures with their reasons — the
+ * counts alone say "something broke"; this says WHAT broke, without shelling
+ * into the database.
+ */
+export async function recentErrors(
+  limit = 20,
+  window?: Window,
+  deps: QueryDeps = defaultDeps(),
+): Promise<RecentErrorRow[]> {
+  const rows = await deps.db.execute<{
+    id: number;
+    created_at: string;
+    type: string;
+    conversation_id: string | null;
+    reason: string | null;
+  }>(sql`
+    SELECT
+      id,
+      to_char(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Stockholm',
+              'YYYY-MM-DD HH24:MI') AS created_at,
+      type,
+      conversation_id,
+      payload->>'reason' AS reason
+    FROM ${analyticsEvents}
+    WHERE type IN ('persistence_failure', 'pipeline_error')
+      ${sinceClause(window)}
+    ORDER BY id DESC
+    LIMIT ${limit}
+  `);
+  return rows.map((r) => ({
+    id: r.id,
+    createdAt: r.created_at,
+    type: r.type,
+    conversationId: r.conversation_id,
+    reason: r.reason,
+  }));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Lake-resolution troubleshooting — failures with the resolver's actual input
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface ResolutionFailureRow {
+  id: number;
+  /** Stockholm wall-clock, "YYYY-MM-DD HH24:MI" (formatted in SQL). */
+  createdAt: string;
+  /** lake_clarify (still trying) | lake_unresolved_area (gave up). */
+  type: string;
+  conversationId: string | null;
+  /** What the extractor heard (payload.lakeName / payload.askedLakeName). */
+  lakeName: string | null;
+  /** Resolver confidence 0–100 at this round; null on pre-capture rows. */
+  confidence: number | null;
+  /** Round number (payload.attempt / payload.attempts). */
+  attempt: number | null;
+  /** Terminal reason, only on lake_unresolved_area. */
+  reason: string | null;
+  /** Up to 5 "Name (Municipality)" strings Haiku chose from. */
+  candidates: string[];
+  candidateCount: number | null;
+  /** The user prompt that round; null on pre-capture rows. */
+  prompt: string | null;
+}
+
+/**
+ * Latest clarify rounds + terminal unresolved outcomes, with the candidate
+ * list the resolver saw.  This is the "why can't lake X be resolved?" feed:
+ * a wrong candidate list points at candidateLakes (SQL/data), a good list
+ * with low confidence points at the Haiku prompt.
+ */
+export async function recentResolutionFailures(
+  limit = 20,
+  window?: Window,
+  deps: QueryDeps = defaultDeps(),
+): Promise<ResolutionFailureRow[]> {
+  const rows = await deps.db.execute<{
+    id: number;
+    created_at: string;
+    type: string;
+    conversation_id: string | null;
+    lake_name: string | null;
+    confidence: number | null;
+    attempt: number | null;
+    reason: string | null;
+    candidates_json: string | null;
+    candidate_count: number | null;
+    prompt: string | null;
+  }>(sql`
+    SELECT
+      id,
+      to_char(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Stockholm',
+              'YYYY-MM-DD HH24:MI') AS created_at,
+      type,
+      conversation_id,
+      coalesce(payload->>'lakeName', payload->>'askedLakeName') AS lake_name,
+      (payload->>'confidence')::float                           AS confidence,
+      coalesce(payload->>'attempt', payload->>'attempts')::int  AS attempt,
+      payload->>'reason'                                        AS reason,
+      payload->>'candidates'                                    AS candidates_json,
+      (payload->>'candidateCount')::int                         AS candidate_count,
+      payload->>'prompt'                                        AS prompt
+    FROM ${analyticsEvents}
+    WHERE type IN ('lake_clarify', 'lake_unresolved_area')
+      ${sinceClause(window)}
+    ORDER BY id DESC
+    LIMIT ${limit}
+  `);
+  return rows.map((r) => ({
+    id: r.id,
+    createdAt: r.created_at,
+    type: r.type,
+    conversationId: r.conversation_id,
+    lakeName: r.lake_name,
+    confidence: r.confidence,
+    attempt: r.attempt,
+    reason: r.reason,
+    candidates: parseCandidates(r.candidates_json),
+    candidateCount: r.candidate_count,
+    prompt: r.prompt,
+  }));
+}
+
+/** payload.candidates is a jsonb string array; anything else maps to []. */
+function parseCandidates(json: string | null): string[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed)
+      ? parsed.filter((c) => typeof c === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+export interface UnresolvedLakeNameRow {
+  /** The asked-for name that could not be resolved. */
+  lakeName: string;
+  failures: number;
+}
+
+/**
+ * Asked-for lake names ranked by terminal resolution failures — the shopping
+ * list for missing/mis-named lakes in the `lakes` table.  Rows without a
+ * lakeName (user never named a lake) are excluded; those are area-mode by
+ * design, not data gaps.
+ */
+export async function topUnresolvedLakeNames(
+  limit = 20,
+  window?: Window,
+  deps: QueryDeps = defaultDeps(),
+): Promise<UnresolvedLakeNameRow[]> {
+  const rows = await deps.db.execute<{
+    lake_name: string;
+    failures: number;
+  }>(sql`
+    SELECT
+      payload->>'askedLakeName' AS lake_name,
+      count(*)::int             AS failures
+    FROM ${analyticsEvents}
+    WHERE type = 'lake_unresolved_area'
+      AND payload->>'askedLakeName' IS NOT NULL
+      ${sinceClause(window)}
+    GROUP BY payload->>'askedLakeName'
+    ORDER BY failures DESC, lake_name ASC
+    LIMIT ${limit}
+  `);
+  return rows.map((r) => ({ lakeName: r.lake_name, failures: r.failures }));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Dashboard bundle — one round-trip-friendly aggregate for the admin page
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -434,6 +672,12 @@ export interface AnalyticsOverview {
   outOfCredits: number;
   /** H4 dropped assistant turns. */
   persistenceFailures: number;
+  /** Troubleshooting feeds — newest first. */
+  recentRefusals: RecentRefusalRow[];
+  recentErrors: RecentErrorRow[];
+  /** Lake-resolution troubleshooting. */
+  resolutionFailures: ResolutionFailureRow[];
+  topUnresolvedNames: UnresolvedLakeNameRow[];
   byType: EventCount[];
   /** Token cost rollup (llm_usage). */
   llmCost: LlmCostSummary;
@@ -460,6 +704,10 @@ export async function analyticsOverview(
     lakeLocks,
     outOfCredits,
     persistenceFailures,
+    recentRefusals,
+    recentErrorRows,
+    resolutionFailures,
+    topUnresolvedNames,
     byType,
     llmCost,
     costPerUser,
@@ -474,6 +722,10 @@ export async function analyticsOverview(
     countByType("lake_lock", window, deps),
     countByType("out_of_credits", window, deps),
     countByType("persistence_failure", window, deps),
+    recentTopicRefusals(20, window, deps),
+    recentErrors(20, window, deps),
+    recentResolutionFailures(20, window, deps),
+    topUnresolvedLakeNames(20, window, deps),
     eventCountsByType(window, deps),
     llmCostSummary(window, deps),
     llmCostPerUser(20, window, deps),
@@ -491,6 +743,10 @@ export async function analyticsOverview(
     lakeLocks,
     outOfCredits,
     persistenceFailures,
+    recentRefusals,
+    recentErrors: recentErrorRows,
+    resolutionFailures,
+    topUnresolvedNames,
     byType,
     llmCost,
     costPerUser,

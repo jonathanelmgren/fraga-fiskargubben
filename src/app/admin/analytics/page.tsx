@@ -221,6 +221,112 @@ function Overview({ data }: { data: AnalyticsOverview }) {
         )}
       </section>
 
+      {/* Lake-resolution troubleshooting */}
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold tracking-tight">
+          Resolution failures (clarify rounds + unresolved)
+        </h2>
+        {data.resolutionFailures.length === 0 ? (
+          <Empty />
+        ) : (
+          <Table
+            head={[
+              "Time",
+              "Type",
+              "Asked lake",
+              "Conf",
+              "Round",
+              "Candidates seen",
+              "Prompt",
+            ]}
+            rows={data.resolutionFailures.map((r) => ({
+              key: String(r.id),
+              cells: [
+                r.createdAt,
+                r.type === "lake_unresolved_area"
+                  ? `gave up (${r.reason ?? "?"})`
+                  : "clarify",
+                r.lakeName ?? "—",
+                r.confidence !== null ? String(r.confidence) : "—",
+                r.attempt !== null ? String(r.attempt) : "—",
+                r.candidates.length > 0
+                  ? `${r.candidates.join(", ")}${
+                      (r.candidateCount ?? 0) > r.candidates.length
+                        ? ` (+${(r.candidateCount ?? 0) - r.candidates.length})`
+                        : ""
+                    }`
+                  : r.candidateCount === 0
+                    ? "(inga kandidater)"
+                    : "—",
+                r.prompt ?? "—",
+              ],
+            }))}
+          />
+        )}
+        <h3 className="text-xs font-semibold tracking-tight text-muted-foreground">
+          Top unresolved lake names (missing from lakes table?)
+        </h3>
+        {data.topUnresolvedNames.length === 0 ? (
+          <Empty />
+        ) : (
+          <Table
+            head={["Asked lake name", "Failures"]}
+            rows={data.topUnresolvedNames.map((r) => ({
+              key: r.lakeName,
+              cells: [r.lakeName, String(r.failures)],
+            }))}
+          />
+        )}
+      </section>
+
+      {/* Recent topic refusals — what people actually tried to ask */}
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold tracking-tight">
+          Recent topic refusals
+        </h2>
+        {data.recentRefusals.length === 0 ? (
+          <Empty />
+        ) : (
+          <Table
+            head={["Time", "Prompt", "User", "Conversation"]}
+            rows={data.recentRefusals.map((r) => ({
+              key: String(r.id),
+              cells: [
+                r.createdAt,
+                // Pre-capture rows have no prompt — keep them visible so the
+                // feed length matches the refusal count.
+                r.prompt ?? "(ej infångad)",
+                r.userId ?? "(anonym)",
+                r.conversationId ? r.conversationId.slice(0, 8) : "—",
+              ],
+            }))}
+          />
+        )}
+      </section>
+
+      {/* Recent errors — reasons, not just counts */}
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold tracking-tight">
+          Recent errors (pipeline_error / persistence_failure)
+        </h2>
+        {data.recentErrors.length === 0 ? (
+          <Empty />
+        ) : (
+          <Table
+            head={["Time", "Type", "Reason", "Conversation"]}
+            rows={data.recentErrors.map((r) => ({
+              key: String(r.id),
+              cells: [
+                r.createdAt,
+                r.type,
+                r.reason ?? "—",
+                r.conversationId ? r.conversationId.slice(0, 8) : "—",
+              ],
+            }))}
+          />
+        )}
+      </section>
+
       {/* All event types */}
       <section className="space-y-3">
         <h2 className="text-sm font-semibold tracking-tight">

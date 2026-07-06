@@ -28,9 +28,10 @@ vi.mock("@/app/social-buttons", () => ({
 vi.mock("@/lib/auth-client", () => ({
   signIn: { email: vi.fn() },
   signUp: { email: vi.fn() },
+  authClient: { requestPasswordReset: vi.fn() },
 }));
 
-import { signIn, signUp } from "@/lib/auth-client";
+import { authClient, signIn, signUp } from "@/lib/auth-client";
 import { AuthDialog } from "./auth-dialog";
 
 function fillAndSubmit(mode: "login" | "signup") {
@@ -42,9 +43,14 @@ function fillAndSubmit(mode: "login" | "signup") {
   fireEvent.change(screen.getByLabelText(/E-post/), {
     target: { value: "anna@example.com" },
   });
-  fireEvent.change(screen.getByLabelText(/Lösenord/), {
+  fireEvent.change(screen.getByLabelText("Lösenord"), {
     target: { value: "password123" },
   });
+  if (mode === "signup") {
+    fireEvent.change(screen.getByLabelText("Bekräfta lösenord"), {
+      target: { value: "password123" },
+    });
+  }
   fireEvent.submit(
     screen.getByRole("button", {
       name: mode === "signup" ? "Skapa konto" : "Logga in",
@@ -153,5 +159,50 @@ describe("AuthDialog — email verification", () => {
 
     expect(screen.queryByText(/Bekräfta din e-post/)).toBeNull();
     expect(screen.getByRole("button", { name: "Skapa konto" })).toBeTruthy();
+  });
+
+  it("signup with mismatched confirm password shows an error and never calls signUp", () => {
+    render(<AuthDialog open onClose={vi.fn()} initialMode="signup" />);
+
+    fireEvent.change(screen.getByLabelText(/Namn/), {
+      target: { value: "Anna" },
+    });
+    fireEvent.change(screen.getByLabelText(/E-post/), {
+      target: { value: "anna@example.com" },
+    });
+    fireEvent.change(screen.getByLabelText("Lösenord"), {
+      target: { value: "password123" },
+    });
+    fireEvent.change(screen.getByLabelText("Bekräfta lösenord"), {
+      target: { value: "password124" },
+    });
+    fireEvent.submit(screen.getByRole("button", { name: "Skapa konto" }));
+
+    expect(screen.getByText("Lösenorden matchar inte.")).toBeTruthy();
+    expect(signUp.email).not.toHaveBeenCalled();
+  });
+
+  it("forgot-password flow requests a reset and shows the check-inbox panel", async () => {
+    vi.mocked(authClient.requestPasswordReset).mockResolvedValue({
+      data: {},
+      error: null,
+    } as never);
+    render(<AuthDialog open onClose={vi.fn()} initialMode="login" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Glömt lösenord?" }));
+    fireEvent.change(screen.getByLabelText(/E-post/), {
+      target: { value: "anna@example.com" },
+    });
+    fireEvent.submit(
+      screen.getByRole("button", { name: "Skicka återställningslänk" }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Kolla din inkorg/)).toBeTruthy();
+    });
+    expect(authClient.requestPasswordReset).toHaveBeenCalledWith({
+      email: "anna@example.com",
+      redirectTo: "/reset-password",
+    });
   });
 });

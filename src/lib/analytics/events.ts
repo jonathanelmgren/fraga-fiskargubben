@@ -14,6 +14,9 @@ export type AnalyticsEventType =
   // C-refund: the first-turn Sonnet stream failed after the credit was spent,
   // so the credit was returned. Pairs with credit_spent to reconcile spend.
   | "credit_refunded"
+  // payload { prompt, userId? } — the refused message is captured here because
+  // the refusal path never persists a message row (route-capped length, so the
+  // payload stays bounded). conversationId set on follow-up-turn refusals.
   | "topic_refused"
   | "chat_limit_hit"
   // M6: emitted on every attempt against an ALREADY-frozen conversation, kept
@@ -23,6 +26,9 @@ export type AnalyticsEventType =
   | "chat_limit_retry"
   // H7: previously-invisible gate paths — the anon→register funnel,
   // lake-lock redirects, and credit exhaustion all emit now.
+  // register_gate payload { reason: anon_claim_used | anon_ip_limit };
+  // lake_lock payload { lockKey, attemptedLake };
+  // out_of_credits payload { userId, reason: pre_check | spend_race }.
   | "register_gate"
   | "lake_lock"
   | "out_of_credits"
@@ -66,7 +72,7 @@ export interface AnalyticsEvent {
    * with no behavioural change. [~] deferred: discriminated payload union (wide
    * ripple). The most drift-prone payloads are kept consistent by convention:
    * source_miss → { source, reason }; credit_spent → { userId };
-   * persistence_failure / pipeline_error → { reason }.
+   * persistence_failure → { reason }; pipeline_error → { reason, prompt }.
    */
   payload?: Record<string, unknown>;
 }
