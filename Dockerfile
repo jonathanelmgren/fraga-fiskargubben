@@ -4,10 +4,19 @@ RUN corepack enable
 FROM base AS builder
 WORKDIR /app
 
+# NEXT_PUBLIC_* vars are inlined into the client bundle at `next build` —
+# runtime env (docker run --env-file) can NOT supply them. They must be real
+# here. Values are public by definition (shipped to every browser), so
+# defaults live in the image; override with --build-arg if they change.
+ARG NEXT_PUBLIC_DISCORD_INVITE=https://discord.gg/aHSzgGhWyh
+ARG NEXT_PUBLIC_MICROSOFT_ENABLED=false
+ENV NEXT_PUBLIC_DISCORD_INVITE=$NEXT_PUBLIC_DISCORD_INVITE \
+    NEXT_PUBLIC_MICROSOFT_ENABLED=$NEXT_PUBLIC_MICROSOFT_ENABLED
+
 # Build-time placeholders only. env.ts validates at import and `next build`
 # imports it during page-data collection. These dummies satisfy validation;
-# the real values are injected at runtime via `docker run --env-file`. No
-# secret is baked into the image.
+# the real (server-side) values are injected at runtime via
+# `docker run --env-file`. No secret is baked into the image.
 ENV DATABASE_URL=postgres://build:build@localhost:5432/build \
     BETTER_AUTH_SECRET=build-time-placeholder-secret-32-bytes-long \
     BETTER_AUTH_URL=http://localhost:3000 \
