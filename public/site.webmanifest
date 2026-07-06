@@ -2,6 +2,8 @@
   "name": "Fråga Fiskargubben",
   "short_name": "Fiskargubben",
   "description": "Fiskeråd med koll på vädret — fråga gubben innan du kastar.",
+  "id": "/",
+  "start_url": "/",
   "icons": [
     {
       "src": "/web-app-manifest-192x192.png",
