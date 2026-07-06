@@ -124,4 +124,27 @@ describe("AuthDialog — email verification", () => {
       );
     });
   });
+
+  it("resets the verify-sent panel when the dialog re-opens", async () => {
+    vi.mocked(signUp.email).mockResolvedValue({
+      data: {},
+      error: null,
+    } as never);
+    const { rerender } = render(
+      <AuthDialog open onClose={vi.fn()} initialMode="signup" />,
+    );
+
+    fillAndSubmit("signup");
+    await waitFor(() => {
+      expect(screen.getByText(/Bekräfta din e-post/)).toBeTruthy();
+    });
+
+    rerender(
+      <AuthDialog open={false} onClose={vi.fn()} initialMode="signup" />,
+    );
+    rerender(<AuthDialog open onClose={vi.fn()} initialMode="signup" />);
+
+    expect(screen.queryByText(/Bekräfta din e-post/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Skapa konto" })).toBeTruthy();
+  });
 });

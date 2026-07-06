@@ -256,6 +256,7 @@ export function AuthDialog({
                     onClick={() => {
                       setMode("signup");
                       setError(null);
+                      setVerifySent(false);
                     }}
                     className="font-medium text-foreground underline underline-offset-2"
                   >
@@ -270,6 +271,7 @@ export function AuthDialog({
                     onClick={() => {
                       setMode("login");
                       setError(null);
+                      setVerifySent(false);
                     }}
                     className="font-medium text-foreground underline underline-offset-2"
                   >
