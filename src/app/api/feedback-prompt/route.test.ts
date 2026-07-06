@@ -19,12 +19,16 @@ const h = vi.hoisted(() => {
 });
 
 vi.mock("@/shared/db/client", () => ({ db: { update: h.update } }));
-vi.mock("@/shared/env", () => ({ env: { BETTER_AUTH_URL: "http://localhost:3000" } }));
+vi.mock("@/shared/env", () => ({
+  env: { BETTER_AUTH_URL: "http://localhost:3000" },
+}));
 vi.mock("@/lib/get-session", () => ({ getSession: h.getSession }));
 vi.mock("@/lib/analytics/events", () => ({ emit: h.emit }));
 vi.mock("@/lib/notify/discord", () => ({ notifyDiscord: h.notifyDiscord }));
 vi.mock("@/lib/feedback-prompt", () => ({ countUserChats: h.countUserChats }));
-vi.mock("@/app/api/ask/route", () => ({ isSameOriginRequest: h.isSameOriginRequest }));
+vi.mock("@/app/api/ask/route", () => ({
+  isSameOriginRequest: h.isSameOriginRequest,
+}));
 
 import { POST } from "./route";
 
@@ -103,7 +107,9 @@ describe("POST /api/feedback-prompt", () => {
   });
 
   it("submitted caps message length at 2000", async () => {
-    const res = await POST(req({ action: "submitted", message: "x".repeat(2001) }));
+    const res = await POST(
+      req({ action: "submitted", message: "x".repeat(2001) }),
+    );
     expect(res.status).toBe(400);
   });
 

@@ -5,11 +5,16 @@ import { createPortal } from "react-dom";
 
 type FunnelAction = "shown" | "dismissed" | "discord_clicked" | "submitted";
 
-function send(action: FunnelAction, message?: string): Promise<{ ok: boolean }> {
+function send(
+  action: FunnelAction,
+  message?: string,
+): Promise<{ ok: boolean }> {
   return fetch("/api/feedback-prompt", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(message === undefined ? { action } : { action, message }),
+    body: JSON.stringify(
+      message === undefined ? { action } : { action, message },
+    ),
     // Survives the tab navigating away (e.g. straight to Discord).
     keepalive: true,
   });
@@ -132,8 +137,8 @@ export function FeedbackPromptDialog() {
             </h2>
             <p className="mb-5 text-sm text-muted-foreground">
               Du har använt Fiskargubben ett tag — vi vill gärna höra vad du
-              tycker! Dela dina tankar i vår Discord, där är du med och
-              påverkar vad vi bygger härnäst.
+              tycker! Dela dina tankar i vår Discord, där är du med och påverkar
+              vad vi bygger härnäst.
             </p>
 
             {discordInvite && (

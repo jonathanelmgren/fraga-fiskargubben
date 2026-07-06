@@ -11,13 +11,23 @@ const now = new Date("2026-07-06T12:00:00Z");
 describe("isFeedbackPromptDue", () => {
   it("is not due before the 3rd chat when never prompted", () => {
     expect(
-      isFeedbackPromptDue({ chatCount: 2, promptedAt: null, promptedChatCount: 0, now }),
+      isFeedbackPromptDue({
+        chatCount: 2,
+        promptedAt: null,
+        promptedChatCount: 0,
+        now,
+      }),
     ).toBe(false);
   });
 
   it("is due at the 3rd chat when never prompted", () => {
     expect(
-      isFeedbackPromptDue({ chatCount: 3, promptedAt: null, promptedChatCount: 0, now }),
+      isFeedbackPromptDue({
+        chatCount: 3,
+        promptedAt: null,
+        promptedChatCount: 0,
+        now,
+      }),
     ).toBe(true);
   });
 
@@ -57,7 +67,12 @@ describe("isFeedbackPromptDue", () => {
   it("first prompt does not fire early even with high count until stamped", () => {
     // A user with 100 chats who was never prompted gets the FIRST prompt.
     expect(
-      isFeedbackPromptDue({ chatCount: 100, promptedAt: null, promptedChatCount: 0, now }),
+      isFeedbackPromptDue({
+        chatCount: 100,
+        promptedAt: null,
+        promptedChatCount: 0,
+        now,
+      }),
     ).toBe(true);
   });
 });

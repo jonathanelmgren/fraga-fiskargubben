@@ -31,16 +31,17 @@ afterEach(() => {
 describe("FeedbackPromptDialog", () => {
   it("posts shown exactly once on mount", async () => {
     render(<FeedbackPromptDialog />);
-    await waitFor(() =>
-      expect(sentActions()).toEqual([{ action: "shown" }]),
-    );
+    await waitFor(() => expect(sentActions()).toEqual([{ action: "shown" }]));
   });
 
   it("posts dismissed when closed without any action", async () => {
     render(<FeedbackPromptDialog />);
     fireEvent.click(screen.getAllByLabelText("Stäng")[1]); // X button (index 0 is backdrop)
     await waitFor(() =>
-      expect(sentActions()).toEqual([{ action: "shown" }, { action: "dismissed" }]),
+      expect(sentActions()).toEqual([
+        { action: "shown" },
+        { action: "dismissed" },
+      ]),
     );
     expect(screen.queryByRole("dialog")).toBe(null);
   });
@@ -83,7 +84,10 @@ describe("FeedbackPromptDialog", () => {
     // Close via X button — should fire exactly one "dismissed".
     fireEvent.click(screen.getAllByLabelText("Stäng")[1]);
     await waitFor(() =>
-      expect(sentActions()).toEqual([{ action: "shown" }, { action: "dismissed" }]),
+      expect(sentActions()).toEqual([
+        { action: "shown" },
+        { action: "dismissed" },
+      ]),
     );
     // Dialog is closed; subsequent Escape presses must not leak another POST.
     fireEvent.keyDown(window, { key: "Escape" });
