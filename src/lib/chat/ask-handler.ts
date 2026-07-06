@@ -108,14 +108,14 @@ export const PAID_FAIR_USE_WINDOW_MS = 24 * 60 * 60 * 1000;
  * never cost us money" ceiling, measured against the actual llm_usage cost
  * analytics (see lib/analytics/llm-cost.ts).
  *
- * Economics: premium is 39 SEK/yr; Stripe fees eat ~2.4 SEK → ~36.6 SEK net.
- * Budget 35 SEK guarantees ≥ ~1.5 SEK margin per subscriber. Converted to USD
+ * Economics: premium is 89 SEK/yr; Stripe fees eat ~3.4 SEK → ~85.6 SEK net.
+ * Budget 70 SEK guarantees ≥ ~15 SEK margin per subscriber. Converted to USD
  * (costUsd is what we store) at a deliberately WEAK-krona guard rate, so an FX
- * swing can't push a capped account past 35 SEK.
+ * swing can't push a capped account past 70 SEK.
  *
- * ~35 SEK / 11 ≈ $3.18 ≈ ~90 chats/yr at the current ~$0.035/chat.
+ * ~70 SEK / 11 ≈ $6.36 ≈ ~180 chats/yr at the current ~$0.035/chat.
  */
-export const PAID_ANNUAL_COST_BUDGET_SEK = 35;
+export const PAID_ANNUAL_COST_BUDGET_SEK = 70;
 /** Conservative (weak-krona) SEK per USD for the budget conversion. */
 export const SEK_PER_USD_GUARD = 11;
 export const PAID_ANNUAL_COST_BUDGET_USD =
