@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import Script from "next/script";
+import { IosInstallHint } from "@/components/ios-install-hint";
 import { ServiceWorkerRegistration } from "@/components/service-worker-registration";
 import { SiteHeader } from "@/components/site-header";
 import "./globals.css";
@@ -63,6 +64,7 @@ export default function RootLayout({
         <SiteHeader />
         {children}
         <ServiceWorkerRegistration />
+        <IosInstallHint />
         {/* Plausible (self-hosted). Production only — the script also ignores
             localhost by itself, so local prod builds stay silent. The inline
             stub queues track() calls made before the script loads. */}
