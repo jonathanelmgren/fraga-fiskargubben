@@ -9,7 +9,11 @@
  * which returns a standard Web API ReadableStream of the raw streaming events
  * (newline-delimited JSON). We run it through toTextStream (sse-text-stream.ts)
  * to forward ONLY the visible answer text — dropping the model's private
- * thinking and the JSON envelope — before it becomes the `new Response` body.
+ * thinking and the JSON envelope — then hand it to the stream registry
+ * (stream-registry.ts), whose detached consumer reads it to completion
+ * regardless of the client connection. The response body is a registry
+ * subscriber; GET /api/ask/stream re-attaches from an offset after a client
+ * disconnect (resumable-chat-streams design spec).
  *
  * Cookie signing: the claimToken cookie (fiska_claim) is HMAC-SHA256 signed with
  * BETTER_AUTH_SECRET before it is set, and its signature is verified on read (see
@@ -47,8 +51,9 @@ import { signClaimToken, verifyClaimToken } from "@/lib/chat/claim-cookie";
 import { extract } from "@/lib/chat/extractor";
 import {
   type PersistTurnsDeps,
+  persistAssistantTurn,
   persistClarifyTurns,
-  persistTurns,
+  persistUserTurn,
 } from "@/lib/chat/persist-turns";
 import {
   canSpendCredit,
@@ -58,6 +63,12 @@ import {
   spendCredit,
 } from "@/lib/chat/quota";
 import { toTextStream } from "@/lib/chat/sse-text-stream";
+import {
+  isActive,
+  startStream,
+  StreamConflictError,
+  subscribe,
+} from "@/lib/chat/stream-registry";
 import { ExternalServiceError, TimeoutError } from "@/lib/errors";
 import { getSession } from "@/lib/get-session";
 import { isAdminEmail } from "@/lib/is-admin";
@@ -159,6 +170,22 @@ export function parseLocation(
 /** H1: in-persona Swedish fallback the chat UI renders as a generic error. */
 const GENERIC_ERROR_MESSAGE =
   "Något krånglar i tacklingen just nu, hörru. Kasta igen om en stund.";
+
+/**
+ * Resumable streams: one live advice stream per conversation. A duplicate
+ * submit while the previous answer is still generating would double-bill and
+ * interleave persistence — reject it and let the client keep (or re-attach
+ * to) the stream that is already running.
+ */
+function busyResponse(): Response {
+  return Response.json(
+    {
+      type: "busy",
+      text: "Gubben håller redan på att svara i den här chatten. Vänta tills han pratat klart.",
+    },
+    { status: 409 },
+  );
+}
 
 /**
  * H1: classify an unexpected error from handleAsk into a stable in-persona
@@ -494,6 +521,13 @@ export async function POST(request: Request): Promise<Response> {
   }
   const conversationId = rawConversationId;
 
+  // Resumable streams: reject a double submit for a conversation whose advice
+  // stream is still generating, BEFORE spending any extractor/advisor tokens.
+  // (startStream below re-checks under the same lock for the raced case.)
+  if (conversationId && isActive(conversationId)) {
+    return busyResponse();
+  }
+
   // Optional browser geolocation. Silently ignore anything malformed or
   // outside a generous Sweden-ish bounding box (bogus coords must not steer
   // resolution or SMHI fetches) — location is a hint, never a hard input.
@@ -557,17 +591,35 @@ export async function POST(request: Request): Promise<Response> {
     const readable = toTextStream(result.stream.toReadableStream());
     const { conversationId: streamConvId, stream } = result;
 
-    // H4: persist turns with Next 16's after() so the work survives the
-    // response close on serverless (uses waitUntil under the hood) instead of
-    // a detached IIFE that can be reclaimed. after() is valid in Route Handlers
-    // and runs after the response is finished. The persistence logic lives in
-    // the testable persistTurns helper (H3a / M11): it persists user+assistant
-    // turns together after finalMessage() resolves and always rolls
-    // lastActiveAt forward, emitting `persistence_failure` instead of throwing.
+    // Resumable streams: hand the text stream to the registry's DETACHED
+    // consumer instead of using it as the response body. Generation now runs
+    // to completion regardless of the client connection; the response below is
+    // just a subscriber, and GET /api/ask/stream can re-attach from any
+    // offset. A conflict here means a same-conversation double submit raced
+    // past the isActive guard above.
+    try {
+      startStream(streamConvId, readable);
+    } catch (err) {
+      if (err instanceof StreamConflictError) return busyResponse();
+      throw err;
+    }
+
+    // Persist the user turn BEFORE handing out the stream, so the question
+    // survives a failed or abandoned assistant stream (never throws).
+    const persistDeps = buildPersistDeps();
+    await persistUserTurn(persistDeps, {
+      conversationId: streamConvId,
+      message,
+    });
+
+    // H4: persist the assistant turn with Next 16's after(). It awaits
+    // finalMessage(), which — thanks to the registry consumer — now settles
+    // even when every client is gone, persists the assistant text, always
+    // rolls lastActiveAt forward and emits `persistence_failure` instead of
+    // throwing (H3a / M11).
     after(() =>
-      persistTurns(buildPersistDeps(), {
+      persistAssistantTurn(persistDeps, {
         conversationId: streamConvId,
-        message,
         stream,
         // Refund the credit if the first-turn Sonnet stream fails (ADR-0004).
         // Present only when a credit was actually spent for this turn.
@@ -620,7 +672,15 @@ export async function POST(request: Request): Promise<Response> {
       );
     }
 
-    return new Response(readable, { headers });
+    // The response body is a registry SUBSCRIBER from offset 0 — cancelling it
+    // (client disconnect) only unsubscribes; the consumer keeps generating.
+    const body = subscribe(streamConvId, 0);
+    if (!body) {
+      // Unreachable in practice (the entry was registered synchronously
+      // above); classify rather than crash if the registry ever surprises us.
+      return classifyError(new Error("advice stream unavailable"));
+    }
+    return new Response(body, { headers });
   }
 
   // Clarify round (rebuild spec): a free Haiku follow-up question. Persist

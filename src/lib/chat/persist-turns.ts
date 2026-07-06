@@ -1,10 +1,16 @@
 /**
- * persist-turns.ts — post-stream turn persistence (H3a / M11).
+ * persist-turns.ts — turn persistence helpers (H3a / M11, resumable streams).
  *
- * Extracted from route.ts's after() body so it can be unit-tested without a
- * real server or DB. This is the ONLY place user + assistant turns and
- * lastActiveAt are written (ADR-0001 — conversations are persisted), and it
- * runs fire-and-forget AFTER the response stream has been handed to the client.
+ * Extracted from route.ts so they can be unit-tested without a real server or
+ * DB. This is the ONLY place user + assistant turns and lastActiveAt are
+ * written (ADR-0001 — conversations are persisted).
+ *
+ * Resumable-streams split: the USER turn is written up-front by the route
+ * (persistUserTurn, before the advice stream starts) so it survives a failed
+ * or abandoned assistant stream. The ASSISTANT turn is written after
+ * finalMessage() settles (persistAssistantTurn) — driven by the stream
+ * registry's detached consumer, so it no longer depends on the client staying
+ * connected.
  *
  * Failure contract: a persistence failure must NEVER rethrow (the response is
  * already sent) — it emits a single `persistence_failure` analytics event so
@@ -41,16 +47,32 @@ function assistantTextOf(final: {
 }
 
 /**
- * Persist the user turn, the assistant turn, and roll lastActiveAt forward.
- *
- * M11: the user and assistant turns are persisted together AFTER
- * finalMessage() resolves, so a healthy stream never leaves a user row without
- * its assistant reply. If finalMessage() rejects, we still record the user turn
- * (best effort) and ALWAYS roll lastActiveAt forward in a finally — so the next
- * turn never sees a stale lastActiveAt — and emit a single `persistence_failure`.
- *
- * Never throws.
+ * Persist the user turn immediately (before the advice stream starts), so the
+ * user's question survives even when the assistant stream later fails or the
+ * client disconnects. Never throws — emits `persistence_failure` instead.
  */
+export async function persistUserTurn(
+  deps: Pick<PersistTurnsDeps, "persistMessage" | "emit">,
+  args: { conversationId: string; message: string },
+): Promise<void> {
+  const { conversationId, message } = args;
+  try {
+    await deps.persistMessage({
+      conversationId,
+      role: "user",
+      content: message,
+    });
+  } catch (err) {
+    await deps.emit({
+      type: "persistence_failure",
+      conversationId,
+      payload: {
+        reason: `persistUserTurn: ${err instanceof Error ? err.message : String(err)}`,
+      },
+    });
+  }
+}
+
 /**
  * Persist a clarify round (rebuild spec): the user turn plus the resolver's
  * clarify question as the assistant turn. No stream involved — the text is
@@ -93,11 +115,18 @@ export async function persistClarifyTurns(
   }
 }
 
-export async function persistTurns(
+/**
+ * Persist the assistant turn and roll lastActiveAt forward.
+ *
+ * Awaits finalMessage() — which, with the stream registry's detached consumer,
+ * settles regardless of client connection. If it rejects, no assistant row is
+ * written, a single `persistence_failure` is emitted, the credit is refunded
+ * when applicable, and lastActiveAt STILL rolls forward (M11). Never throws.
+ */
+export async function persistAssistantTurn(
   deps: PersistTurnsDeps,
   args: {
     conversationId: string;
-    message: string;
     stream: Pick<AdviceStream, "finalMessage">;
     /**
      * Set only when a credit was spent for THIS first-turn stream. If
@@ -107,11 +136,8 @@ export async function persistTurns(
     refundUserId?: string;
   },
 ): Promise<void> {
-  const { conversationId, message, stream, refundUserId } = args;
+  const { conversationId, stream, refundUserId } = args;
   try {
-    // Resolve the assistant text BEFORE writing, so the user+assistant pair is
-    // persisted atomically-in-spirit (no dangling user row on a stream that
-    // never produced a final message).
     const final = await stream.finalMessage();
     const assistantText = assistantTextOf(final);
 
@@ -129,11 +155,6 @@ export async function persistTurns(
       });
     }
 
-    await deps.persistMessage({
-      conversationId,
-      role: "user",
-      content: message,
-    });
     if (assistantText) {
       await deps.persistMessage({
         conversationId,
