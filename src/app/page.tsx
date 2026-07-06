@@ -50,7 +50,7 @@ export default async function Home() {
           </h1>
           <p className="mt-4 text-[15px] leading-relaxed text-foreground/75">
             Säg var och när du ska ut. Gubben kollar väder, lufttryck,
-            vattentemp och vilka arter som rör sig, sen säger han rakt ut hur du
+            vattentemp och vilka arter som rör sig, sen ger han tips på hur du
             bör fiska just nu. Sjö, kust eller skärgård, fråga på.
           </p>
 
