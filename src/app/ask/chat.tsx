@@ -202,9 +202,14 @@ const THINKING_PHRASES = [
   "Hör efter vilka arter som rör sig…",
   "Väger beteslådan i handen…",
   "Muttrar lite för sig själv…",
+  "Rotar i masklådan…",
+  "Läser av månens skede…",
+  "Knyter om tafsen…",
+  "Spottar i näven för tur…",
+  "Drar sig till minnes förra torsdagen…",
 ];
 
-const THINKING_PHRASE_MS = 2200;
+const THINKING_PHRASE_MS = 3500;
 
 function ThinkingIndicator() {
   const [phraseIndex, setPhraseIndex] = useState(0);
