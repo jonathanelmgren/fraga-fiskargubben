@@ -202,7 +202,16 @@ function buildUserContent({
 }: UserContentParams): string {
   const parts: string[] = [];
 
-  parts.push(`[SIGNALER]\n${JSON.stringify(signals, null, 2)}`);
+  // Internal bookkeeping fields the model has no use for: lakeId feeds
+  // analytics/cache keys, bareLakeName feeds the lake-lock comparison.
+  // Stripping them keeps the snapshot the model reads down to fields the
+  // persona actually defines (undefined JSON.stringify keys are omitted).
+  const {
+    lakeId: _lakeId,
+    bareLakeName: _bareLakeName,
+    ...modelSignals
+  } = signals;
+  parts.push(`[SIGNALER]\n${JSON.stringify(modelSignals, null, 2)}`);
 
   if (gender) {
     parts.push(`[KÖN] ${gender}`);

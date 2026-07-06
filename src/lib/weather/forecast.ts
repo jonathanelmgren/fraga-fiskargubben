@@ -16,6 +16,9 @@ export type SmhiDataParams = {
   cloud_area_fraction?: number;
   symbol_code?: number;
   precipitation_amount_mean?: number;
+  wind_speed_of_gust?: number;
+  thunderstorm_probability?: number;
+  visibility_in_air?: number;
 };
 
 export type SmhiTimeSeriesEntry = {
@@ -57,6 +60,9 @@ const PARAM_KEYS: (keyof SmhiDataParams)[] = [
   "cloud_area_fraction",
   "symbol_code",
   "precipitation_amount_mean",
+  "wind_speed_of_gust",
+  "thunderstorm_probability",
+  "visibility_in_air",
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────

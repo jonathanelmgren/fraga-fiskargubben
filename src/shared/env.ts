@@ -56,6 +56,15 @@ const schema = z.object({
   DISCORD_WEBHOOK_SIGNUPS: z.string().url().optional(),
   /** Public Discord invite for the support channel; renders links when set. */
   NEXT_PUBLIC_DISCORD_INVITE: z.string().url().optional(),
+  /**
+   * Stripe subscription billing (@better-auth/stripe). Both optional so
+   * dev/CI boot without a Stripe account — when STRIPE_SECRET_KEY is unset
+   * the stripe plugin is not registered (src/lib/auth.ts) and all
+   * subscription endpoints 404. STRIPE_WEBHOOK_SECRET comes from the
+   * Dashboard webhook endpoint (prod) or `stripe listen` (dev).
+   */
+  STRIPE_SECRET_KEY: z.string().min(1).optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().min(1).optional(),
 });
 
 const parsed = schema.safeParse(process.env);

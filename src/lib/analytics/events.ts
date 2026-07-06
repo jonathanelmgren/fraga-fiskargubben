@@ -44,6 +44,9 @@ export type AnalyticsEventType =
   | "lake_unresolved_area"
   // Rebuild: a registration was rejected by the signup IP guard.
   | "signup_ip_blocked"
+  // Paid fair-use cap hit (PAID_FAIR_USE_CONVERSATION_LIMIT) — payload
+  // { userId, recent } so repeat offenders are queryable.
+  | "fair_use_limit"
   // The chat terms gate was accepted (stored on the account when logged in).
   | "tos_accepted"
   // One Anthropic API call's token usage + USD cost (see lib/analytics/llm-cost.ts).

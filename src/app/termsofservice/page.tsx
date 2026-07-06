@@ -12,14 +12,15 @@ export default function TermsOfServicePage() {
         Användarvillkor
       </h1>
       <p className="mb-10 text-sm text-muted-foreground">
-        Version {TOS_VERSION} · Senast uppdaterad: 2026-07-05
+        Version {TOS_VERSION} · Senast uppdaterad: 2026-07-06
       </p>
 
       <div className="flex flex-col gap-6 text-sm leading-7 text-foreground">
         <section>
           <h2 className="mb-2 text-lg font-medium">1. Om tjänsten</h2>
           <p>
-            Fråga Fiskargubben ("tjänsten") ger fiskeråd för svenska vatten
+            Fråga Fiskargubben ("tjänsten") tillhandahålls av JPE IT AB, org.nr
+            559240-5855 ("vi"). Tjänsten ger fiskeråd för svenska vatten
             baserade på öppna väder- och sjödata. Svaren genereras av en
             AI-modell (Anthropic Claude) utifrån aktuellt väder, sjöinformation
             och din fråga. Tjänsten tillhandahålls i befintligt skick. Genom att
@@ -49,10 +50,25 @@ export default function TermsOfServicePage() {
             Du kan ställa en första fråga utan konto. Därefter krävs ett konto,
             som ger ett antal kostnadsfria frågor ("krediter"). En kredit
             förbrukas när en ny konversation får sitt första riktiga svar.
-            Betalfunktioner kan tillkomma; villkor för dessa presenteras i så
-            fall separat. Du ansvarar för att hålla dina inloggningsuppgifter
-            säkra och för aktivitet som sker via ditt konto. Inloggning kan ske
-            med e-post och lösenord eller via Google eller Microsoft.
+            Betalabonnemang tecknas med JPE IT AB och betalas via betaltjänsten
+            Stripe; Stripe hanterar dina kortuppgifter och vi lagrar dem aldrig
+            själva. Priser anges i tjänsten vid köptillfället. Du ansvarar för
+            att hålla dina inloggningsuppgifter säkra och för aktivitet som sker
+            via ditt konto. Inloggning kan ske med e-post och lösenord eller via
+            Google eller Microsoft.
+          </p>
+          <p className="mt-3">
+            Betalabonnemang som anges som "obegränsade" avser normal, personlig
+            användning enligt principen om skälig användning (fair use). Det
+            innebär två begränsningar. Dels kan konton som under kort tid
+            startar ovanligt många nya konversationer, eller som använder
+            tjänsten automatiserat, begränsas tillfälligt; en sådan begränsning
+            släpps löpande, normalt inom ett dygn. Dels gäller ett övre
+            användningstak per prenumerationsperiod. Taket är satt väl över
+            normal personlig användning. När det nås kan nya konversationer inte
+            startas förrän nästa period börjar; pågående konversationer påverkas
+            inte. Kontakta oss på kontakt@fragafiskargubben.se om taket inte
+            räcker för dig.
           </p>
         </section>
 

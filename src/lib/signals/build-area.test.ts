@@ -51,7 +51,11 @@ function happyMocks() {
       air_pressure_at_mean_sea_level: 1013,
       wind_speed: 5.5,
       wind_from_direction: 240,
-      cloud_area_fraction: 60,
+      cloud_area_fraction: 6, // octas — becomes cloudPct 75 (%)
+      precipitation_amount_mean: 0.4,
+      wind_speed_of_gust: 11.2,
+      thunderstorm_probability: -9, // SMHI negative sentinel → absent
+      visibility_in_air: 18.5,
     },
     snapDeltaMinutes: 15,
   } as never);
@@ -90,10 +94,22 @@ describe("buildAreaSignals", () => {
     expect(signals.askedLakeName).toBe("Gösputten");
     expect(signals.airTempC?.value).toBe(18.2);
     expect(signals.windMs?.value).toBe(5.5);
+    expect(signals.cloudPct?.value).toBe(75);
+    expect(signals.precipMmH?.value).toBe(0.4);
+    expect(signals.windGustMs?.value).toBe(11.2);
+    expect(signals.thunderPct).toBeUndefined();
+    expect(signals.visibilityKm?.value).toBe(18.5);
     expect(signals.pressureTrend?.value).toBe("falling");
     expect(signals.airTempTrend5d?.value).toBe("warming");
     expect(signals.lightWindow).toBe("dusk");
     expect(signals.windwardShore).toBeDefined();
+    // wind_from_direction 240 (WSW) → drift toward ENE
+    expect(signals.windDirection?.value).toEqual({
+      fromDeg: 240,
+      fromCompass: "WSW",
+      towardDeg: 60,
+      towardCompass: "ENE",
+    });
 
     // No lake-specific fields.
     expect(signals.waterTempC).toBeUndefined();

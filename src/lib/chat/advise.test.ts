@@ -145,6 +145,31 @@ describe("adviseFirst()", () => {
 
     expect(result).toBe(client._streamSpy.mock.results[0].value);
   });
+
+  it("strips internal bookkeeping fields (lakeId, bareLakeName) from the prompt", () => {
+    const client = buildMockClient();
+    adviseFirst({
+      signals: { ...baseSignals, bareLakeName: "Tolken-bare" },
+      message: "Vad biter idag?",
+      // biome-ignore lint/suspicious/noExplicitAny: test fake
+      deps: { client: client as any },
+    });
+
+    const [args] = client._streamSpy.mock.calls[0];
+    const userMessage = args.messages.find(
+      (m: { role: string }) => m.role === "user",
+    );
+    const content =
+      typeof userMessage.content === "string"
+        ? userMessage.content
+        : JSON.stringify(userMessage.content);
+    expect(content).not.toContain("lakeId");
+    expect(content).not.toContain("tolken-1");
+    expect(content).not.toContain("bareLakeName");
+    expect(content).not.toContain("Tolken-bare");
+    // The label the model should reason about is still there.
+    expect(content).toContain("Tolken");
+  });
 });
 
 // ---------------------------------------------------------------------------

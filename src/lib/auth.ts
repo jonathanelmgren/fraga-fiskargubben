@@ -1,8 +1,11 @@
 import "server-only";
+import { stripe } from "@better-auth/stripe";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { APIError } from "better-auth/api";
 import { nextCookies } from "better-auth/next-js";
+import { eq } from "drizzle-orm";
+import Stripe from "stripe";
 import { emit } from "@/lib/analytics/events";
 import {
   checkSignupAllowed,
@@ -13,11 +16,43 @@ import { verifyClaimToken } from "@/lib/chat/claim-cookie";
 import { sendVerificationEmail } from "@/lib/email";
 import { notifyDiscord } from "@/lib/notify/discord";
 import { db } from "@/shared/db/client";
-import { accounts, sessions, users, verifications } from "@/shared/db/schema";
+import {
+  accounts,
+  sessions,
+  subscriptions,
+  users,
+  verifications,
+} from "@/shared/db/schema";
 import { env } from "@/shared/env";
 
 /** Cookie name must stay in sync with CLAIM_TOKEN_COOKIE in app/api/ask/route.ts. */
 const CLAIM_TOKEN_COOKIE = "fiska_claim";
+
+/**
+ * Stripe subscription billing (@better-auth/stripe).
+ *
+ * Optional at boot (dev/CI without a Stripe account): when STRIPE_SECRET_KEY
+ * is unset the plugin is not registered and every /api/auth/subscription/*
+ * endpoint 404s — mirrors the RESEND_API_KEY pattern.
+ *
+ * The single plan ("premium") is resolved by Price lookup_key, so the price
+ * can be changed from the Stripe Dashboard (create new Price with
+ * transfer_lookup_key) without touching code or env.
+ *
+ * users.isPaid stays the app-side source of truth for quota (ADR-0004); the
+ * subscription lifecycle hooks below keep it in sync. paid ⇔ subscription
+ * status is active or trialing — past_due/unpaid (failed renewals after
+ * Smart Retries) and canceled all drop back to free.
+ */
+const stripeClient = env.STRIPE_SECRET_KEY
+  ? new Stripe(env.STRIPE_SECRET_KEY)
+  : null;
+
+async function setPaid(userId: string, isPaid: boolean) {
+  await db.update(users).set({ isPaid }).where(eq(users.id, userId));
+}
+
+const PAID_STATUSES = ["active", "trialing"];
 
 export const auth = betterAuth({
   secret: env.BETTER_AUTH_SECRET,
@@ -29,6 +64,7 @@ export const auth = betterAuth({
       session: sessions,
       account: accounts,
       verification: verifications,
+      subscription: subscriptions,
     },
   }),
   emailAndPassword: {
@@ -83,7 +119,50 @@ export const auth = betterAuth({
       tenantId: "consumers",
     },
   },
-  plugins: [nextCookies()],
+  plugins: [
+    ...(stripeClient
+      ? [
+          stripe({
+            stripeClient,
+            stripeWebhookSecret: env.STRIPE_WEBHOOK_SECRET ?? "",
+            // Customer is created lazily at first checkout — signup stays a
+            // single-purpose flow (and works when Stripe is down).
+            createCustomerOnSignUp: false,
+            subscription: {
+              enabled: true,
+              plans: [{ name: "premium", lookupKey: "premium_yearly" }],
+              onSubscriptionComplete: async ({ subscription }) => {
+                await setPaid(subscription.referenceId, true);
+                // Ops ping — fire-and-forget, never blocks the webhook (same
+                // pattern as the signup ping below).
+                void db
+                  .select({ name: users.name, email: users.email })
+                  .from(users)
+                  .where(eq(users.id, subscription.referenceId))
+                  .limit(1)
+                  .then(([u]) =>
+                    notifyDiscord(
+                      "signups",
+                      `💰 Ny premium-prenumerant: ${u ? `${u.name} (${u.email})` : subscription.referenceId}`,
+                    ),
+                  )
+                  .catch(() => {});
+              },
+              onSubscriptionUpdate: async ({ subscription }) => {
+                await setPaid(
+                  subscription.referenceId,
+                  PAID_STATUSES.includes(subscription.status),
+                );
+              },
+              onSubscriptionDeleted: async ({ subscription }) => {
+                await setPaid(subscription.referenceId, false);
+              },
+            },
+          }),
+        ]
+      : []),
+    nextCookies(),
+  ],
   // C2: claim the anon conversation on registration so the credit carry-over
   // (ADR-0001/ADR-0004) is applied for every registration path (email+password,
   // Google SSO, Microsoft SSO).

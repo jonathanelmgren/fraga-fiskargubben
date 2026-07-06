@@ -11,7 +11,7 @@ export default function PrivacyStatementPage() {
         Integritetspolicy
       </h1>
       <p className="mb-10 text-sm text-muted-foreground">
-        Senast uppdaterad: 2026-07-05
+        Senast uppdaterad: 2026-07-06
       </p>
 
       <div className="flex flex-col gap-6 text-sm leading-7 text-foreground">
@@ -89,6 +89,14 @@ export default function PrivacyStatementPage() {
             inloggning. Deras hantering av uppgifter styrs av deras egna
             integritetspolicyer.
           </p>
+          <p className="mt-2">
+            <strong>Betalningar (Stripe).</strong> Betalabonnemang hanteras av
+            betaltjänsten Stripe. Stripe tar emot de uppgifter som krävs för
+            betalningen (till exempel namn, e-postadress och kortuppgifter). Vi
+            lagrar aldrig dina kortuppgifter själva, endast en kundreferens hos
+            Stripe och abonnemangets status. Stripes hantering styrs av deras
+            egen integritetspolicy.
+          </p>
         </section>
 
         <section>
@@ -123,10 +131,12 @@ export default function PrivacyStatementPage() {
         </section>
 
         <section>
-          <h2 className="mb-2 text-lg font-medium">7. Kontakt</h2>
+          <h2 className="mb-2 text-lg font-medium">
+            7. Personuppgiftsansvarig och kontakt
+          </h2>
           <p>
-            Frågor om personuppgifter skickas till
-            integritet@fragafiskargubben.se.
+            Personuppgiftsansvarig är JPE IT AB, org.nr 559240-5855. Frågor om
+            personuppgifter skickas till kontakt@fragafiskargubben.se.
           </p>
         </section>
       </div>

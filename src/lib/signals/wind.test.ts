@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { windwardShore } from "./wind";
+import { describeWindDirection, windwardShore } from "./wind";
 
 describe("windwardShore", () => {
   // Test the 8 cardinal and intercardinal directions
@@ -77,5 +77,79 @@ describe("windwardShore", () => {
 
   it("throws on Infinity input", () => {
     expect(() => windwardShore(Number.POSITIVE_INFINITY)).toThrow();
+  });
+});
+
+describe("describeWindDirection", () => {
+  it("270° (wind from W) → toward E at 90°", () => {
+    expect(describeWindDirection(270)).toEqual({
+      fromDeg: 270,
+      fromCompass: "W",
+      towardDeg: 90,
+      towardCompass: "E",
+    });
+  });
+
+  // The nuance case that motivated 16-point labels: almost-SW westerly wind
+  // should read as drift toward the northeast-leaning part of the east shore.
+  it("240° (wind from WSW) → toward ENE at 60°", () => {
+    expect(describeWindDirection(240)).toEqual({
+      fromDeg: 240,
+      fromCompass: "WSW",
+      towardDeg: 60,
+      towardCompass: "ENE",
+    });
+  });
+
+  it("0° (wind from N) → toward S at 180°", () => {
+    expect(describeWindDirection(0)).toEqual({
+      fromDeg: 0,
+      fromCompass: "N",
+      towardDeg: 180,
+      towardCompass: "S",
+    });
+  });
+
+  // 16-point bin boundaries: bins are 22.5° wide, centered on each point.
+  it("11.24° still N, 11.25° flips to NNE", () => {
+    expect(describeWindDirection(11.24).fromCompass).toBe("N");
+    expect(describeWindDirection(11.25).fromCompass).toBe("NNE");
+  });
+
+  it("348.75° flips back to N (wraparound bin)", () => {
+    expect(describeWindDirection(348.75).fromCompass).toBe("N");
+    expect(describeWindDirection(348.74).fromCompass).toBe("NNW");
+  });
+
+  it("normalizes negative input: -90° ≡ 270°", () => {
+    expect(describeWindDirection(-90)).toEqual(describeWindDirection(270));
+  });
+
+  it("normalizes over-360 input: 450° ≡ 90°", () => {
+    expect(describeWindDirection(450)).toEqual(describeWindDirection(90));
+  });
+
+  it("throws on NaN input (no confident-wrong fallback)", () => {
+    expect(() => describeWindDirection(Number.NaN)).toThrow();
+  });
+
+  it("throws on Infinity input", () => {
+    expect(() => describeWindDirection(Number.POSITIVE_INFINITY)).toThrow();
+  });
+
+  it("agrees with windwardShore on exact cardinals/intercardinals", () => {
+    for (const [deg, shore] of [
+      [0, "S"],
+      [45, "SW"],
+      [90, "W"],
+      [135, "NW"],
+      [180, "N"],
+      [225, "NE"],
+      [270, "E"],
+      [315, "SE"],
+    ] as const) {
+      expect(describeWindDirection(deg).towardCompass).toBe(shore);
+      expect(windwardShore(deg)).toBe(shore);
+    }
   });
 });

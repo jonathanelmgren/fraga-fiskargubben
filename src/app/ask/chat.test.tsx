@@ -135,7 +135,7 @@ describe("Chat component", () => {
     expect(body.message).toBe("Ska jag fiska i Vättern imorgon?");
   });
 
-  it("2. chat_limit gate renders a plain system banner (not an assistant bubble)", async () => {
+  it("2. chat_limit gate freezes the chat with exactly one banner (not an assistant bubble)", async () => {
     vi.spyOn(global, "fetch").mockResolvedValueOnce(
       makeJsonResponse({ type: "chat_limit", text: "Chat limit reached." }),
     );
@@ -144,16 +144,19 @@ describe("Chat component", () => {
     await typeAndSubmit("En fråga till");
 
     await waitFor(() => {
-      // The plain banner — <section aria-label="Chatbegränsning"> → role "region"
+      // The frozen banner — <section aria-label="Chatt fryst"> → role "region"
       expect(
-        screen.queryByRole("region", { name: /chatbegränsning/i }),
+        screen.queryByRole("region", { name: /chatt fryst/i }),
       ).not.toBeNull();
     });
 
-    const banner = screen.getByRole("region", { name: /chatbegränsning/i });
+    const banner = screen.getByRole("region", { name: /chatt fryst/i });
     expect(banner.textContent).toContain("Konversationsgränsen");
     // Must NOT be wrapped in .chat-bubble-assistant
     expect(banner.closest(".chat-bubble-assistant")).toBeNull();
+    // No duplicate copy in the message list (the pre-fix bug: the gate was
+    // ALSO appended as a message, so the banner rendered twice live).
+    expect(screen.getAllByText(/Konversationsgränsen/i)).toHaveLength(1);
   });
 
   it("3. topic_refused gate renders as an assistant persona bubble", async () => {

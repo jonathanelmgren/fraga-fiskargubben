@@ -22,9 +22,10 @@ import {
   pressureTrend24h,
   tempConfidence,
 } from "@/lib/weather/metobs";
+import { octasToPercent, probabilityPct } from "@/lib/weather/units";
 import { lightWindow, sunTimes } from "./light";
 import type { Provenance, Signals, Source, WithProvenance } from "./types";
-import { windwardShore } from "./wind";
+import { describeWindDirection, windwardShore } from "./wind";
 
 export interface BuildAreaSignalsInput {
   /** Area label the LLM reads, e.g. `trakten kring Ulricehamn`. */
@@ -102,6 +103,10 @@ export async function buildAreaSignals(
     wind_speed?: number;
     wind_from_direction?: number;
     cloud_area_fraction?: number;
+    precipitation_amount_mean?: number;
+    wind_speed_of_gust?: number;
+    thunderstorm_probability?: number;
+    visibility_in_air?: number;
     snapDeltaMinutes?: number;
     stationDistanceKm?: number;
   };
@@ -179,7 +184,15 @@ export async function buildAreaSignals(
   if (nearbyLakes && nearbyLakes.length > 0) signals.nearbyLakes = nearbyLakes;
 
   const assign = (
-    key: "airTempC" | "pressureHpa" | "windMs" | "cloudPct",
+    key:
+      | "airTempC"
+      | "pressureHpa"
+      | "windMs"
+      | "cloudPct"
+      | "precipMmH"
+      | "windGustMs"
+      | "thunderPct"
+      | "visibilityKm",
     value: number | undefined,
   ) => {
     if (value !== undefined && Number.isFinite(value)) {
@@ -189,7 +202,13 @@ export async function buildAreaSignals(
   assign("airTempC", conditions?.air_temperature);
   assign("pressureHpa", conditions?.air_pressure_at_mean_sea_level);
   assign("windMs", conditions?.wind_speed);
-  assign("cloudPct", conditions?.cloud_area_fraction);
+  // SMHI delivers octas (0–8) — cloudPct is percent (see octasToPercent).
+  assign("cloudPct", octasToPercent(conditions?.cloud_area_fraction));
+  assign("precipMmH", conditions?.precipitation_amount_mean);
+  assign("windGustMs", conditions?.wind_speed_of_gust);
+  // Negative SMHI sentinels become absent, not a -9 in the snapshot.
+  assign("thunderPct", probabilityPct(conditions?.thunderstorm_probability));
+  assign("visibilityKm", conditions?.visibility_in_air);
 
   if (pressureTrend !== undefined) {
     signals.pressureTrend = wp(pressureTrend, "observed", "high");
@@ -207,6 +226,11 @@ export async function buildAreaSignals(
     try {
       signals.windwardShore = wp(
         windwardShore(windDir),
+        source,
+        conditionsConfidence,
+      );
+      signals.windDirection = wp(
+        describeWindDirection(windDir),
         source,
         conditionsConfidence,
       );

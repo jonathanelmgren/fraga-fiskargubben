@@ -41,6 +41,45 @@ describe("FISKARGUBBEN_SYSTEM", () => {
     expect(hasNeutralInstruction).toBe(true);
   });
 
+  it("defines wind signal semantics (from vs toward)", () => {
+    // The Tolken incident: without semantics the model inverted the wind
+    // ("windwardShore: E" read as "wind from east") and flipped its shore
+    // advice mid-conversation. The persona must define both fields and pin
+    // the from/toward distinction.
+    expect(FISKARGUBBEN_SYSTEM).toContain("windwardShore");
+    expect(FISKARGUBBEN_SYSTEM).toContain("windDirection");
+    expect(FISKARGUBBEN_SYSTEM).toContain("towardCompass");
+    expect(/blåser.*MOT/i.test(FISKARGUBBEN_SYSTEM)).toBe(true);
+    expect(
+      /vind från väst betyder att östra stranden får driften/i.test(
+        FISKARGUBBEN_SYSTEM,
+      ),
+    ).toBe(true);
+  });
+
+  it("defines the remaining signal fields the model must interpret", () => {
+    // Every unit/enum the snapshot carries needs a definition in the frozen
+    // prompt — undefined fields get guessed (the cloudPct-octas and
+    // windwardShore incidents both started as unexplained values).
+    for (const field of [
+      "cloudPct",
+      "precipMmH",
+      "windGustMs",
+      "thunderPct",
+      "visibilityKm",
+      "lightWindow",
+      "timeLocal",
+      "speciesComfort",
+      "sightDepthM",
+      "provenance",
+      "conditionsStaleMinutes",
+    ]) {
+      expect(FISKARGUBBEN_SYSTEM).toContain(field);
+    }
+    // Percent semantics for cloud cover must be pinned.
+    expect(/molntäcke i procent/i.test(FISKARGUBBEN_SYSTEM)).toBe(true);
+  });
+
   it("contains wind-down sign-off guidance", () => {
     // When windingDown flag is set (passed in the user turn), persona should
     // keep replies short and start signing off.

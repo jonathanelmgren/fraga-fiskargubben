@@ -25,6 +25,8 @@ import { TOS_VERSION } from "@/lib/tos-version";
 type GateType =
   | "register_to_continue"
   | "chat_limit"
+  // Paid fair-use cap (HTTP 429) — too many new chats in the rolling window.
+  | "rate_limited"
   | "topic_refused"
   | "lake_unresolved"
   | "out_of_credits"
@@ -67,6 +69,7 @@ function isPersonaGate(g: GateType): boolean {
 const KNOWN_GATE_TYPES: GateType[] = [
   "register_to_continue",
   "chat_limit",
+  "rate_limited",
   "topic_refused",
   "lake_unresolved",
   "out_of_credits",
@@ -313,7 +316,7 @@ function GateBanner({ gateType, text }: { gateType: GateType; text: string }) {
         </p>
         <p className="text-xs text-stone-500 mb-3">
           {text ||
-            "Uppgradering kommer snart. Hör av dig om du vill vara med i betan."}
+            "Uppgradera till premium för obegränsade frågor till gubben."}
         </p>
         <Link
           href="/profile"
@@ -321,6 +324,23 @@ function GateBanner({ gateType, text }: { gateType: GateType; text: string }) {
         >
           Se premium på din profil
         </Link>
+      </div>
+    );
+  }
+
+  if (gateType === "rate_limited") {
+    return (
+      <div
+        role="status"
+        className="gate-rate-limited mx-auto max-w-sm text-center py-5 px-6 rounded-xl border border-stone-300 bg-stone-50/80 shadow-sm"
+      >
+        <p className="text-sm font-medium text-stone-700 mb-2">
+          Dygnsgränsen är nådd
+        </p>
+        <p className="text-xs text-stone-500">
+          {text ||
+            "Du har startat ovanligt många nya chattar det senaste dygnet. Försök igen om några timmar."}
+        </p>
       </div>
     );
   }
@@ -541,8 +561,13 @@ export default function Chat({
           }
         }
 
-        // L6: non-OK HTTP first (402 out_of_credits is a legitimate gate).
-        if (!response.ok && response.status !== 402) {
+        // L6: non-OK HTTP first (402 out_of_credits and 429 rate_limited are
+        // legitimate gates with a renderable JSON body).
+        if (
+          !response.ok &&
+          response.status !== 402 &&
+          response.status !== 429
+        ) {
           setThinking(false);
           let serverText = "";
           try {
@@ -639,10 +664,11 @@ export default function Chat({
           const gateType = asGateType(gate.type) ?? "error";
 
           if (gateType === "chat_limit") {
+            // Frozen banner below the input renders the limit copy; appending
+            // a gate message too would show it twice (and refresh only
+            // restores the frozen flag, not the message).
             setFrozen(true);
-          }
-
-          if (isPersonaGate(gateType)) {
+          } else if (isPersonaGate(gateType)) {
             setMessages((prev) => [
               ...prev,
               { role: "assistant", text: gate.text, id: nextId() },

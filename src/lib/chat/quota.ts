@@ -7,7 +7,7 @@
  *    A Credit is spent once per new conversation (fresh Signals fetch).
  *    isPaid users are unlimited.
  *
- * 2. Chat-turn limit: a hard cap of MAX_CHAT_TURNS (3) user turns per
+ * 2. Chat-turn limit: a hard cap of MAX_CHAT_TURNS (5) user turns per
  *    conversation for FREE users (anon + logged-in non-paid). Paid users and
  *    admins are unlimited.  messageCount = number of user-role message rows already
  *    in the conversation (caller counts only role='user' rows — keeping it
@@ -39,7 +39,7 @@ export const FREE_CREDITS = 3;
  * admins have no turn limit.
  * messageCount should be the count of role='user' message rows already stored.
  */
-export const MAX_CHAT_TURNS = 3;
+export const MAX_CHAT_TURNS = 5;
 
 /**
  * Turn index at which the assistant starts "winding down" a conversation

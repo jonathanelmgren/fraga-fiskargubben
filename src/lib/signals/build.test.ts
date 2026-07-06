@@ -97,7 +97,11 @@ const FORECAST_DOC = {
         air_pressure_at_mean_sea_level: 1013,
         wind_speed: 4,
         wind_from_direction: 270, // W → windward shore E
-        cloud_area_fraction: 50,
+        cloud_area_fraction: 4, // octas — becomes cloudPct 50 (%)
+        precipitation_amount_mean: 0.2,
+        wind_speed_of_gust: 8.9,
+        thunderstorm_probability: 15,
+        visibility_in_air: 42.7,
       },
     },
   ],
@@ -111,7 +115,11 @@ const PICK_RESULT = {
     air_pressure_at_mean_sea_level: 1013,
     wind_speed: 4,
     wind_from_direction: 270,
-    cloud_area_fraction: 50,
+    cloud_area_fraction: 4, // octas — becomes cloudPct 50 (%)
+    precipitation_amount_mean: 0.2,
+    wind_speed_of_gust: 8.9,
+    thunderstorm_probability: 15,
+    visibility_in_air: 42.7,
   },
 };
 
@@ -210,10 +218,18 @@ describe("buildSignals", () => {
         value: 4,
         provenance: { source: "forecast", confidence: "high" },
       });
+      // 4 octas from SMHI → 50% cloud cover
       expect(signals.cloudPct).toEqual({
         value: 50,
         provenance: { source: "forecast", confidence: "high" },
       });
+      expect(signals.precipMmH).toEqual({
+        value: 0.2,
+        provenance: { source: "forecast", confidence: "high" },
+      });
+      expect(signals.windGustMs?.value).toBe(8.9);
+      expect(signals.thunderPct?.value).toBe(15);
+      expect(signals.visibilityKm?.value).toBe(42.7);
     });
 
     it("derives windwardShore from wind_from_direction", async () => {
@@ -228,6 +244,13 @@ describe("buildSignals", () => {
       expect(signals.windwardShore).toBeDefined();
       expect(signals.windwardShore?.value).toBe("E");
       expect(signals.windwardShore?.provenance.source).toBe("forecast");
+      expect(signals.windDirection?.value).toEqual({
+        fromDeg: 270,
+        fromCompass: "W",
+        towardDeg: 90,
+        towardCompass: "E",
+      });
+      expect(signals.windDirection?.provenance.source).toBe("forecast");
     });
 
     it("includes lightWindow", async () => {

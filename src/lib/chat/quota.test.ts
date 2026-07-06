@@ -23,8 +23,8 @@ describe("constants", () => {
     expect(FREE_CREDITS).toBe(3);
   });
 
-  it("MAX_CHAT_TURNS is 3", () => {
-    expect(MAX_CHAT_TURNS).toBe(3);
+  it("MAX_CHAT_TURNS is 5", () => {
+    expect(MAX_CHAT_TURNS).toBe(5);
   });
 });
 

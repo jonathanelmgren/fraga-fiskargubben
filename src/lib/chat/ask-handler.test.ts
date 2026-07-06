@@ -33,6 +33,7 @@ import {
   type ConversationRow,
   centroidOf,
   handleAsk,
+  PAID_ANNUAL_COST_BUDGET_USD,
   toBadges,
 } from "./ask-handler";
 
@@ -311,6 +312,78 @@ describe("chat-turn limit", () => {
     );
     expect(result.type).toBe("chat_limit");
     expect(deps.freezeConversation).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2b. Paid fair-use gate — new conversations only
+// ---------------------------------------------------------------------------
+
+describe("paid fair-use gate", () => {
+  it("blocks a NEW conversation once the paid user hits the window cap", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      getUserRow: vi.fn().mockResolvedValue({ isPaid: true, creditsUsed: 0 }),
+      countRecentConversationsByUser: vi.fn().mockResolvedValue(20),
+    });
+    const result = await handleAsk({ message: "Vad biter i Tolken?" }, deps);
+    expect(result.type).toBe("rate_limited");
+    expect(deps.createPendingConversation).not.toHaveBeenCalled();
+    expect(deps.emit).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "fair_use_limit" }),
+    );
+  });
+
+  it("allows a paid user under the cap", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      getUserRow: vi.fn().mockResolvedValue({ isPaid: true, creditsUsed: 0 }),
+      countRecentConversationsByUser: vi.fn().mockResolvedValue(19),
+    });
+    const result = await handleAsk({ message: "Vad biter i Tolken?" }, deps);
+    expect(result.type).toBe("stream");
+  });
+
+  it("does not apply to free users (they are credit-capped instead)", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      countRecentConversationsByUser: vi.fn().mockResolvedValue(999),
+    });
+    const result = await handleAsk({ message: "Vad biter i Tolken?" }, deps);
+    expect(result.type).toBe("stream");
+    expect(deps.countRecentConversationsByUser).not.toHaveBeenCalled();
+  });
+
+  it("blocks a paid user whose tracked LLM cost exceeds the annual budget", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      getUserRow: vi.fn().mockResolvedValue({ isPaid: true, creditsUsed: 0 }),
+      getRecentLlmCostUsdByUser: vi
+        .fn()
+        .mockResolvedValue(PAID_ANNUAL_COST_BUDGET_USD + 0.01),
+    });
+    const result = await handleAsk({ message: "Vad biter i Tolken?" }, deps);
+    const r = asType(result, "rate_limited");
+    expect(r.text).toContain("användningstaket");
+    expect(deps.createPendingConversation).not.toHaveBeenCalled();
+    expect(deps.emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "fair_use_limit",
+        payload: expect.objectContaining({ reason: "cost_budget" }),
+      }),
+    );
+  });
+
+  it("allows a paid user under the cost budget", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      getUserRow: vi.fn().mockResolvedValue({ isPaid: true, creditsUsed: 0 }),
+      getRecentLlmCostUsdByUser: vi
+        .fn()
+        .mockResolvedValue(PAID_ANNUAL_COST_BUDGET_USD - 0.5),
+    });
+    const result = await handleAsk({ message: "Vad biter i Tolken?" }, deps);
+    expect(result.type).toBe("stream");
   });
 });
 

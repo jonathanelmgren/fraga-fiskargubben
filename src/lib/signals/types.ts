@@ -50,7 +50,33 @@ export type Signals = {
   airTempTrend5d?: WithProvenance<"warming" | "cooling" | "steady">;
   windMs?: WithProvenance<number>;
   windwardShore?: WithProvenance<string>; // compass label
+  /**
+   * Full wind direction (degrees + 16-point compass, both FROM and TOWARD).
+   * SMHI reports the bearing wind blows FROM; the persona is instructed that
+   * towardCompass is the shore where drift and baitfish collect, with 16-point
+   * granularity for angled advice ("östra stranden, delen mot nordost").
+   * Absent on old snapshots — windwardShore alone then carries the shore.
+   */
+  windDirection?: WithProvenance<{
+    fromDeg: number;
+    fromCompass: string;
+    towardDeg: number;
+    towardCompass: string;
+  }>;
+  /** Cloud cover in percent (0 = clear, 100 = overcast). SMHI reports octas; converted at build. */
   cloudPct?: WithProvenance<number>;
+  /**
+   * Mean precipitation in mm/h at the target time (forecast path only — the
+   * observed metobs path has no precipitation parameter, so the field is
+   * simply absent for past targets).
+   */
+  precipMmH?: WithProvenance<number>;
+  /** Max wind gust in m/s at the target time (forecast path only). */
+  windGustMs?: WithProvenance<number>;
+  /** Thunderstorm probability in percent, 0–100 (forecast path only). */
+  thunderPct?: WithProvenance<number>;
+  /** Horizontal visibility in air, km (forecast path only). */
+  visibilityKm?: WithProvenance<number>;
   waterTempC?: WithProvenance<number>;
   waterColour?: WithProvenance<"brown" | "clear">;
   sightDepthM?: WithProvenance<number>;

@@ -32,10 +32,11 @@ import {
   pressureTrend24h,
   tempConfidence,
 } from "@/lib/weather/metobs";
+import { octasToPercent, probabilityPct } from "@/lib/weather/units";
 import { lightWindow, sunTimes } from "./light";
 import { speciesComfort } from "./species-comfort";
 import type { Provenance, Signals, Source, WithProvenance } from "./types";
-import { windwardShore } from "./wind";
+import { describeWindDirection, windwardShore } from "./wind";
 
 // ────────────────────────────────────────────────────────────────────────────
 // Input
@@ -158,6 +159,10 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
     wind_speed?: number;
     wind_from_direction?: number;
     cloud_area_fraction?: number;
+    precipitation_amount_mean?: number;
+    wind_speed_of_gust?: number;
+    thunderstorm_probability?: number;
+    visibility_in_air?: number;
     /**
      * snapDeltaMinutes: on the forecast branch, the forecast snap delta (M1);
      * on the observed branch, how far the nearest obs is from target (#8).
@@ -359,6 +364,7 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
   // non-finite input (M6), and a throw here must not abort the whole build
   // after the sources succeeded (ADR-0002 never-throws contract).
   let windwardShoreSignal: Signals["windwardShore"];
+  let windDirectionSignal: Signals["windDirection"];
   const windDir = conditions?.wind_from_direction;
   if (windDir !== undefined && Number.isFinite(windDir)) {
     try {
@@ -367,6 +373,11 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
       // rather than a hardcoded "high".
       windwardShoreSignal = wp(
         windwardShore(windDir),
+        source,
+        conditionsConfidence,
+      );
+      windDirectionSignal = wp(
+        describeWindDirection(windDir),
         source,
         conditionsConfidence,
       );
@@ -441,7 +452,37 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
   assignFinite(
     signals,
     "cloudPct",
-    conditions?.cloud_area_fraction,
+    // SMHI delivers octas (0–8) — cloudPct is percent (see octasToPercent).
+    octasToPercent(conditions?.cloud_area_fraction),
+    source,
+    conditionsConfidence,
+  );
+  assignFinite(
+    signals,
+    "precipMmH",
+    conditions?.precipitation_amount_mean,
+    source,
+    conditionsConfidence,
+  );
+  assignFinite(
+    signals,
+    "windGustMs",
+    conditions?.wind_speed_of_gust,
+    source,
+    conditionsConfidence,
+  );
+  assignFinite(
+    signals,
+    "thunderPct",
+    // Negative SMHI sentinels become absent, not a -9 in the snapshot.
+    probabilityPct(conditions?.thunderstorm_probability),
+    source,
+    conditionsConfidence,
+  );
+  assignFinite(
+    signals,
+    "visibilityKm",
+    conditions?.visibility_in_air,
     source,
     conditionsConfidence,
   );
@@ -502,6 +543,7 @@ export async function buildSignals(input: BuildSignalsInput): Promise<Signals> {
   // Derived
   if (light !== undefined) signals.lightWindow = light;
   if (windwardShoreSignal) signals.windwardShore = windwardShoreSignal;
+  if (windDirectionSignal) signals.windDirection = windDirectionSignal;
   if (speciesComfortSignal) signals.speciesComfort = speciesComfortSignal;
 
   // ── Analytics ─────────────────────────────────────────────────────────────

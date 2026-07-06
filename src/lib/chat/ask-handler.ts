@@ -50,6 +50,8 @@ import {
   ANON_REGISTER_MESSAGE,
   CANNED_REFUSAL,
   CHAT_LIMIT_MESSAGE,
+  COST_BUDGET_MESSAGE,
+  FAIR_USE_MESSAGE,
   LAKE_UNRESOLVED_MESSAGE,
   OUT_OF_CREDITS_MESSAGE,
 } from "./gate-messages";
@@ -88,6 +90,42 @@ export const ANON_IP_CONVERSATION_LIMIT = 1;
 
 /** Rolling window for ANON_IP_CONVERSATION_LIMIT. */
 export const ANON_IP_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Fair-use BURST cap for PAID users: max NEW conversations per rolling day.
+ * Stops a runaway (script, shared account) from draining the annual cost
+ * budget below in a weekend — the lock is short, the budget stays intact for
+ * the rest of the subscription year. Follow-up turns are NOT capped (Haiku,
+ * cheap). Admins bypass.
+ */
+export const PAID_FAIR_USE_CONVERSATION_LIMIT = 20;
+
+/** Rolling window for PAID_FAIR_USE_CONVERSATION_LIMIT. */
+export const PAID_FAIR_USE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Hard COST budget per paid account per rolling year — the "this customer can
+ * never cost us money" ceiling, measured against the actual llm_usage cost
+ * analytics (see lib/analytics/llm-cost.ts).
+ *
+ * Economics: premium is 39 SEK/yr; Stripe fees eat ~2.4 SEK → ~36.6 SEK net.
+ * Budget 35 SEK guarantees ≥ ~1.5 SEK margin per subscriber. Converted to USD
+ * (costUsd is what we store) at a deliberately WEAK-krona guard rate, so an FX
+ * swing can't push a capped account past 35 SEK.
+ *
+ * ~35 SEK / 11 ≈ $3.18 ≈ ~90 chats/yr at the current ~$0.035/chat.
+ */
+export const PAID_ANNUAL_COST_BUDGET_SEK = 35;
+/** Conservative (weak-krona) SEK per USD for the budget conversion. */
+export const SEK_PER_USD_GUARD = 11;
+export const PAID_ANNUAL_COST_BUDGET_USD =
+  PAID_ANNUAL_COST_BUDGET_SEK / SEK_PER_USD_GUARD;
+
+/**
+ * Rolling window for the cost budget. When Stripe lands, anchor this to the
+ * actual subscription period (renewal resets the budget) instead.
+ */
+export const PAID_COST_WINDOW_MS = 365 * 24 * 60 * 60 * 1000;
 
 export type ConversationStatus =
   | "lake_pending"
@@ -234,6 +272,17 @@ export type AskHandlerDeps = {
    * Optional so tests without the abuse guard keep working; absent = no gate.
    */
   countRecentAnonConversationsByIp?(ipHash: string): Promise<number>;
+  /**
+   * Conversations created by this user within PAID_FAIR_USE_WINDOW_MS —
+   * backs the paid fair-use burst cap. Optional: absent = no gate.
+   */
+  countRecentConversationsByUser?(userId: string): Promise<number>;
+  /**
+   * Summed llm_usage costUsd attributed to this user's conversations within
+   * PAID_COST_WINDOW_MS — backs the annual cost budget. Optional: absent =
+   * no gate.
+   */
+  getRecentLlmCostUsdByUser?(userId: string): Promise<number>;
   transitionConversation(opts: {
     id: string;
     status: Extract<ConversationStatus, "resolved" | "unresolved_area">;
@@ -257,6 +306,8 @@ export type AskHandlerDeps = {
 export type AskResult =
   | { type: "register_to_continue"; text: string }
   | { type: "chat_limit"; text: string }
+  /** Paid fair-use cap hit — the route maps this to HTTP 429. */
+  | { type: "rate_limited"; text: string }
   | { type: "topic_refused"; text: string }
   | { type: "lake_unresolved"; text: string }
   | { type: "out_of_credits"; text: string }
@@ -457,6 +508,36 @@ export async function handleAsk(
         }
         await deps.emit({ type: "out_of_credits" });
         return { type: "out_of_credits", text: OUT_OF_CREDITS_MESSAGE };
+      }
+
+      // Paid fair-use gates: "unlimited" is fair-use limited (ToS §3). Both
+      // fire on NEW conversations only — the cost driver is chats started
+      // (one Sonnet answer each), not follow-up turns.
+      if (creditUser.isPaid) {
+        // Burst cap: short lock, protects the annual budget from a runaway.
+        if (deps.countRecentConversationsByUser) {
+          const recent = await deps.countRecentConversationsByUser(userId);
+          if (recent >= PAID_FAIR_USE_CONVERSATION_LIMIT) {
+            await deps.emit({
+              type: "fair_use_limit",
+              payload: { userId, reason: "burst", recent },
+            });
+            return { type: "rate_limited", text: FAIR_USE_MESSAGE };
+          }
+        }
+
+        // Cost budget: the account's actual tracked LLM spend must never
+        // exceed what the subscription earns (35 SEK/yr of the 39 SEK price).
+        if (deps.getRecentLlmCostUsdByUser) {
+          const costUsd = await deps.getRecentLlmCostUsdByUser(userId);
+          if (costUsd >= PAID_ANNUAL_COST_BUDGET_USD) {
+            await deps.emit({
+              type: "fair_use_limit",
+              payload: { userId, reason: "cost_budget", costUsd },
+            });
+            return { type: "rate_limited", text: COST_BUDGET_MESSAGE };
+          }
+        }
       }
     }
 

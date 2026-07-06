@@ -37,7 +37,12 @@ import type {
   AskResult,
   ConversationStatus,
 } from "@/lib/chat/ask-handler";
-import { ANON_IP_WINDOW_MS, handleAsk } from "@/lib/chat/ask-handler";
+import {
+  ANON_IP_WINDOW_MS,
+  handleAsk,
+  PAID_COST_WINDOW_MS,
+  PAID_FAIR_USE_WINDOW_MS,
+} from "@/lib/chat/ask-handler";
 import { signClaimToken, verifyClaimToken } from "@/lib/chat/claim-cookie";
 import { extract } from "@/lib/chat/extractor";
 import {
@@ -62,7 +67,12 @@ import { notifyDiscord } from "@/lib/notify/discord";
 import { buildSignals } from "@/lib/signals/build";
 import { buildAreaSignals } from "@/lib/signals/build-area";
 import { db } from "@/shared/db/client";
-import { conversations, messages, users } from "@/shared/db/schema";
+import {
+  analyticsEvents,
+  conversations,
+  messages,
+  users,
+} from "@/shared/db/schema";
 import { env } from "@/shared/env";
 
 const CLAIM_TOKEN_COOKIE = "fiska_claim";
@@ -349,6 +359,34 @@ function buildDeps(): AskHandlerDeps {
         );
       return rows[0]?.n ?? 0;
     },
+    countRecentConversationsByUser: async (userId) => {
+      const since = new Date(Date.now() - PAID_FAIR_USE_WINDOW_MS);
+      const rows = await db
+        .select({ n: count() })
+        .from(conversations)
+        .where(
+          and(
+            eq(conversations.userId, userId),
+            gt(conversations.createdAt, since),
+          ),
+        );
+      return rows[0]?.n ?? 0;
+    },
+    getRecentLlmCostUsdByUser: async (userId) => {
+      // Sum of llm_usage costUsd attributed via conversations — the annual
+      // cost-budget gate input. Unpriced rows (costUsd null) sum as 0 here;
+      // the dashboard's "Unpriced calls" tile alerts on those separately.
+      const since = new Date(Date.now() - PAID_COST_WINDOW_MS);
+      const rows = await db.execute<{ cost: number | null }>(sql`
+        SELECT sum((e.payload->>'costUsd')::float) AS cost
+        FROM ${analyticsEvents} e
+        JOIN ${conversations} c ON c.id = e.conversation_id
+        WHERE e.type = 'llm_usage'
+          AND c.user_id = ${userId}
+          AND e.created_at >= ${since.toISOString()}
+      `);
+      return rows[0]?.cost ?? 0;
+    },
     transitionConversation: async ({
       id,
       status,
@@ -620,10 +658,7 @@ export async function POST(request: Request): Promise<Response> {
 
   // Non-stream gate responses — structured JSON
   const { type, text } = result;
-  return Response.json(
-    { type, text },
-    {
-      status: type === "out_of_credits" ? 402 : 200,
-    },
-  );
+  const status =
+    type === "out_of_credits" ? 402 : type === "rate_limited" ? 429 : 200;
+  return Response.json({ type, text }, { status });
 }

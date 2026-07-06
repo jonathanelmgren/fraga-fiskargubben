@@ -40,8 +40,14 @@ export const users = pgTable("user", {
     .notNull(),
   /** Lifetime count of Credits spent (new conversations with fresh data fetches). ADR-0004. */
   creditsUsed: integer("credits_used").default(0).notNull(),
-  /** Stub paid flag — true lifts the 3-credit free cap. Real payment deferred. ADR-0004. */
+  /**
+   * True lifts the 3-credit free cap (ADR-0004). Kept in sync with the Stripe
+   * subscription lifecycle by the @better-auth/stripe hooks in src/lib/auth.ts;
+   * admins may still flip it manually (dev accounts, comps).
+   */
   isPaid: boolean("is_paid").default(false).notNull(),
+  /** Stripe customer id — set by @better-auth/stripe on first checkout. */
+  stripeCustomerId: text("stripe_customer_id"),
   /**
    * HMAC-SHA256 of the client IP at registration (keyed with
    * BETTER_AUTH_SECRET) — the signup abuse guard counts accounts per hash
@@ -102,6 +108,32 @@ export const verifications = pgTable("verification", {
   expiresAt: timestamp("expires_at").notNull(),
   createdAt: timestamp("created_at").$defaultFn(() => new Date()),
   updatedAt: timestamp("updated_at").$defaultFn(() => new Date()),
+});
+
+/**
+ * Stripe subscription state, owned by @better-auth/stripe (model name
+ * "subscription" in the drizzle adapter map). One row per checkout; the
+ * plugin enforces at most one active/trialing row per referenceId.
+ * referenceId is the user id for this app (no organizations).
+ */
+export const subscriptions = pgTable("subscription", {
+  id: text("id").primaryKey(),
+  plan: text("plan").notNull(),
+  referenceId: text("reference_id").notNull(),
+  stripeCustomerId: text("stripe_customer_id"),
+  stripeSubscriptionId: text("stripe_subscription_id"),
+  status: text("status").default("incomplete").notNull(),
+  periodStart: timestamp("period_start"),
+  periodEnd: timestamp("period_end"),
+  cancelAtPeriodEnd: boolean("cancel_at_period_end").default(false),
+  cancelAt: timestamp("cancel_at"),
+  canceledAt: timestamp("canceled_at"),
+  endedAt: timestamp("ended_at"),
+  seats: integer("seats"),
+  trialStart: timestamp("trial_start"),
+  trialEnd: timestamp("trial_end"),
+  billingInterval: text("billing_interval"),
+  stripeScheduleId: text("stripe_schedule_id"),
 });
 
 export const lakes = pgTable("lakes", {

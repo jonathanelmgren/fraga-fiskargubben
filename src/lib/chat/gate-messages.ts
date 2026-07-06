@@ -54,6 +54,21 @@ export function lakeAmbiguousMessage(
 export const LAKE_CLARIFY_FALLBACK =
   "Vilket vatten gäller det? Säg namnet och kommunen eller närmaste ort så hänger jag med.";
 
+/**
+ * Premium fair-use cap hit (too many NEW chats in the rolling window) —
+ * plain system alert, not persona voice. "Unlimited" is fair-use limited
+ * per the terms of service (§3).
+ */
+export const FAIR_USE_MESSAGE =
+  "Du har startat ovanligt många nya chattar det senaste dygnet. Även premium har en övre gräns för skälig användning. Försök igen om några timmar.";
+
+/**
+ * Paid annual cost budget exhausted (ToS §3 fair use) — plain system alert.
+ * Deliberately vague about the mechanism; points to support.
+ */
+export const COST_BUDGET_MESSAGE =
+  "Du har nått användningstaket för din prenumerationsperiod. Hör av dig till kontakt@fragafiskargubben.se om du behöver mer.";
+
 /** Free credits exhausted. */
 export const OUT_OF_CREDITS_MESSAGE =
   "Dina gratisfrågor är slut för den här gången. Uppgradera så fiskar vi vidare.";
