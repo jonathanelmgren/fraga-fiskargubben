@@ -9,6 +9,7 @@ import remarkGfm from "remark-gfm";
 import { PENDING_PROMPT_KEY, type PendingPrompt } from "@/app/hero-prompt";
 import gubbeIcon from "@/assets/gubbe-icon.png";
 import { LocationTip } from "@/components/location-tip";
+import { track } from "@/lib/analytics";
 import { useSession } from "@/lib/auth-client";
 import { useGeolocation } from "@/lib/hooks/use-geolocation";
 import { readShareLocationCookie, writeTosCookie } from "@/lib/prefs-cookies";
@@ -760,6 +761,9 @@ export default function Chat({
       setThinking(true);
       setThinkingWithPhrases(!conversationId);
       forceScroll();
+      track("Chat Message", {
+        conversation: conversationId ? "existing" : "new",
+      });
 
       // E2: hoisted so the catch can finalize or RECOVER a dangling partial
       // bubble (resumable streams — re-attach instead of dropping the answer).

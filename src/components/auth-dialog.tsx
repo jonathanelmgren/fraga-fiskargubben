@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { GoogleButton, MicrosoftButton } from "@/app/social-buttons";
+import { track } from "@/lib/analytics";
 import { signIn, signUp } from "@/lib/auth-client";
 
 type Mode = "login" | "signup";
@@ -93,10 +94,12 @@ export function AuthDialog({
       return;
     }
     if (mode === "signup") {
+      track("Signup", { method: "email" });
       // No session yet — the account must be verified via the mail link.
       setVerifySent(true);
       return;
     }
+    track("Login", { method: "email" });
     onClose();
     router.refresh();
   }

@@ -1,7 +1,8 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { track } from "@/lib/analytics";
 import { authClient } from "@/lib/auth-client";
 
 /**
@@ -25,13 +26,29 @@ export function ProfileActions({
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
+  // Stripe Checkout returns to /profile?upgraded=1 on success — count the
+  // conversion once, then strip the marker so refreshes don't double-fire.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("upgraded") !== "1") return;
+    track("Purchase");
+    params.delete("upgraded");
+    const qs = params.toString();
+    window.history.replaceState(
+      null,
+      "",
+      window.location.pathname + (qs ? `?${qs}` : ""),
+    );
+  }, []);
+
   /** Redirects to Stripe Checkout; only returns here on error. */
   async function upgrade() {
     setBillingBusy(true);
     setBillingError(null);
+    track("Checkout Started");
     const { data, error } = await authClient.subscription.upgrade({
       plan: "premium",
-      successUrl: "/profile",
+      successUrl: "/profile?upgraded=1",
       cancelUrl: "/profile",
     });
     if (error) {

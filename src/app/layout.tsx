@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import Script from "next/script";
 import { SiteHeader } from "@/components/site-header";
 import "./globals.css";
 
@@ -32,6 +33,21 @@ export default function RootLayout({
       <body className="flex min-h-dvh flex-col">
         <SiteHeader />
         {children}
+        {/* Plausible (self-hosted). Production only — the script also ignores
+            localhost by itself, so local prod builds stay silent. The inline
+            stub queues track() calls made before the script loads. */}
+        {process.env.NODE_ENV === "production" && (
+          <>
+            <Script
+              defer
+              data-domain="fragafiskargubben.se"
+              src="https://analytics.mysterylane.se/js/script.js"
+            />
+            <Script id="plausible-stub">
+              {`window.plausible = window.plausible || function() { (window.plausible.q = window.plausible.q || []).push(arguments) }`}
+            </Script>
+          </>
+        )}
       </body>
     </html>
   );

@@ -1,12 +1,15 @@
 "use client";
 
 import { useState } from "react";
+import { track } from "@/lib/analytics";
 import { signIn } from "@/lib/auth-client";
 
 function useSocial(provider: "google" | "microsoft") {
   const [pending, setPending] = useState(false);
   const start = async () => {
     setPending(true);
+    // OAuth redirect leaves the page — signup vs login is unknown here.
+    track("Login", { method: provider });
     await signIn.social({ provider, callbackURL: "/" });
   };
   return { pending, start };

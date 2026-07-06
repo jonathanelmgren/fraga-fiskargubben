@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { LocationTip } from "@/components/location-tip";
+import { track } from "@/lib/analytics";
 import { useGeolocation } from "@/lib/hooks/use-geolocation";
 
 /** sessionStorage handoff key: landing → /ask (chat auto-submits it). */
@@ -40,6 +41,7 @@ export function HeroPrompt({
       text: trimmed,
       ...(coords ? { location: coords } : {}),
     };
+    track("Hero Prompt", { location: !!coords });
     try {
       sessionStorage.setItem(PENDING_PROMPT_KEY, JSON.stringify(payload));
     } catch {
@@ -52,18 +54,27 @@ export function HeroPrompt({
     <div className="w-full max-w-xl">
       <form
         onSubmit={submit}
-        className="flex items-center gap-2 rounded-2xl border border-border bg-card p-2 shadow-sm focus-within:ring-2 focus-within:ring-ring/50"
+        className="flex items-end gap-2 rounded-2xl border border-border bg-card p-2 shadow-sm focus-within:ring-2 focus-within:ring-ring/50"
       >
         <label htmlFor="hero-prompt" className="sr-only">
           Fråga Fiskargubben
         </label>
-        <input
+        <textarea
           id="hero-prompt"
-          type="text"
           value={text}
           onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              submit();
+            }
+          }}
           placeholder="Jag ska fiska i Tolken i kväll kl 19…"
-          className="min-w-0 flex-1 bg-transparent px-3 py-2.5 text-[15px] outline-none placeholder:text-muted-foreground/60"
+          rows={1}
+          className="min-w-0 flex-1 resize-none bg-transparent px-3 py-2.5 text-[15px] leading-relaxed outline-none placeholder:text-muted-foreground/60 max-h-40 overflow-y-auto"
+          style={{
+            fieldSizing: "content" as React.CSSProperties["fieldSizing"],
+          }}
         />
         <button
           type="submit"
