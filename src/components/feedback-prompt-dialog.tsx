@@ -41,17 +41,24 @@ export function FeedbackPromptDialog() {
   }, []);
 
   const close = useCallback(() => {
-    if (!actedRef.current) send("dismissed").catch(() => {});
-    setOpen(false);
+    // No-op when already closed — prevents duplicate "dismissed" from stale listeners.
+    setOpen((prev) => {
+      if (!prev) return prev;
+      if (!actedRef.current) send("dismissed").catch(() => {});
+      return false;
+    });
   }, []);
 
   useEffect(() => {
+    // Only attach when the dialog is open — detaches on close so Escape
+    // presses after dismissal never re-fire "dismissed".
+    if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") close();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [close]);
+  }, [open, close]);
 
   if (!open) return null;
 

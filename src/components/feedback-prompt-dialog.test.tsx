@@ -78,6 +78,22 @@ describe("FeedbackPromptDialog", () => {
     );
   });
 
+  it("does not fire dismissed again when Escape is pressed after dialog is closed", async () => {
+    render(<FeedbackPromptDialog />);
+    // Close via X button — should fire exactly one "dismissed".
+    fireEvent.click(screen.getAllByLabelText("Stäng")[1]);
+    await waitFor(() =>
+      expect(sentActions()).toEqual([{ action: "shown" }, { action: "dismissed" }]),
+    );
+    // Dialog is closed; subsequent Escape presses must not leak another POST.
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(window, { key: "Escape" });
+    // Allow a tick for any errant async POST to land.
+    await new Promise((r) => setTimeout(r, 0));
+    const dismissed = sentActions().filter((a) => a.action === "dismissed");
+    expect(dismissed).toHaveLength(1);
+  });
+
   it("keeps the form and shows an error when submit fails", async () => {
     fetchMock.mockImplementation(async (_url, init) => {
       const body = JSON.parse((init as RequestInit).body as string);

@@ -4,7 +4,7 @@
  * Two channels via two webhook URLs (create in Discord: channel settings →
  * Integrations → Webhooks → copy URL):
  *   DISCORD_WEBHOOK_ALERTS  — server errors (instrumentation + /api/ask)
- *   DISCORD_WEBHOOK_SIGNUPS — new registrations
+ *   DISCORD_WEBHOOK_SIGNUPS — new registrations (feedback, signups)
  *
  * Unset env → silent no-op, so dev/CI never depends on Discord. Reads
  * process.env directly (not @/shared/env) so instrumentation.ts can import
@@ -12,6 +12,9 @@
  *
  * Fire-and-forget by design: a Discord outage must never break a request.
  * Callers that cannot await (hooks) should still .catch(() => {}).
+ *
+ * allowed_mentions is always suppressed — content is user-supplied and must
+ * never resolve @everyone/@here/role mentions in the channel.
  */
 
 const DISCORD_TIMEOUT_MS = 5000;
@@ -38,7 +41,11 @@ export async function notifyDiscord(
     await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content: content.slice(0, MAX_CONTENT_LENGTH) }),
+      // allowed_mentions: user-supplied content must never resolve mentions.
+      body: JSON.stringify({
+        content: content.slice(0, MAX_CONTENT_LENGTH),
+        allowed_mentions: { parse: [] },
+      }),
       signal: AbortSignal.timeout(DISCORD_TIMEOUT_MS),
     });
   } catch (err) {

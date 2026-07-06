@@ -65,7 +65,9 @@ export async function POST(request: Request): Promise<Response> {
       if (text.length === 0 || text.length > MAX_MESSAGE_LENGTH) {
         return Response.json({ error: "invalid message" }, { status: 400 });
       }
-      void emit({
+      // Awaited so the analytics row (source of truth for feedback text) is
+      // written before the response is returned. emit is non-fatal internally.
+      await emit({
         type: "feedback_prompt_submitted",
         payload: { userId, chatCount, message: text },
       });
