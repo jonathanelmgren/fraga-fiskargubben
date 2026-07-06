@@ -26,6 +26,17 @@ const nextConfig: NextConfig = {
           },
         ],
       },
+      {
+        // Service workers update lazily by default (up to 24h HTTP cache);
+        // no-cache makes every page load check for a new SW immediately.
+        source: "/sw.js",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "no-cache, no-store, must-revalidate",
+          },
+        ],
+      },
     ];
   },
 };

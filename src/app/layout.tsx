@@ -1,6 +1,8 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import Script from "next/script";
+import { IosInstallHint } from "@/components/ios-install-hint";
+import { ServiceWorkerRegistration } from "@/components/service-worker-registration";
 import { SiteHeader } from "@/components/site-header";
 import "./globals.css";
 
@@ -17,6 +19,11 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   metadataBase: new URL("https://fragafiskargubben.se"),
   manifest: "/site.webmanifest",
+  appleWebApp: {
+    capable: true,
+    title: "Fiskargubben",
+    statusBarStyle: "default",
+  },
   title: "Fråga Fiskargubben",
   description:
     "Fiskeråd med koll på vädret. Fråga gubben innan du kastar, han kollar väder, vattentemp och vilka arter som rör sig.",
@@ -37,6 +44,12 @@ export const metadata: Metadata = {
   },
 };
 
+export const viewport: Viewport = {
+  // Matches theme_color in site.webmanifest. Single value: the app has no
+  // dark mode wired up (the .dark tokens in globals.css are never applied).
+  themeColor: "#22403a",
+};
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -50,6 +63,8 @@ export default function RootLayout({
       <body className="flex min-h-dvh flex-col">
         <SiteHeader />
         {children}
+        <ServiceWorkerRegistration />
+        <IosInstallHint />
         {/* Plausible (self-hosted). Production only — the script also ignores
             localhost by itself, so local prod builds stay silent. The inline
             stub queues track() calls made before the script loads. */}
