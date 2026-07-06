@@ -17,12 +17,9 @@ import { notifyDiscord } from "@/lib/notify/discord";
  * applied here. Production only: dev keeps the explicit `pnpm db:migrate`
  * workflow (compose.yml), and a dev boot must not require Postgres to be up.
  *
- * A failed migration exits the process on purpose: serving with a stale
- * schema is exactly the failure mode this exists to prevent (queries against
- * columns that don't exist yet). Throwing is not enough — Next logs "Failed
- * to prepare server" but keeps the already-bound listener alive, serving 500
- * on every request. exit(1) instead kills the container so the Docker
- * restart policy retries, which also rides out a transiently unready DB.
+ * The Node-only implementation (process.exit on failure) lives in
+ * instrumentation-node.ts behind this dynamic import, so the Edge bundle
+ * never contains Node.js APIs.
  */
 export async function register() {
   if (
@@ -32,21 +29,8 @@ export async function register() {
     return;
   }
 
-  const { runMigrations } = await import("@/shared/db/migrate");
-  try {
-    await runMigrations();
-    console.log("[instrumentation] drizzle migrations applied");
-  } catch (err) {
-    console.error("[instrumentation] migration failed, exiting", err);
-    await notifyDiscord(
-      "alerts",
-      [
-        "🚨 **Migrations misslyckades vid serverstart** — servern startar inte",
-        `\`\`\`${err instanceof Error ? err.message : String(err)}\`\`\``,
-      ].join("\n"),
-    );
-    process.exit(1);
-  }
+  const { runBootMigrations } = await import("./instrumentation-node");
+  await runBootMigrations();
 }
 
 export const onRequestError: Instrumentation.onRequestError = async (
