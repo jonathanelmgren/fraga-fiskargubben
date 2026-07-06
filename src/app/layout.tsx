@@ -27,7 +27,7 @@ export default function RootLayout({
   return (
     <html
       lang="sv"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased isolate`}
     >
       <body className="flex min-h-dvh flex-col">
         <SiteHeader />
