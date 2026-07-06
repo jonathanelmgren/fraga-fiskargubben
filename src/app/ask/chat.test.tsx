@@ -19,7 +19,7 @@
 
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import Chat from "./chat";
+import Chat, { pageReload } from "./chat";
 
 // ---------------------------------------------------------------------------
 // Mock next/image (jsdom can't load images)
@@ -307,6 +307,100 @@ describe("Chat component", () => {
     expect(document.body.textContent).toContain("Abborren står djupt.");
     const strip = document.querySelector('[aria-label="Fångad data"]');
     expect(strip?.textContent).toContain("Vatten");
+  });
+
+  it("12. re-attaches to the stream after a broken read instead of showing an error", async () => {
+    // POST stream delivers "Första " then breaks (phone locked / net blip).
+    // pull-based: controller.error() in start() would DISCARD the queued
+    // chunk (spec: erroring clears the queue) — deliver first, break second.
+    const encoder = new TextEncoder();
+    let pullCount = 0;
+    const broken = new ReadableStream({
+      pull(controller) {
+        if (pullCount++ === 0) {
+          controller.enqueue(encoder.encode("Första "));
+        } else {
+          controller.error(new Error("connection lost"));
+        }
+      },
+    });
+    const fetchMock = vi
+      .spyOn(global, "fetch")
+      .mockResolvedValueOnce(
+        new Response(broken, {
+          status: 200,
+          headers: {
+            "Content-Type": "text/plain; charset=utf-8",
+            "X-Conversation-Id": "11111111-1111-4111-8111-111111111111",
+          },
+        }),
+      )
+      // Re-attach GET returns the remainder.
+      .mockResolvedValueOnce(makeStreamResponse("resten."));
+
+    render(<Chat initialTosAccepted />);
+    await typeAndSubmit("Tips för abborre?");
+
+    await waitFor(
+      () => {
+        expect(screen.queryByText(/Första resten\./)).not.toBeNull();
+      },
+      { timeout: 4000 },
+    );
+
+    // Resumed from the already-rendered offset ("Första " = 7 UTF-16 units)…
+    const reattachUrl = fetchMock.mock.calls[1][0] as string;
+    expect(reattachUrl).toContain("/api/ask/stream?");
+    expect(reattachUrl).toContain("offset=7");
+    // …and no error bubble.
+    expect(screen.queryByText(/Något gick snett/)).toBeNull();
+  }, 6000);
+
+  it("13. attaches on mount when the server reports an active stream", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValueOnce(
+      makeStreamResponse("Svaret som genererades medan du var borta."),
+    );
+
+    render(
+      <Chat
+        initialTosAccepted
+        conversationId="11111111-1111-4111-8111-111111111111"
+        initialActiveStream
+        initialMessages={[{ role: "user", text: "Vad biter?", id: "m1" }]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.queryByText(/Svaret som genererades medan du var borta\./),
+      ).not.toBeNull();
+    });
+    const bubble = screen
+      .getByText(/Svaret som genererades/)
+      .closest(".chat-bubble-assistant");
+    expect(bubble).toBeTruthy();
+  });
+
+  it("14. reloads the page when the mount attach finds the stream gone (404)", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValueOnce(
+      makeJsonResponse({ error: "no active stream" }, 404),
+    );
+    const reload = vi
+      .spyOn(pageReload, "trigger")
+      .mockImplementation(() => {});
+
+    render(
+      <Chat
+        initialTosAccepted
+        conversationId="11111111-1111-4111-8111-111111111111"
+        initialActiveStream
+        initialMessages={[{ role: "user", text: "Vad biter?", id: "m1" }]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(reload).toHaveBeenCalled();
+    });
   });
 
   it("9. terms gate blocks input until accepted, then unlocks", async () => {

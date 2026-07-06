@@ -392,6 +392,90 @@ function nextId() {
   return `msg-${crypto.randomUUID()}`;
 }
 
+// ---------------------------------------------------------------------------
+// Resumable streams — client side (see resumable-chat-streams design spec).
+// Generation lives in the server's stream registry; the POST body and the
+// GET /api/ask/stream re-attach endpoint are both just subscribers. If a read
+// breaks (phone locked, network blip), we re-attach from the offset we have
+// instead of dropping the answer.
+// ---------------------------------------------------------------------------
+
+/** Offset in UTF-16 code units — the same unit the server slices on. */
+type StreamProgress = { offset: number };
+
+type DanglingStream = {
+  conversationId: string;
+  msgId: string;
+  progress: StreamProgress;
+};
+
+const REATTACH_DELAYS_MS = [1000, 2000, 4000];
+
+const GENERIC_STREAM_ERROR = "Något gick snett. Försök igen om ett ögonblick.";
+
+/**
+ * Drain a text/plain body into the chat via applyChunk, advancing progress so
+ * a later re-attach knows where to resume. Throws on a broken read.
+ */
+async function pumpStream(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  progress: StreamProgress,
+  applyChunk: (chunk: string, done: boolean) => void,
+): Promise<void> {
+  const decoder = new TextDecoder();
+  let done = false;
+  while (!done) {
+    const { value, done: readerDone } = await reader.read();
+    done = readerDone;
+    const chunk = value ? decoder.decode(value, { stream: !done }) : "";
+    if (chunk) progress.offset += chunk.length;
+    if (chunk || done) applyChunk(chunk, done);
+  }
+}
+
+/**
+ * Re-attach to the conversation's in-flight stream from the current offset.
+ * "gone" = the server has no stream entry (finished long ago, or restarted) —
+ * the DB view is the fallback. "failed" = transient, worth retrying.
+ */
+async function attachToStream(
+  conversationId: string,
+  progress: StreamProgress,
+  applyChunk: (chunk: string, done: boolean) => void,
+): Promise<"done" | "gone" | "failed"> {
+  let response: Response;
+  try {
+    response = await fetch(
+      `/api/ask/stream?conversationId=${encodeURIComponent(conversationId)}&offset=${progress.offset}`,
+    );
+  } catch {
+    return "failed";
+  }
+  if (response.status === 404) return "gone";
+  const reader = response.ok ? response.body?.getReader() : undefined;
+  if (!reader) return "failed";
+  try {
+    await pumpStream(reader, progress, applyChunk);
+    return "done";
+  } catch {
+    return "failed";
+  }
+}
+
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Indirection so tests can stub the full-page reload (jsdom's
+ * window.location.reload is non-configurable and not implemented).
+ */
+export const pageReload = {
+  trigger() {
+    window.location.reload();
+  },
+};
+
 function parseBadgesHeader(value: string | null): Badges | null {
   if (!value) return null;
   try {
@@ -409,6 +493,11 @@ export type ChatProps = {
   initialBadges?: Badges | null;
   /** Server-loaded frozen state (chat-turn limit already hit). */
   initialFrozen?: boolean;
+  /**
+   * The server's stream registry is still generating this conversation's
+   * reply (page loaded mid-generation) — attach to it on mount.
+   */
+  initialActiveStream?: boolean;
   /**
    * New-chat view (/ask): pick up the landing hero's pending prompt from
    * sessionStorage and auto-submit it on mount.
@@ -448,6 +537,7 @@ export default function Chat({
   initialMessages,
   initialBadges,
   initialFrozen = false,
+  initialActiveStream = false,
   autoSubmitPending = false,
   initialTosAccepted = false,
   initialTosPreviouslyAccepted = false,
@@ -512,6 +602,135 @@ export default function Chat({
 
   const isDisabled = streaming || thinking || frozen || !tosAccepted;
 
+  // A broken stream parked while the tab was hidden; resumed on visibility.
+  const danglingRef = useRef<DanglingStream | null>(null);
+
+  /** Chunk applier bound to one assistant bubble (matched by id, not position). */
+  const applyStreamChunk = useCallback(
+    (msgId: string) => (chunk: string, done: boolean) => {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.role === "assistant" && m.id === msgId
+            ? { ...m, text: m.text + chunk, streaming: !done }
+            : m,
+        ),
+      );
+      forceScroll();
+    },
+    [forceScroll],
+  );
+
+  /**
+   * Try to re-attach a broken stream with backoff. Hidden tab → park and let
+   * the visibilitychange listener resume (mobile browsers freeze fetches).
+   * "gone" → the registry evicted the entry; the DB has the persisted turns,
+   * so reload the server-rendered conversation. Exhausted → error bubble.
+   */
+  const recoverStream = useCallback(
+    async (dangling: DanglingStream) => {
+      const { conversationId: convId, msgId, progress } = dangling;
+      const apply = applyStreamChunk(msgId);
+      for (const delay of REATTACH_DELAYS_MS) {
+        if (document.hidden) {
+          danglingRef.current = dangling;
+          return;
+        }
+        await sleep(delay);
+        const result = await attachToStream(convId, progress, apply);
+        if (result === "done") {
+          setStreaming(false);
+          if (session) router.refresh();
+          return;
+        }
+        if (result === "gone") {
+          pageReload.trigger();
+          return;
+        }
+      }
+      if (document.hidden) {
+        danglingRef.current = dangling;
+        return;
+      }
+      setStreaming(false);
+      setMessages((prev) => [
+        ...prev.map((m) =>
+          m.role === "assistant" && m.id === msgId
+            ? { ...m, streaming: false }
+            : m,
+        ),
+        { role: "assistant", text: GENERIC_STREAM_ERROR, id: nextId() },
+      ]);
+      forceScroll();
+    },
+    [applyStreamChunk, forceScroll, router, session],
+  );
+
+  // Phone unlocked / tab foregrounded again → resume a parked stream.
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState !== "visible") return;
+      const dangling = danglingRef.current;
+      if (!dangling) return;
+      danglingRef.current = null;
+      void recoverStream(dangling);
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () =>
+      document.removeEventListener("visibilitychange", onVisibility);
+  }, [recoverStream]);
+
+  // Page loaded while the server was still generating (initialActiveStream):
+  // append an empty streaming bubble and attach from offset 0. The user turn
+  // is already in initialMessages (persisted up-front); the assistant turn is
+  // not yet in the DB, so nothing duplicates.
+  const mountAttachRef = useRef(false);
+  useEffect(() => {
+    if (
+      !initialActiveStream ||
+      !initialConversationId ||
+      mountAttachRef.current
+    ) {
+      return;
+    }
+    mountAttachRef.current = true;
+    const msgId = nextId();
+    setMessages((prev) => [
+      ...prev,
+      { role: "assistant", text: "", streaming: true, id: msgId },
+    ]);
+    setStreaming(true);
+    const progress: StreamProgress = { offset: 0 };
+    void (async () => {
+      const result = await attachToStream(
+        initialConversationId,
+        progress,
+        applyStreamChunk(msgId),
+      );
+      if (result === "done") {
+        setStreaming(false);
+        if (session) router.refresh();
+        return;
+      }
+      if (result === "gone") {
+        // Settled between SSR and mount — the DB now has the full turn.
+        pageReload.trigger();
+        return;
+      }
+      await recoverStream({
+        conversationId: initialConversationId,
+        msgId,
+        progress,
+      });
+    })();
+  }, [
+    initialActiveStream,
+    initialConversationId,
+    applyStreamChunk,
+    recoverStream,
+    router,
+    session,
+  ]);
+
   // One-time transfer: prefs accepted anonymously (cookies) get mirrored to
   // the account after registration/login, so they survive a new browser.
   const prefsSyncedRef = useRef(false);
@@ -543,9 +762,12 @@ export default function Chat({
       setThinkingWithPhrases(!conversationId);
       forceScroll();
 
-      // E2: hoisted so the catch can finalize a dangling partial bubble.
+      // E2: hoisted so the catch can finalize or RECOVER a dangling partial
+      // bubble (resumable streams — re-attach instead of dropping the answer).
       let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
       let streamingMsgId: string | null = null;
+      let recoveryConvId: string | null = conversationId;
+      const progress: StreamProgress = { offset: 0 };
 
       // Landing handoff wins; otherwise the chat's own geo toggle, but only
       // for the first message (the server binds coords at creation).
@@ -567,6 +789,7 @@ export default function Chat({
 
         // The conversation id now arrives on stream AND clarify responses.
         const convId = response.headers.get("X-Conversation-Id");
+        if (convId) recoveryConvId = convId;
         if (convId && !conversationId) {
           setConversationId(convId);
           // Make refresh/share land on the persisted conversation.
@@ -624,7 +847,6 @@ export default function Chat({
           forceScroll();
 
           const reader = response.body?.getReader();
-          const decoder = new TextDecoder();
 
           if (!reader) {
             setStreaming(false);
@@ -632,38 +854,11 @@ export default function Chat({
           }
           activeReader = reader;
 
-          let done = false;
-          while (!done) {
-            const { value, done: readerDone } = await reader.read();
-            done = readerDone;
-            if (value) {
-              // Body is the visible answer as plain UTF-8 (server strips
-              // thinking + JSON frames). Append verbatim; do NOT parse as SSE.
-              const chunk = decoder.decode(value, { stream: !done });
-              setMessages((prev) => {
-                const updated = [...prev];
-                const last = updated[updated.length - 1];
-                if (last?.role === "assistant" && last.id === assistantMsgId) {
-                  updated[updated.length - 1] = {
-                    ...last,
-                    text: last.text + chunk,
-                    streaming: !done,
-                  };
-                }
-                return updated;
-              });
-              forceScroll();
-            }
-          }
+          // Body is the visible answer as plain UTF-8 (server strips thinking
+          // + JSON frames). Append verbatim; do NOT parse as SSE. progress
+          // tracks the offset a re-attach would resume from.
+          await pumpStream(reader, progress, applyStreamChunk(assistantMsgId));
 
-          setMessages((prev) => {
-            const updated = [...prev];
-            const last = updated[updated.length - 1];
-            if (last?.role === "assistant" && last.id === assistantMsgId) {
-              updated[updated.length - 1] = { ...last, streaming: false };
-            }
-            return updated;
-          });
           activeReader = null;
           streamingMsgId = null;
           setStreaming(false);
@@ -707,7 +902,6 @@ export default function Chat({
         }
       } catch {
         setThinking(false);
-        setStreaming(false);
 
         if (activeReader) {
           try {
@@ -716,29 +910,46 @@ export default function Chat({
             // reader already errored/closed — nothing to cancel.
           }
         }
-        if (streamingMsgId) {
-          const danglingId = streamingMsgId;
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.role === "assistant" && m.id === danglingId
-                ? { ...m, streaming: false }
-                : m,
-            ),
-          );
+
+        // Resumable streams: a broken read mid-answer is NOT an error — the
+        // server keeps generating. Re-attach from the offset we already have
+        // (or park it for the visibilitychange listener if we're hidden).
+        // streaming stays true so the input remains locked meanwhile.
+        if (streamingMsgId && recoveryConvId) {
+          const dangling: DanglingStream = {
+            conversationId: recoveryConvId,
+            msgId: streamingMsgId,
+            progress,
+          };
+          if (document.hidden) {
+            danglingRef.current = dangling;
+          } else {
+            void recoverStream(dangling);
+          }
+          return;
         }
 
+        setStreaming(false);
         setMessages((prev) => [
           ...prev,
           {
             role: "assistant",
-            text: "Något gick snett. Försök igen om ett ögonblick.",
+            text: GENERIC_STREAM_ERROR,
             id: nextId(),
           },
         ]);
         forceScroll();
       }
     },
-    [conversationId, coords, forceScroll, router, session],
+    [
+      conversationId,
+      coords,
+      forceScroll,
+      router,
+      session,
+      applyStreamChunk,
+      recoverStream,
+    ],
   );
 
   const handleSubmit = useCallback(
