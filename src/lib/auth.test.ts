@@ -40,6 +40,11 @@ vi.mock("@/lib/chat/anon", () => ({
   claimConversation: vi.fn().mockResolvedValue({ claimed: true }),
 }));
 
+// Mock the mail sender so the verification wire can be asserted.
+vi.mock("@/lib/email", () => ({
+  sendVerificationEmail: vi.fn().mockResolvedValue(undefined),
+}));
+
 // Stub betterAuth + adapters: we don't test their internals, only the hook
 vi.mock("better-auth", () => ({
   betterAuth: (opts: unknown) => ({ _opts: opts }),
@@ -56,6 +61,7 @@ import { claimConversation } from "@/lib/chat/anon";
 // signer (both keyed on the stubbed BETTER_AUTH_SECRET) to exercise the true
 // sign→verify roundtrip through the auth hook.
 import { signClaimToken } from "@/lib/chat/claim-cookie";
+import { sendVerificationEmail } from "@/lib/email";
 
 // Import auth AFTER all mocks are in place
 import { auth } from "./auth";
@@ -155,5 +161,34 @@ describe("C2: auth databaseHooks.user.create.after — claim wire", () => {
     await expect(
       afterHook?.({ id: "user-111" }, fakeContext),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("email verification config (spec 2026-07-06)", () => {
+  it("requires email verification for email/password", () => {
+    expect(opts?.emailAndPassword?.requireEmailVerification).toBe(true);
+  });
+
+  it("sends on signup and on unverified sign-in, auto-signs-in after verify, 1h expiry", () => {
+    expect(opts?.emailVerification?.sendOnSignUp).toBe(true);
+    expect(opts?.emailVerification?.sendOnSignIn).toBe(true);
+    expect(opts?.emailVerification?.autoSignInAfterVerification).toBe(true);
+    expect(opts?.emailVerification?.expiresIn).toBe(3600);
+  });
+
+  it("wires sendVerificationEmail to the Resend module with to/name/url", async () => {
+    vi.mocked(sendVerificationEmail).mockClear();
+
+    await opts?.emailVerification?.sendVerificationEmail?.({
+      user: { email: "anna@example.com", name: "Anna" },
+      url: "http://localhost:3000/api/auth/verify-email?token=t",
+      token: "t",
+    });
+
+    expect(sendVerificationEmail).toHaveBeenCalledWith({
+      to: "anna@example.com",
+      name: "Anna",
+      url: "http://localhost:3000/api/auth/verify-email?token=t",
+    });
   });
 });

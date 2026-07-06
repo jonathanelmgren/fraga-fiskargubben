@@ -10,6 +10,7 @@ import {
 } from "@/lib/auth/signup-ip";
 import { claimConversation } from "@/lib/chat/anon";
 import { verifyClaimToken } from "@/lib/chat/claim-cookie";
+import { sendVerificationEmail } from "@/lib/email";
 import { notifyDiscord } from "@/lib/notify/discord";
 import { db } from "@/shared/db/client";
 import { accounts, sessions, users, verifications } from "@/shared/db/schema";
@@ -32,12 +33,26 @@ export const auth = betterAuth({
   }),
   emailAndPassword: {
     enabled: true,
-    // Open registration: anyone can sign up. No email sender wired yet, so
-    // verification is off — turn on once a transactional mail path exists.
-    // Abuse is bounded by the signup IP guard in the user.create.before hook.
+    // Open registration: anyone can sign up. Abuse is bounded by the signup
+    // IP guard in the user.create.before hook.
     disableSignUp: false,
     minPasswordLength: 8,
-    requireEmailVerification: false,
+    // Unverified accounts cannot sign in (403 EMAIL_NOT_VERIFIED); the mail
+    // path is src/lib/email.ts (Resend). OAuth (Google/Microsoft) accounts
+    // are treated as verified by better-auth and are unaffected.
+    requireEmailVerification: true,
+  },
+  emailVerification: {
+    sendVerificationEmail: async ({ user, url }) => {
+      await sendVerificationEmail({ to: user.email, name: user.name, url });
+    },
+    // Mail on signup AND on every unverified login attempt — a lost first
+    // mail is self-healing (the user just tries to log in again).
+    sendOnSignUp: true,
+    sendOnSignIn: true,
+    // Clicking the link both verifies and signs in, landing on callbackURL.
+    autoSignInAfterVerification: true,
+    expiresIn: 3600, // 1 hour
   },
   user: {
     // signupIpHash is stamped by the before-create hook (never client input).
