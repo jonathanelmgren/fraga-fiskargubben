@@ -1,3 +1,4 @@
+import { logWarn } from "@/lib/log/logger";
 import "server-only";
 import { eq } from "drizzle-orm";
 import { ExternalServiceError, TimeoutError } from "@/lib/errors";
@@ -256,7 +257,10 @@ export async function getForecast(
   try {
     cached = await cacheGet(lakeId);
   } catch (err) {
-    console.warn("[forecast] cacheGet failed — falling through to live", err);
+    logWarn(
+      "forecast.cache",
+      `cacheGet failed — falling through to live: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
   if (cached) return cached;
 
@@ -273,7 +277,10 @@ export async function getForecast(
     try {
       await cacheSet(lakeId, doc);
     } catch (err) {
-      console.warn("[forecast] cacheSet failed — returning live doc", err);
+      logWarn(
+        "forecast.cache",
+        `cacheSet failed — returning live doc: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
     return doc;
   })().finally(() => {

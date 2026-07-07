@@ -19,6 +19,7 @@ import { z } from "zod";
 import { type LlmCallUsage, usageOf } from "@/lib/analytics/llm-cost";
 import { EXTRACTOR_MODEL } from "@/lib/claude/models";
 import { ExternalServiceError, TimeoutError } from "@/lib/errors";
+import type { WaterKind } from "@/lib/signals/types";
 // L8: gate strings consolidated in ./gate-messages (single source of truth).
 import { CANNED_REFUSAL } from "./gate-messages";
 
@@ -39,7 +40,14 @@ export type HistoryMessage = {
 
 export type Extraction = {
   onTopic: boolean;
+  /**
+   * Name of the water (or place) the user mentioned. Historically lake-only,
+   * hence the name — kept for analytics/lock compatibility. `waterKind` says
+   * what it actually is; anything non-"sjö" skips lake resolution.
+   */
   lakeName?: string;
+  /** Kind of water lakeName refers to. Absent when no water was named. */
+  waterKind?: WaterKind;
   municipality?: string;
   time?: string;
   intent?: string;
@@ -68,7 +76,15 @@ const ExtractionOutputSchema = z.object({
   lakeName: z
     .string()
     .optional()
-    .describe("Name of the Swedish lake the user mentioned, if any"),
+    .describe(
+      "Name of the Swedish water or place the user mentioned (lake, river, coast or town), if any",
+    ),
+  waterKind: z
+    .enum(["sjö", "älv", "kust", "ort", "annat"])
+    .optional()
+    .describe(
+      'What kind of water lakeName refers to: "sjö" (insjö), "älv" (älv/å/vattendrag), "kust" (hav/kust/skärgård), "ort" (stad/ort, inte ett vatten), "annat". Vid minsta tvekan: "sjö". Utelämna när inget vatten nämns.',
+    ),
   municipality: z
     .string()
     .optional()
@@ -139,7 +155,13 @@ Regler:
   även löst kopplat. Frågor som "hur blåser det just nu?" eller "hur kallt är vattnet?"
   är on-topic. Sätt false BARA för uppenbart orelaterade ämnen: programmering, läxor,
   matematik, politik, kändisar, recept och liknande. Vid tvekan: true.
-- lakeName: sjönamnet om användaren nämner ett (t.ex. "Tolken", "Vättern", "Hjälmaren").
+- lakeName: namnet på vattnet eller platsen om användaren nämner ett (t.ex. "Tolken",
+  "Vättern", "Fjällsjöälven", "Kalmar"). Även älvar, åar, kuststräckor och orter går här.
+- waterKind: vad lakeName är för slags vatten. "sjö" för insjöar, "älv" för älvar, åar
+  och andra vattendrag, "kust" för hav, kust och skärgård, "ort" när namnet är en stad
+  eller ort snarare än ett vatten, "annat" för övrigt (kanal, damm). VIKTIGT: vid minsta
+  tvekan om det är en sjö, sätt "sjö" — bara uppenbara icke-sjöar får en annan typ.
+  Utelämna fältet när inget vatten nämns.
 - municipality: kommun- eller ortnamnet om användaren nämner ett i samband med platsen.
 - time: när användaren vill fiska (t.ex. "ikväll", "imorgon", "på lördag").
 - intent: kort beskrivning av vad användaren vill göra eller fånga.
@@ -231,6 +253,7 @@ Svara ENBART med det strukturerade JSON-objektet — ingen annan text.`;
   return {
     onTopic: true,
     lakeName: parsed.lakeName,
+    waterKind: parsed.waterKind,
     municipality: parsed.municipality,
     time: parsed.time,
     intent: parsed.intent,

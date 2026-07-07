@@ -1,3 +1,4 @@
+import { logError } from "@/lib/log/logger";
 import { db as realDb } from "@/shared/db/client";
 import { analyticsEvents } from "@/shared/db/schema";
 
@@ -106,8 +107,6 @@ export async function emit(
     // error level with a stable prefix a log-based alert can match on, instead
     // of a free-text console.warn. (A discriminated payload union — M10(b) — is
     // deferred: see AnalyticsEvent.payload.)
-    console.error(
-      `[analytics] emit failed type=${event.type}: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    logError("analytics.emit", err, { eventType: event.type });
   }
 }

@@ -84,6 +84,7 @@ describe("buildAreaSignals", () => {
       lat: 57.79,
       lon: 13.42,
       askedLakeName: "Gösputten",
+      askedWaterKind: "sjö",
       targetTime: TARGET,
       now: NOW,
     });
@@ -92,6 +93,7 @@ describe("buildAreaSignals", () => {
     expect(signals.lakeId).toBe("area");
     expect(signals.areaOnly).toBe(true);
     expect(signals.askedLakeName).toBe("Gösputten");
+    expect(signals.askedWaterKind).toBe("sjö");
     expect(signals.airTempC?.value).toBe(18.2);
     expect(signals.windMs?.value).toBe(5.5);
     expect(signals.cloudPct?.value).toBe(75);

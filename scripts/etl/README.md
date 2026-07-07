@@ -25,6 +25,15 @@ the `lakes` table created first):
 | 4 | `pnpm etl:mvm` | `water_colour` + sight depth | **VERIFIED live** — bulk chemistry export (`MVM_TICKET`). |
 | 5 | `pnpm etl:aqua` | `lake_species` | **VERIFIED live** — NORS aggregated report. |
 
+**Full lake coverage (ops job, not in `seed:all`):** after `etl:svar`, run
+`pnpm etl:lm-download` (Geotorget, multi-GB) → `pnpm etl:lakes` (ogr2ogr + PostGIS
+transform + VISS crosswalk, ~20k new Lantmäteriet lakes) → `pnpm etl:lm-municipality`
+(SCB kommun/län backfill for the non-crosswalked rows — REQUIRED, or 20k lakes read
+"Okänd" and the resolver's kommun clarify loop cannot match user answers). SCB shapes:
+download "shape svenska" from scb.se Digitala gränser, unzip into `.lm-data/scb/`.
+Prod: run against local first, then sync the finished `lakes` rows to prod (COPY +
+upsert) — cheaper than re-running the bulk import through the tunnel.
+
 There is **no ETL for water temperature** — it is computed at request time by the estimate in
 `src/lib/water/temp.ts` (season + air-temp trend + lake size), always `estimated`/`low`. No live
 lake-water-temp API exists; [ADR-0006](../../docs/adr/0006-no-live-lake-water-temperature-source.md)

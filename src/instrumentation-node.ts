@@ -6,6 +6,7 @@
  * triggers "Node.js API is not supported in the Edge Runtime" warnings).
  */
 
+import { logError } from "@/lib/log/logger";
 import { notifyDiscord } from "@/lib/notify/discord";
 
 /**
@@ -22,12 +23,16 @@ export async function runBootMigrations() {
     await runMigrations();
     console.log("[instrumentation] drizzle migrations applied");
   } catch (err) {
-    console.error("[instrumentation] migration failed, exiting", err);
+    // logError (not reportError): its Discord send is fire-and-forget, and
+    // process.exit(1) below would race it. Log sync to file/stdout, then
+    // AWAIT the Discord ping explicitly before exiting.
+    const digest = logError("instrumentation.migrations", err);
     await notifyDiscord(
       "alerts",
       [
         "🚨 **Migrations misslyckades vid serverstart** — servern startar inte",
         `\`\`\`${err instanceof Error ? err.message : String(err)}\`\`\``,
+        `digest: \`${digest}\``,
       ].join("\n"),
     );
     process.exit(1);

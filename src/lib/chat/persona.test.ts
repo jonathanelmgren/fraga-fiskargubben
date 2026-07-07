@@ -90,6 +90,33 @@ describe("FISKARGUBBEN_SYSTEM", () => {
     expect(/molntäcke i procent/i.test(FISKARGUBBEN_SYSTEM)).toBe(true);
   });
 
+  it("names the asked water honestly by kind — never assumes it is a lake", () => {
+    // The "en sjö kallad Kalmar" incident: askedLakeName can carry a river,
+    // coast or town name. The prompt must define askedWaterKind and forbid
+    // calling a non-lake "sjö".
+    expect(FISKARGUBBEN_SYSTEM).toContain("askedWaterKind");
+    expect(/det vattnet/i.test(FISKARGUBBEN_SYSTEM)).toBe(true);
+    expect(/älv är en älv/i.test(FISKARGUBBEN_SYSTEM)).toBe(true);
+  });
+
+  it("forbids guessing geography and species for unknown waters", () => {
+    // The "Fjällsjöälven är en norrbottenälv" incident: general knowledge is
+    // allowed, but confident geographic/species claims about waters outside
+    // the signals are not.
+    expect(/gissa (ALDRIG|aldrig)/i.test(FISKARGUBBEN_SYSTEM)).toBe(true);
+    expect(/landskap|region/i.test(FISKARGUBBEN_SYSTEM)).toBe(true);
+  });
+
+  it("contains a tackle glossary covering colloquial and dialect terms", () => {
+    // The "har svårt med svenskan: vobber, spinner, sidablänke" feedback —
+    // the prompt must map colloquial angler vocabulary to standard terms and
+    // tell the persona to mirror the user's own words.
+    for (const term of ["vobbler", "spinnare", "sidablänke", "skeddrag"]) {
+      expect(FISKARGUBBEN_SYSTEM).toContain(term);
+    }
+    expect(/rätta aldrig/i.test(FISKARGUBBEN_SYSTEM)).toBe(true);
+  });
+
   it("contains wind-down sign-off guidance", () => {
     // When windingDown flag is set (passed in the user turn), persona should
     // keep replies short and start signing off.

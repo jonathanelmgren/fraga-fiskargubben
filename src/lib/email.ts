@@ -1,5 +1,6 @@
 import "server-only";
 import { Resend } from "resend";
+import { logError, logWarn } from "@/lib/log/logger";
 import { notifyDiscord } from "@/lib/notify/discord";
 import { env } from "@/shared/env";
 
@@ -35,8 +36,9 @@ export async function sendVerificationEmail({
   url: string;
 }): Promise<void> {
   if (!env.RESEND_API_KEY) {
-    console.warn(
-      `[email] RESEND_API_KEY not set — verification mail NOT sent to ${to}. Verify manually: ${url}`,
+    logWarn(
+      "email.verification",
+      `RESEND_API_KEY not set — verification mail NOT sent to ${to}. Verify manually: ${url}`,
     );
     if (process.env.NODE_ENV === "production") {
       void notifyDiscord(
@@ -70,17 +72,17 @@ export async function sendVerificationEmail({
       `,
     });
     if (error) {
-      console.error(`[email] verification mail to ${to} failed:`, error);
+      const digest = logError("email.verification", error, { to });
       void notifyDiscord(
         "alerts",
-        `⚠️ Verifieringsmejl till ${to} misslyckades: ${error.message}`,
+        `⚠️ Verifieringsmejl till ${to} misslyckades: ${error.message} (digest: ${digest})`,
       ).catch(() => {});
     }
   } catch (err) {
-    console.error(`[email] verification mail to ${to} threw:`, err);
+    const digest = logError("email.verification", err, { to });
     void notifyDiscord(
       "alerts",
-      `⚠️ Verifieringsmejl till ${to} misslyckades: ${err instanceof Error ? err.message : String(err)}`,
+      `⚠️ Verifieringsmejl till ${to} misslyckades: ${err instanceof Error ? err.message : String(err)} (digest: ${digest})`,
     ).catch(() => {});
   }
 }
@@ -99,8 +101,9 @@ export async function sendPasswordResetEmail({
   url: string;
 }): Promise<void> {
   if (!env.RESEND_API_KEY) {
-    console.warn(
-      `[email] RESEND_API_KEY not set — password-reset mail NOT sent to ${to}. Reset manually: ${url}`,
+    logWarn(
+      "email.password-reset",
+      `RESEND_API_KEY not set — password-reset mail NOT sent to ${to}. Reset manually: ${url}`,
     );
     if (process.env.NODE_ENV === "production") {
       void notifyDiscord(
@@ -134,17 +137,17 @@ export async function sendPasswordResetEmail({
       `,
     });
     if (error) {
-      console.error(`[email] password-reset mail to ${to} failed:`, error);
+      const digest = logError("email.password-reset", error, { to });
       void notifyDiscord(
         "alerts",
-        `⚠️ Återställningsmejl till ${to} misslyckades: ${error.message}`,
+        `⚠️ Återställningsmejl till ${to} misslyckades: ${error.message} (digest: ${digest})`,
       ).catch(() => {});
     }
   } catch (err) {
-    console.error(`[email] password-reset mail to ${to} threw:`, err);
+    const digest = logError("email.password-reset", err, { to });
     void notifyDiscord(
       "alerts",
-      `⚠️ Återställningsmejl till ${to} misslyckades: ${err instanceof Error ? err.message : String(err)}`,
+      `⚠️ Återställningsmejl till ${to} misslyckades: ${err instanceof Error ? err.message : String(err)} (digest: ${digest})`,
     ).catch(() => {});
   }
 }
@@ -180,8 +183,9 @@ export async function sendExistingAccountEmail({
     : "Logga in som vanligt.";
 
   if (!env.RESEND_API_KEY) {
-    console.warn(
-      `[email] RESEND_API_KEY not set — existing-account mail NOT sent to ${to}. (${signInHint})`,
+    logWarn(
+      "email.existing-account",
+      `RESEND_API_KEY not set — existing-account mail NOT sent to ${to}. (${signInHint})`,
     );
     return;
   }
@@ -208,17 +212,17 @@ export async function sendExistingAccountEmail({
       `,
     });
     if (error) {
-      console.error(`[email] existing-account mail to ${to} failed:`, error);
+      const digest = logError("email.existing-account", error, { to });
       void notifyDiscord(
         "alerts",
-        `⚠️ Befintligt-konto-mejl till ${to} misslyckades: ${error.message}`,
+        `⚠️ Befintligt-konto-mejl till ${to} misslyckades: ${error.message} (digest: ${digest})`,
       ).catch(() => {});
     }
   } catch (err) {
-    console.error(`[email] existing-account mail to ${to} threw:`, err);
+    const digest = logError("email.existing-account", err, { to });
     void notifyDiscord(
       "alerts",
-      `⚠️ Befintligt-konto-mejl till ${to} misslyckades: ${err instanceof Error ? err.message : String(err)}`,
+      `⚠️ Befintligt-konto-mejl till ${to} misslyckades: ${err instanceof Error ? err.message : String(err)} (digest: ${digest})`,
     ).catch(() => {});
   }
 }

@@ -1,4 +1,12 @@
 export type Source = "forecast" | "observed" | "modeled" | "estimated";
+
+/**
+ * What kind of water (or place) the user named, as classified by the
+ * extractor. "sjö" is the only kind the lake register can resolve; the rest
+ * short-circuit to area mode. The extractor is instructed to default to
+ * "sjö" on any doubt so a resolvable lake is never misrouted.
+ */
+export type WaterKind = "sjö" | "älv" | "kust" | "ort" | "annat";
 export type Provenance = { source: Source; confidence: "high" | "low" };
 export type WithProvenance<T> = { value: T; provenance: Provenance };
 
@@ -13,8 +21,15 @@ export type Signals = {
    * `lake` is an area label ("trakten kring …").
    */
   areaOnly?: boolean;
-  /** Area mode: the lake name the user asked about, so the answer can name it honestly. */
+  /** Area mode: the water name the user asked about, so the answer can name it honestly. */
   askedLakeName?: string;
+  /**
+   * Area mode: what kind of water askedLakeName is (extractor guess). Lets
+   * the persona say "älven"/"kusten" instead of assuming everything is a
+   * lake ("en sjö kallad Kalmar"). Absent on old snapshots and when the
+   * extractor did not classify.
+   */
+  askedWaterKind?: WaterKind;
   /**
    * Area mode with a known user location: the nearest named lakes from the
    * register, so "vilken sjö nära mig?" gets real suggestions instead of a

@@ -17,6 +17,7 @@
  */
 
 import { emit } from "@/lib/analytics/events";
+import { logError } from "@/lib/log/logger";
 import { formatStockholmLocal, stockholmParts } from "@/lib/time/stockholm";
 import { colourFor } from "@/lib/water/colour";
 import { depthFor } from "@/lib/water/depth";
@@ -132,7 +133,7 @@ async function safe<T>(
     // L: log at debug level so a real code bug is distinguishable from
     // legitimate "data unavailable" — without losing the never-throws contract
     // (we still call onMiss() and return undefined).
-    console.error("[signals] source producer failed (treated as miss):", err);
+    logError("signals.source-miss", err);
     onMiss();
     return undefined;
   }

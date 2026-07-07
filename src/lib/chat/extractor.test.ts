@@ -63,6 +63,32 @@ describe("extract()", () => {
     expect(result.refusal).toBeUndefined();
   });
 
+  it("threads waterKind through so rivers/coast/towns are not treated as lakes", async () => {
+    const client = buildMockClient(
+      onTopicOutput({ lakeName: "Fjällsjöälven", waterKind: "älv" }),
+    );
+    const result = await extract(
+      "ska fiska i fjällsjöälven i eftermiddag",
+      [],
+      // biome-ignore lint/suspicious/noExplicitAny: test fake
+      { client: client as any },
+    );
+
+    expect(result.lakeName).toBe("Fjällsjöälven");
+    expect(result.waterKind).toBe("älv");
+  });
+
+  it("waterKind is absent when the model does not classify", async () => {
+    const client = buildMockClient(onTopicOutput());
+    const result = await extract(
+      "fiska i Tolken",
+      [],
+      // biome-ignore lint/suspicious/noExplicitAny: test fake
+      { client: client as any },
+    );
+    expect(result.waterKind).toBeUndefined();
+  });
+
   it("off-topic message → onTopic false with in-persona refusal string", async () => {
     const client = buildMockClient(offTopicOutput());
     const result = await extract(

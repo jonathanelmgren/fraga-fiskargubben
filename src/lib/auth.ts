@@ -1,3 +1,4 @@
+import { logError } from "@/lib/log/logger";
 import "server-only";
 import { stripe } from "@better-auth/stripe";
 import { betterAuth } from "better-auth";
@@ -110,10 +111,7 @@ export const auth = betterAuth({
           providers: linked.map((a) => a.providerId),
         });
       } catch (err) {
-        console.error(
-          `[auth] existing-account notice for ${user.email} failed:`,
-          err,
-        );
+        logError("auth.existing-account-notice", err, { email: user.email });
       }
     },
   },
@@ -279,10 +277,7 @@ export const auth = betterAuth({
             // successfully; the unclaimed conversation will be GC'd by TTL.
             // L: log (don't swallow silently) so a lost carry-over credit is
             // debuggable rather than vanishing without a trace.
-            console.warn(
-              `[auth] claimConversation failed for user ${user.id} — carry-over credit not applied:`,
-              err,
-            );
+            logError("auth.claim-conversation", err, { userId: user.id });
           }
         },
       },

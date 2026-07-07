@@ -223,6 +223,7 @@ export type AskHandlerDeps = {
     lat: number;
     lon: number;
     askedLakeName?: string;
+    askedWaterKind?: Signals["askedWaterKind"];
     nearbyLakes?: Signals["nearbyLakes"];
     targetTime: Date;
     now: Date;
@@ -695,19 +696,32 @@ async function resolvePendingConversation(ctx: {
       ? { lat: conversation.userLat, lon: conversation.userLon }
       : undefined;
 
-  const candidates = await deps.candidateLakes(
-    extraction.lakeName ?? "",
-    userLoc,
-  );
+  // Non-lake short-circuit: the extractor classified the named water as a
+  // river, coast stretch or town. The register holds only lakes, so candidate
+  // SQL + the Haiku resolver can never resolve it — worse, trigram could
+  // false-match a similarly named lake. Skip both and go straight to area
+  // mode. The extractor defaults to "sjö" on any doubt, so this never steals
+  // a resolvable lake; "annat" still goes through the resolver.
+  const namedNonLake =
+    extraction.lakeName !== undefined &&
+    (extraction.waterKind === "älv" ||
+      extraction.waterKind === "kust" ||
+      extraction.waterKind === "ort");
 
-  const resolution = await deps.resolveLakeWithHaiku({
-    message,
-    lakeName: extraction.lakeName,
-    municipality: extraction.municipality,
-    userLoc,
-    candidates,
-    history,
-  });
+  const candidates = namedNonLake
+    ? []
+    : await deps.candidateLakes(extraction.lakeName ?? "", userLoc);
+
+  const resolution: HaikuResolution = namedNonLake
+    ? { lakeId: null, confidence: 0, noSuchLake: true, clarifyQuestion: "" }
+    : await deps.resolveLakeWithHaiku({
+        message,
+        lakeName: extraction.lakeName,
+        municipality: extraction.municipality,
+        userLoc,
+        candidates,
+        history,
+      });
 
   // Cost analytics: attribute the resolver call to the conversation.
   if (resolution.usage) {
@@ -839,11 +853,17 @@ async function resolvePendingConversation(ctx: {
           lat: coords.lat,
           lon: coords.lon,
           askedLakeName: extraction.lakeName,
+          askedWaterKind: extraction.waterKind,
           nearbyLakes,
           targetTime,
           now: deps.now,
         })
-      : minimalAreaSignals(label, extraction.lakeName, targetTime);
+      : minimalAreaSignals(
+          label,
+          extraction.lakeName,
+          extraction.waterKind,
+          targetTime,
+        );
 
     const charge = await chargeCredit({ userId, isAdmin, deps });
     if (charge.blocked) return charge.blocked;
@@ -855,14 +875,20 @@ async function resolvePendingConversation(ctx: {
       targetTime,
       signalsSnapshot: signals,
     });
-    // reason separates "the resolver is sure it doesn't exist" from "we gave
-    // up after N rounds" — very different product problems.
+    // reason separates "the extractor says it's not a lake" from "the
+    // resolver is sure it doesn't exist" from "we gave up after N rounds" —
+    // very different product problems.
     await deps.emit({
       type: "lake_unresolved_area",
       conversationId: conversation.id,
       payload: {
         askedLakeName: extraction.lakeName ?? null,
-        reason: resolution.noSuchLake ? "no_such_lake" : "attempts_exhausted",
+        waterKind: extraction.waterKind ?? null,
+        reason: namedNonLake
+          ? "non_lake_water"
+          : resolution.noSuchLake
+            ? "no_such_lake"
+            : "attempts_exhausted",
         attempts: attemptsAfterThis,
         confidence: resolution.confidence,
         ...resolutionContext,
@@ -975,6 +1001,7 @@ export function areaLabel(extraction: Extraction, hasCoords: boolean): string {
 function minimalAreaSignals(
   label: string,
   askedLakeName: string | undefined,
+  askedWaterKind: Signals["askedWaterKind"],
   targetTime: Date,
 ): Signals {
   return {
@@ -982,6 +1009,7 @@ function minimalAreaSignals(
     lakeId: "area",
     areaOnly: true,
     ...(askedLakeName ? { askedLakeName } : {}),
+    ...(askedWaterKind ? { askedWaterKind } : {}),
     timeLocal: formatStockholmLocal(targetTime),
   };
 }

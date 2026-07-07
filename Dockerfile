@@ -44,7 +44,8 @@ WORKDIR /app
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     PORT=3000 \
-    HOSTNAME=0.0.0.0
+    HOSTNAME=0.0.0.0 \
+    LOG_DIR=/app/logs
 
 RUN addgroup -g 1001 -S nodejs && adduser -S nextjs -u 1001
 
@@ -59,6 +60,10 @@ COPY --from=builder /app/drizzle ./drizzle
 # under /app stays root-owned read-only on purpose — only the cache dir needs
 # to be writable by the runtime user.
 RUN mkdir -p /app/.next/cache && chown -R nextjs:nodejs /app/.next/cache
+
+# pino logfile (LOG_DIR). Mount a host volume here (-v .../logs:/app/logs) so
+# app.log survives container recreation and is greppable from the host.
+RUN mkdir -p /app/logs && chown nextjs:nodejs /app/logs
 
 USER nextjs
 EXPOSE 3000

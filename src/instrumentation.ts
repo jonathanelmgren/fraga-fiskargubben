@@ -47,6 +47,21 @@ export const onRequestError: Instrumentation.onRequestError = async (
   // err is typed unknown; at runtime it is an Error, possibly with a React
   // digest when it surfaced during Server Components rendering.
   const e = err as Error & { digest?: string };
+
+  // Node runtime: rich pino log (stack, cause chain) + Discord ping with a
+  // correlation digest, via the central logger. Dynamic import keeps pino
+  // (fs, sonic-boom) out of the Edge bundle.
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    const { reportError } = await import("@/lib/log/logger");
+    reportError(`Serverfel ${request.method} ${request.path}`, err, {
+      route: context.routePath,
+      routerKind: context.routerKind,
+      routeType: context.routeType,
+    });
+    return;
+  }
+
+  // Edge fallback: no filesystem — Discord only, as before.
   await notifyDiscord(
     "alerts",
     [

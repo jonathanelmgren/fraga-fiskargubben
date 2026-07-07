@@ -685,6 +685,90 @@ describe("unresolved_area transitions", () => {
     expect(deps.incrementResolveAttempts).not.toHaveBeenCalled();
   });
 
+  it("named river (waterKind älv) → area mode WITHOUT lake resolution", async () => {
+    // Rivers are not in the lake register — running candidate SQL + Haiku
+    // resolver against it wastes a call and risks a false lake match.
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      extract: vi.fn().mockResolvedValue({
+        onTopic: true,
+        lakeName: "Fjällsjöälven",
+        waterKind: "älv",
+        municipality: "Strömsund",
+      }),
+    });
+    const result = await handleAsk(
+      {
+        message: "Ska fiska i Fjällsjöälven",
+        location: { lat: 64.1, lon: 15.9 },
+      },
+      deps,
+    );
+
+    const r = asType(result, "stream");
+    expect(r.badges?.status).toBe("unresolved_area");
+    expect(deps.candidateLakes).not.toHaveBeenCalled();
+    expect(deps.resolveLakeWithHaiku).not.toHaveBeenCalled();
+    expect(deps.buildAreaSignals).toHaveBeenCalledWith(
+      expect.objectContaining({
+        askedLakeName: "Fjällsjöälven",
+        askedWaterKind: "älv",
+        lat: 64.1,
+        lon: 15.9,
+      }),
+    );
+    expect(deps.emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "lake_unresolved_area",
+        payload: expect.objectContaining({
+          reason: "non_lake_water",
+          waterKind: "älv",
+        }),
+      }),
+    );
+  });
+
+  it("named town/coast (waterKind ort) → area mode, no clarify rounds burned", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      extract: vi.fn().mockResolvedValue({
+        onTopic: true,
+        lakeName: "Kalmar",
+        waterKind: "ort",
+      }),
+    });
+    const result = await handleAsk(
+      {
+        message: "Hur nappar det i Kalmar?",
+        location: { lat: 56.66, lon: 16.36 },
+      },
+      deps,
+    );
+
+    const r = asType(result, "stream");
+    expect(r.badges?.status).toBe("unresolved_area");
+    expect(deps.resolveLakeWithHaiku).not.toHaveBeenCalled();
+    expect(deps.incrementResolveAttempts).not.toHaveBeenCalled();
+    expect(deps.buildAreaSignals).toHaveBeenCalledWith(
+      expect.objectContaining({ askedWaterKind: "ort" }),
+    );
+  });
+
+  it("waterKind sjö goes through the normal resolution path", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      extract: vi.fn().mockResolvedValue({
+        onTopic: true,
+        lakeName: "Tolken",
+        waterKind: "sjö",
+      }),
+    });
+    const result = await handleAsk({ message: "Fiska i Tolken" }, deps);
+    asType(result, "stream");
+    expect(deps.candidateLakes).toHaveBeenCalledWith("Tolken", undefined);
+    expect(deps.resolveLakeWithHaiku).toHaveBeenCalled();
+  });
+
   it("prefers the user's browser location over the candidate centroid", async () => {
     const deps = makeDeps({
       getSession: loggedIn(),

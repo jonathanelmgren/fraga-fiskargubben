@@ -74,7 +74,7 @@ import { getSession } from "@/lib/get-session";
 import { isAdminEmail } from "@/lib/is-admin";
 import { candidateLakes } from "@/lib/lakes/candidates";
 import { resolveLakeWithHaiku } from "@/lib/lakes/haiku-resolver";
-import { notifyDiscord } from "@/lib/notify/discord";
+import { reportError } from "@/lib/log/logger";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { buildSignals } from "@/lib/signals/build";
 import { buildAreaSignals } from "@/lib/signals/build-area";
@@ -594,6 +594,13 @@ export async function POST(request: Request): Promise<Response> {
       deps,
     );
   } catch (err) {
+    // Rich log (stack, cause chain, upstream status) + Discord ping carrying
+    // the digest — grep the digest in logs/app.log for the full story. (This
+    // catch means onRequestError never sees the error.)
+    const digest = reportError("/api/ask pipeline_error", err, {
+      prompt: message,
+      ...(conversationId ? { conversationId } : {}),
+    });
     // L-rt1: emit a queryable pipeline_error so a failure escaping handleAsk is
     // visible in analytics (previously the catch returned a classified Response
     // with zero observability). Best-effort — never block the error response.
@@ -605,15 +612,9 @@ export async function POST(request: Request): Promise<Response> {
       payload: {
         reason: err instanceof Error ? err.message : String(err),
         prompt: message,
+        digest,
       },
     }).catch(() => {});
-    // Ops ping (this catch means onRequestError never sees the error).
-    void notifyDiscord(
-      "alerts",
-      `🚨 **/api/ask pipeline_error**\n\`\`\`${
-        err instanceof Error ? err.message : String(err)
-      }\`\`\``,
-    );
     return classifyError(err);
   }
 

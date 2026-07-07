@@ -12,6 +12,7 @@
  */
 
 import { emit } from "@/lib/analytics/events";
+import { logError } from "@/lib/log/logger";
 import { formatStockholmLocal } from "@/lib/time/stockholm";
 import { getForecast, pickEntry } from "@/lib/weather/forecast";
 import {
@@ -32,8 +33,10 @@ export interface BuildAreaSignalsInput {
   label: string;
   lat: number;
   lon: number;
-  /** The lake name the user asked about (for honest "don't know it" answers). */
+  /** The water name the user asked about (for honest "don't know it" answers). */
   askedLakeName?: string;
+  /** What kind of water askedLakeName is (see Signals.askedWaterKind). */
+  askedWaterKind?: Signals["askedWaterKind"];
   /** Nearest named lakes (user-location mode) — see Signals.nearbyLakes. */
   nearbyLakes?: Signals["nearbyLakes"];
   targetTime: Date;
@@ -62,10 +65,7 @@ async function safe<T>(
   try {
     return await fn();
   } catch (err) {
-    console.error(
-      "[signals:area] source producer failed (treated as miss):",
-      err,
-    );
+    logError("signals-area.source-miss", err);
     onMiss();
     return undefined;
   }
@@ -74,8 +74,16 @@ async function safe<T>(
 export async function buildAreaSignals(
   input: BuildAreaSignalsInput,
 ): Promise<Signals> {
-  const { label, lat, lon, askedLakeName, nearbyLakes, targetTime, now } =
-    input;
+  const {
+    label,
+    lat,
+    lon,
+    askedLakeName,
+    askedWaterKind,
+    nearbyLakes,
+    targetTime,
+    now,
+  } = input;
   const safeTargetTime = !Number.isNaN(targetTime.getTime()) ? targetTime : now;
   const targetUtc = safeTargetTime.toISOString();
 
@@ -181,6 +189,7 @@ export async function buildAreaSignals(
     timeLocal: formatStockholmLocal(safeTargetTime),
   };
   if (askedLakeName) signals.askedLakeName = askedLakeName;
+  if (askedWaterKind) signals.askedWaterKind = askedWaterKind;
   if (nearbyLakes && nearbyLakes.length > 0) signals.nearbyLakes = nearbyLakes;
 
   const assign = (

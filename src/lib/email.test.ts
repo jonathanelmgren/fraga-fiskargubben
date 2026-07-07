@@ -29,6 +29,11 @@ vi.mock("@/lib/notify/discord", () => ({
   notifyDiscord: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/log/logger", () => ({
+  logWarn: vi.fn(),
+  logError: vi.fn().mockReturnValue("deadbeef"),
+}));
+
 // Mock env with default state; envState will be mutated in tests
 vi.mock("@/shared/env", () => {
   return {
@@ -39,6 +44,7 @@ vi.mock("@/shared/env", () => {
   };
 });
 
+import { logWarn } from "@/lib/log/logger";
 import { notifyDiscord } from "@/lib/notify/discord";
 import { env } from "@/shared/env";
 import { sendExistingAccountEmail, sendVerificationEmail } from "./email";
@@ -58,12 +64,10 @@ describe("sendVerificationEmail", () => {
   });
 
   it("does not send when RESEND_API_KEY is unset; logs the URL", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     await sendVerificationEmail(args);
     expect(sendMock).not.toHaveBeenCalled();
-    expect(warn.mock.calls.flat().join(" ")).toContain(args.url);
+    expect(vi.mocked(logWarn).mock.calls.flat().join(" ")).toContain(args.url);
     expect(notifyDiscord).not.toHaveBeenCalled();
-    warn.mockRestore();
   });
 
   it("pings Discord when RESEND_API_KEY is unset in production", async () => {
