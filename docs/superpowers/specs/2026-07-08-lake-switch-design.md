@@ -48,10 +48,13 @@ rounds. Used in both lifecycle phases:
   `resolveAttempts` to 0 before evaluating the strike limit — a pivot to a new lake starts
   fresh.
 - **Post-transition (`resolved` / `unresolved_area`):** set when a switch attempt ends in a
-  clarify round. On the next message, `effectiveLakeName = extraction.lakeName ??
-  conversation.pendingLakeName`, so a bare clarify reply ("i Örebro") still routes to the
-  resolver; the resolver already receives conversation history, so Haiku combines name +
-  municipality. Cleared on successful resolution and on attempts exhaustion.
+  clarify round. On the next message, a bare clarify reply ("i Örebro") continues the switch
+  when the extractor produced a `municipality` — the resolver then runs with
+  `conversation.pendingLakeName` as the target; it already receives conversation history, so
+  Haiku combines name + municipality. A reply with neither lake name nor municipality is a
+  normal follow-up (the pending name is kept for a later reply). Cleared on successful
+  resolution; **kept** on give-up so a re-mention of the same failed name does not reset the
+  strike count (a confident resolution still wins — the resolver always runs first).
 
 **Attempts-reset rule (both phases):** whenever the resolution target changes —
 `extraction.lakeName` present and different (case-insensitive) from `pendingLakeName`,
@@ -81,10 +84,12 @@ or undefined, AND (status is `unresolved_area`, OR status is `resolved` and
 - **Not confident:** free clarify round (same response shape as pending-phase clarify).
   Set `pendingLakeName = effectiveLakeName`, increment `resolveAttempts`. Status and
   snapshot unchanged.
-- **Attempts exhausted (`MAX_RESOLVE_ATTEMPTS`):** give up on the switch. Clear
-  `pendingLakeName` (attempts stay maxed until a different lake name resets them), return a
-  persona message: can't find that lake, continuing with the current context. No status
-  change, no charge.
+- **Attempts exhausted (`MAX_RESOLVE_ATTEMPTS`) or resolver says `noSuchLake`:** give up on
+  the switch. Keep `pendingLakeName`, set `resolveAttempts = MAX_RESOLVE_ATTEMPTS` — a
+  re-mention of the same name goes straight back to give-up (unless the resolver is
+  confident, which always wins), while a different lake name is a pivot and resets the
+  strikes. Return a persona message: can't find that lake, continuing with the current
+  context. No status change, no charge, no second `unresolved_area` transition.
 
 **Non-triggers (normal follow-up):** same lake re-mentioned in a `resolved` chat; mention of
 älv/kust/ort water kinds; no lake name and no pending name.
@@ -99,11 +104,12 @@ clarify round with a static template:
 
 > "{namn} låter som en ort snarare än en sjö. Vilken sjö i närheten är det du tänker på?"
 
-The round increments `resolveAttempts` and sets `pendingLakeName` like any clarify. If the
-user keeps naming orter or attempts run out, the conversation transitions to
-`unresolved_area` exactly as today (reason `attempts_exhausted` or `non_lake_water` on a
-final ort). `älv` and `kust` keep the instant area transition — those waters are genuinely
-unsupported and area advice is the correct first answer.
+The round increments `resolveAttempts` and sets `pendingLakeName` like any clarify. The ort
+clarify fires only when the ort name is a new resolution target (differs from
+`pendingLakeName`); the user insisting on the SAME ort transitions to `unresolved_area`
+exactly as today (reason `non_lake_water`). `älv` and `kust` keep the instant area
+transition — those waters are genuinely unsupported and area advice is the correct first
+answer.
 
 ### 4. Unchanged
 
