@@ -179,16 +179,24 @@ function resolveDayOffset(text: string, now: Date): number | null {
     return Number.isFinite(n) ? n : null;
   }
 
+  // Sleep-anchored words ("imorgon", "övermorgon") past midnight: before
+  // ~04:00 Swedish time the user hasn't slept yet — "imorgon" means "after I
+  // wake up" = the calendar day that already started, not tomorrow's date.
+  // (Prod incident: "imorgon förmiddag" asked at 00:38 on the 7th resolved to
+  // the 8th and answered with the wrong day's forecast.)
+  const lateNightShift = stockholmParts(now).hour < 4 ? -1 : 0;
+
   // Day-after-tomorrow before tomorrow, so "övermorgon" isn't caught by "morgon".
   // NB: no leading \b — "ö" is not an ASCII word char, so \b would not match a
   // string-initial "övermorgon".
   if (/(^|\s)(i )?övermorgon\b/.test(text)) {
-    return 2;
+    return 2 + lateNightShift;
   }
 
-  // Tomorrow: "imorgon", "i morgon", "imorron", "i morron" (+ "bitti"/"kväll").
-  if (/\bi ?mor(g?on|ron)\b/.test(text)) {
-    return 1;
+  // Tomorrow: "imorgon", "i morgon", "imorron", "i morron", colloquial "imon"
+  // (+ "bitti"/"kväll").
+  if (/\bi ?mor(g?on|ron)\b/.test(text) || /\bimon\b/.test(text)) {
+    return 1 + lateNightShift;
   }
 
   // Today: "idag", "i dag", "ikväll", "i kväll" etc. anchor to today (offset 0).
@@ -200,6 +208,14 @@ function resolveDayOffset(text: string, now: Date): number | null {
     /\bi ?morse\b/.test(text)
   ) {
     return 0;
+  }
+
+  // Weekend: "i helgen", "till helgen", "helgen" → the coming Saturday
+  // (already-in-the-weekend anchors to today).
+  if (/\bhelgen?\b/.test(text)) {
+    const dow = stockholmParts(now).weekday;
+    if (dow === 6 || dow === 0) return 0;
+    return weekdayOffset(dow, 6, false);
   }
 
   // Weekday: "på lördag", "nästa fredag", or a bare weekday name.
@@ -251,6 +267,7 @@ function stripDayWords(text: string): string {
   return text
     .replace(/(^|\s)(i )?övermorgon\b/g, " ")
     .replace(/\bi ?mor(g?on|ron)\b/g, " ")
+    .replace(/\bimon\b/g, " ")
     .replace(/\bi ?dag\b/g, " ");
 }
 
@@ -280,6 +297,18 @@ function parseClock(text: string): { hour: number; minute: number } | null {
   const hm = text.match(/\b(\d{1,2})[:.](\d{2})\b/);
   if (hm) {
     return clampClock(Number(hm[1]), Number(hm[2]));
+  }
+  // Approximations: "vid 13", "runt 13", "cirka 18", "ca 18", "omkring 13".
+  // First number wins for ranges ("typ vid 11-12-13" → 11). The prefix
+  // requirement keeps day counts ("om 3 dagar") from being misread as hours.
+  const approx = text.match(/\b(?:vid|runt|cirka|ca|omkring)\s+(\d{1,2})\b/);
+  if (approx) {
+    return clampClock(Number(approx[1]), 0);
+  }
+  // "13-tiden", "18-tiden".
+  const tiden = text.match(/\b(\d{1,2})-tiden\b/);
+  if (tiden) {
+    return clampClock(Number(tiden[1]), 0);
   }
   return null;
 }

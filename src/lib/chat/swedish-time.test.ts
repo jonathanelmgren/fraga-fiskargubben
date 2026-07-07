@@ -143,8 +143,97 @@ describe("resolveSwedishTime", () => {
     });
   });
 
+  describe("late night: 'imorgon' past midnight means the day that already started", () => {
+    // Prod incident 2026-07-06: user asked "Tolken imon förmiddag?" at 00:38
+    // Swedish time — calendar-tomorrow resolved to July 8, but the user meant
+    // "after I wake up" = July 7. SMHI said rain for the 7th; the answer
+    // described the clear 8th. Before ~04:00 local, "imorgon" anchors to the
+    // current calendar day.
+    const LATE = stockholmWallClockToUtc({
+      year: 2026,
+      month: 7,
+      day: 7,
+      hour: 0,
+      minute: 38,
+    });
+    const at = (day: number, hour: number) =>
+      stockholmWallClockToUtc({ year: 2026, month: 7, day, hour, minute: 0 });
+
+    it("imorgon förmiddag at 00:38 → same calendar day 10:00", () => {
+      expectDate(resolveSwedishTime("imorgon förmiddag", LATE), at(7, 10));
+    });
+    it("imon (colloquial) at 00:38 → same calendar day", () => {
+      expectDate(resolveSwedishTime("imon kl 13", LATE), at(7, 13));
+    });
+    it("övermorgon at 00:38 shifts one less too", () => {
+      expectDate(resolveSwedishTime("övermorgon", LATE), at(8, 12));
+    });
+    it("ikväll at 00:38 stays on the current day", () => {
+      expectDate(resolveSwedishTime("ikväll", LATE), at(7, 19));
+    });
+    it("imorgon at 09:00 is unaffected (normal calendar tomorrow)", () => {
+      const morning = stockholmWallClockToUtc({
+        year: 2026,
+        month: 7,
+        day: 7,
+        hour: 9,
+        minute: 0,
+      });
+      expectDate(resolveSwedishTime("imorgon", morning), at(8, 12));
+    });
+  });
+
+  describe("approximate clock times (vid/runt/cirka N, N-tiden)", () => {
+    // "Typ vid 11-12-13" (prod) parsed as NOTHING — parseClock required a kl
+    // prefix or a colon. Accept common approximations; first number wins.
+    const cases: Array<[string, Date]> = [
+      ["imorgon vid 13", local(1, 13)],
+      ["runt 13 imorgon", local(1, 13)],
+      ["cirka 18 ikväll", local(0, 18)],
+      ["ca 18", local(0, 18)],
+      ["13-tiden imorgon", local(1, 13)],
+      ["typ vid 11-12-13 imorgon", local(1, 11)],
+    ];
+    it.each(cases)("%s", (input, expected) => {
+      expectDate(resolveSwedishTime(input, NOW), expected);
+    });
+    it("'om 3 dagar' is still a day count, not a clock", () => {
+      expectDate(resolveSwedishTime("om 3 dagar", NOW), local(3, 12));
+    });
+  });
+
+  describe("weekend (now = Wednesday 2026-07-01)", () => {
+    it("i helgen → coming Saturday", () => {
+      expectDate(resolveSwedishTime("i helgen", NOW), local(3, 12));
+    });
+    it("till helgen → coming Saturday", () => {
+      expectDate(resolveSwedishTime("till helgen", NOW), local(3, 12));
+    });
+    it("helgen on a Saturday → that same day", () => {
+      const saturday = stockholmWallClockToUtc({
+        year: 2026,
+        month: 7,
+        day: 4,
+        hour: 9,
+        minute: 0,
+      });
+      expectDate(
+        resolveSwedishTime("i helgen", saturday),
+        stockholmWallClockToUtc({
+          year: 2026,
+          month: 7,
+          day: 4,
+          hour: 12,
+          minute: 0,
+        }),
+      );
+    });
+  });
+
   describe("unparseable → null (caller keeps NOW fallback)", () => {
-    const cases = ["", "   ", "snart", "någon gång", "helgen typ", "kl 99"];
+    // NB: "helgen" moved OUT of this list — it now resolves to Saturday
+    // (see the weekend describe above).
+    const cases = ["", "   ", "snart", "någon gång", "kl 99"];
     it.each(cases)("%j → null", (input) => {
       expect(resolveSwedishTime(input, NOW)).toBeNull();
     });
