@@ -45,6 +45,11 @@ vi.mock("@/lib/email", () => ({
   sendVerificationEmail: vi.fn().mockResolvedValue(undefined),
 }));
 
+// Mock the Stripe cleanup so the deleteUser.beforeDelete wire can be asserted.
+vi.mock("@/lib/billing/cancel-on-delete", () => ({
+  cancelStripeOnAccountDelete: vi.fn().mockResolvedValue(undefined),
+}));
+
 // Stub betterAuth + adapters: we don't test their internals, only the hook
 vi.mock("better-auth", () => ({
   betterAuth: (opts: unknown) => ({ _opts: opts }),
@@ -56,6 +61,7 @@ vi.mock("better-auth/next-js", () => ({
   nextCookies: vi.fn().mockReturnValue({}),
 }));
 
+import { cancelStripeOnAccountDelete } from "@/lib/billing/cancel-on-delete";
 import { claimConversation } from "@/lib/chat/anon";
 // The REAL signer — the hook uses the real verifier, so we sign with the real
 // signer (both keyed on the stubbed BETTER_AUTH_SECRET) to exercise the true
@@ -161,6 +167,45 @@ describe("C2: auth databaseHooks.user.create.after — claim wire", () => {
     await expect(
       afterHook?.({ id: "user-111" }, fakeContext),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("deleteUser.beforeDelete — Stripe subscription cleanup", () => {
+  const beforeDelete = opts?.user?.deleteUser?.beforeDelete as
+    | ((user: {
+        id: string;
+        stripeCustomerId?: string | null;
+      }) => Promise<void>)
+    | undefined;
+
+  it("deleteUser stays enabled and has a beforeDelete hook", () => {
+    expect(opts?.user?.deleteUser?.enabled).toBe(true);
+    expect(typeof beforeDelete).toBe("function");
+  });
+
+  it("passes the user id and stripeCustomerId to the Stripe cleanup", async () => {
+    vi.mocked(cancelStripeOnAccountDelete).mockClear();
+    vi.mocked(cancelStripeOnAccountDelete).mockResolvedValue(undefined);
+
+    await beforeDelete?.({ id: "user-1", stripeCustomerId: "cus_123" });
+
+    // stripeClient is null in this test env (no STRIPE_SECRET_KEY) — the
+    // cleanup module owns the null guard.
+    expect(cancelStripeOnAccountDelete).toHaveBeenCalledWith(null, {
+      id: "user-1",
+      stripeCustomerId: "cus_123",
+    });
+  });
+
+  it("ABORTS the deletion (throws) when the Stripe cleanup fails", async () => {
+    // The invariant: an account must never be deleted while its subscription
+    // might live on — otherwise the card keeps being charged with no way to
+    // log in and cancel.
+    vi.mocked(cancelStripeOnAccountDelete).mockRejectedValue(
+      new Error("Stripe is down"),
+    );
+
+    await expect(beforeDelete?.({ id: "user-2" })).rejects.toThrow();
   });
 });
 

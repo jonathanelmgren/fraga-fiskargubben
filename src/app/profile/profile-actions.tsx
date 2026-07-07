@@ -167,6 +167,13 @@ export function ProfileActions({
         <p className="mt-1 text-sm text-muted-foreground">
           Tar bort ditt konto och alla dina chattar permanent. Det här går inte
           att ångra.
+          {isPaid && !isAdmin && (
+            <>
+              {" "}
+              Din premiumprenumeration avslutas direkt, utan återbetalning för
+              tiden som är kvar.
+            </>
+          )}
         </p>
         {deleteError && (
           <p role="alert" className="mt-3 text-sm text-destructive">

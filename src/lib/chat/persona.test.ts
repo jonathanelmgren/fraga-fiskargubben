@@ -117,6 +117,18 @@ describe("FISKARGUBBEN_SYSTEM", () => {
     expect(/rätta aldrig/i.test(FISKARGUBBEN_SYSTEM)).toBe(true);
   });
 
+  it("bans good-luck wishes and mandates Skitfiske", () => {
+    // Swedish angler superstition: wishing luck ("lycka till", "fiskelycka")
+    // is a bad omen. The persona must wish well with "Skitfiske" variants
+    // instead — never a literal good-luck phrase.
+    expect(FISKARGUBBEN_SYSTEM).toContain("Skitfiske");
+    expect(/önska (ALDRIG|aldrig).*lycka till/i.test(FISKARGUBBEN_SYSTEM)).toBe(
+      true,
+    );
+    expect(/fiskelycka/i.test(FISKARGUBBEN_SYSTEM)).toBe(true);
+    expect(/otur/i.test(FISKARGUBBEN_SYSTEM)).toBe(true);
+  });
+
   it("contains wind-down sign-off guidance", () => {
     // When windingDown flag is set (passed in the user turn), persona should
     // keep replies short and start signing off.

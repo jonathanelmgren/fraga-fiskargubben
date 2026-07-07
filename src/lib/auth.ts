@@ -12,6 +12,7 @@ import {
   checkSignupAllowed,
   SIGNUP_IP_LIMIT_MESSAGE,
 } from "@/lib/auth/signup-ip";
+import { cancelStripeOnAccountDelete } from "@/lib/billing/cancel-on-delete";
 import { claimConversation } from "@/lib/chat/anon";
 import { verifyClaimToken } from "@/lib/chat/claim-cookie";
 import {
@@ -140,6 +141,29 @@ export const auth = betterAuth({
     // accounts and conversations via the FK on delete rules).
     deleteUser: {
       enabled: true,
+      // Cancel the Stripe subscription (immediately, never a refund — see
+      // cancel-on-delete.ts) and delete the Stripe customer BEFORE the user
+      // row goes away. Runs before internalAdapter.deleteUser, and a throw
+      // aborts the deletion: the account must never be deleted while its
+      // billing might live on (card charged yearly with no way to log in
+      // and cancel).
+      beforeDelete: async (user) => {
+        try {
+          await cancelStripeOnAccountDelete(stripeClient, {
+            id: user.id,
+            // Column added by the stripe plugin schema; not part of the
+            // inferred better-auth user type.
+            stripeCustomerId: (user as { stripeCustomerId?: string | null })
+              .stripeCustomerId,
+          });
+        } catch (err) {
+          logError("auth.delete-user.stripe-cancel", err, { userId: user.id });
+          throw new APIError("INTERNAL_SERVER_ERROR", {
+            message:
+              "Kunde inte avsluta din prenumeration. Kontot är kvar, försök igen om en stund.",
+          });
+        }
+      },
     },
   },
   socialProviders: {
