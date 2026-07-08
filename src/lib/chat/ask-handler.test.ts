@@ -1187,6 +1187,7 @@ describe("ort clarify round", () => {
         payload: expect.objectContaining({ reason: "non_lake_water" }),
       }),
     );
+    expect(deps.recordClarifyRound).not.toHaveBeenCalled();
   });
 
   it("ort clarify then a real lake resolves with one credit", async () => {
