@@ -28,7 +28,8 @@ export type AnalyticsEventType =
   // H7: previously-invisible gate paths — the anon→register funnel,
   // lake-lock redirects, and credit exhaustion all emit now.
   // register_gate payload { reason: anon_claim_used | anon_ip_limit };
-  // lake_lock payload { lockKey, attemptedLake };
+  // lake_lock payload { lockKey, attemptedLake }. RETIRED (2026-07-08, lake-switch spec),
+  // kept only for historical analytics rows.
   // out_of_credits payload { userId, reason: pre_check | spend_race }.
   | "register_gate"
   | "lake_lock"

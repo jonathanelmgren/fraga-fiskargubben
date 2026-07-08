@@ -141,7 +141,8 @@ Unit tests against `handleAsk` with fake deps (existing pattern):
 3. Switch clarify → bare "i Örebro" reply routes via `pendingLakeName` and resolves.
 4. `resolveAttempts` resets when the extracted lake name pivots mid-`lake_pending`.
 5. Switch attempts exhaustion → give-up message, status/snapshot unchanged, `pendingLakeName`
-   cleared.
+   kept with attempts pinned at max (re-mention of same name goes straight to give-up; different
+   name is a pivot, resets strikes).
 6. Same lake re-mentioned in `resolved` chat → plain follow-up, resolver not called.
 7. älv/kust named post-transition → plain follow-up, resolver not called.
 

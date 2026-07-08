@@ -1018,6 +1018,9 @@ export function getSwitchTarget(
     if (!lakeish) return null;
     if (conversation.status === "unresolved_area") return extraction.lakeName;
     const current = conversation.bareLakeName ?? null;
+    // Legacy resolved rows (snapshot without bareLakeName) intentionally treat ANY
+    // named lake as a switch — re-resolving the same lake is an acceptable upgrade
+    // (fresh snapshot), bounded by turn caps.
     if (
       current !== null &&
       extraction.lakeName.toLowerCase() === current.toLowerCase()
