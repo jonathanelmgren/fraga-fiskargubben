@@ -283,6 +283,7 @@ function buildDeps(): AskHandlerDeps {
         // without bareLakeName → null → the handler skips the lock entirely
         // (degrades to no-lock rather than a false block).
         bareLakeName: row.signalsSnapshot?.bareLakeName ?? null,
+        pendingLakeName: row.pendingLakeName ?? null,
       };
     },
 

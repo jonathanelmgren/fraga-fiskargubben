@@ -101,6 +101,7 @@ function resolvedConversation(
     signalsSnapshot: BASE_SIGNALS,
     lakeId: "tolken-1",
     bareLakeName: "Tolken",
+    pendingLakeName: null,
     ...overrides,
   };
 }
@@ -120,6 +121,7 @@ function pendingConversation(
     signalsSnapshot: null,
     lakeId: null,
     bareLakeName: null,
+    pendingLakeName: null,
     ...overrides,
   };
 }

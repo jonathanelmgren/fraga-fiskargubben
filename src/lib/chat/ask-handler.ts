@@ -151,6 +151,12 @@ export type ConversationRow = {
    * conversations and legacy rows → the handler skips the lock.
    */
   bareLakeName?: string | null;
+  /**
+   * In-flight resolution target (conversations.pendingLakeName). Backs the
+   * strike-reset pivot rule and switch-clarify continuation. Null on legacy
+   * rows and when no clarify is in flight.
+   */
+  pendingLakeName?: string | null;
 };
 
 /** Minimal user row for quota checks. */
@@ -583,6 +589,7 @@ export async function handleAsk(
       signalsSnapshot: null,
       lakeId: null,
       bareLakeName: null,
+      pendingLakeName: null,
     };
   }
 

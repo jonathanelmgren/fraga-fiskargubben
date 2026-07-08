@@ -169,6 +169,13 @@
       "when": 1783371604485,
       "tag": "0023_supreme_mysterio",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1783494577689,
+      "tag": "0024_fluffy_fat_cobra",
+      "breakpoints": true
     }
   ]
 }
