@@ -23,6 +23,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 vi.mock("@/shared/db/client", () => ({ db: {} }));
 
+import { ortClarifyMessage } from "@/lib/chat/gate-messages";
 import { CHAT_LIMIT_MESSAGE } from "@/lib/chat/quota";
 import type { CandidateLake } from "@/lib/lakes/candidates";
 import type { Signals } from "@/lib/signals/types";
@@ -793,9 +794,21 @@ describe("unresolved_area transitions", () => {
     );
   });
 
-  it("named town/coast (waterKind ort) → area mode, no clarify rounds burned", async () => {
+  it("named town/coast (waterKind ort) already set as pendingLakeName → area mode (non_lake_water)", async () => {
+    // First message with an ort now gets a free clarify round (isPivot=true).
+    // The non_lake_water / area transition fires only when the user INSISTS on
+    // the same ort (isPivot=false — pendingLakeName already matches).
     const deps = makeDeps({
       getSession: loggedIn(),
+      getConversation: vi.fn().mockResolvedValue(
+        pendingConversation({
+          resolveAttempts: 1,
+          pendingLakeName: "Kalmar",
+          userLat: 56.66,
+          userLon: 16.36,
+        }),
+      ),
+      countUserMessages: vi.fn().mockResolvedValue(1),
       extract: vi.fn().mockResolvedValue({
         onTopic: true,
         lakeName: "Kalmar",
@@ -804,8 +817,8 @@ describe("unresolved_area transitions", () => {
     });
     const result = await handleAsk(
       {
-        message: "Hur nappar det i Kalmar?",
-        location: { lat: 56.66, lon: 16.36 },
+        message: "Kalmar sa jag",
+        conversationId: "conv-pending",
       },
       deps,
     );
@@ -813,9 +826,14 @@ describe("unresolved_area transitions", () => {
     const r = asType(result, "stream");
     expect(r.badges?.status).toBe("unresolved_area");
     expect(deps.resolveLakeWithHaiku).not.toHaveBeenCalled();
-    expect(deps.recordClarifyRound).not.toHaveBeenCalled();
     expect(deps.buildAreaSignals).toHaveBeenCalledWith(
       expect.objectContaining({ askedWaterKind: "ort" }),
+    );
+    expect(deps.emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "lake_unresolved_area",
+        payload: expect.objectContaining({ reason: "non_lake_water" }),
+      }),
     );
   });
 
@@ -1104,5 +1122,93 @@ describe("helpers", () => {
       airTempC: 17,
       windMs: 4.2,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 12. Ort clarify round
+// ---------------------------------------------------------------------------
+
+describe("ort clarify round", () => {
+  const ortExtraction = {
+    onTopic: true,
+    lakeName: "Stallarholmen",
+    waterKind: "ort" as const,
+  };
+
+  it("gives a named ort one free clarify round instead of an instant area transition", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      extract: vi.fn().mockResolvedValue(ortExtraction),
+    });
+    const result = await handleAsk(
+      { message: "Kan man fiska vid Stallarholmen?" },
+      deps,
+    );
+    expect(result.type).toBe("clarify");
+    if (result.type === "clarify") {
+      expect(result.text).toBe(ortClarifyMessage("Stallarholmen"));
+    }
+    expect(deps.spendCredit).not.toHaveBeenCalled();
+    expect(deps.transitionConversation).not.toHaveBeenCalled();
+    // The register holds only lakes — candidate SQL and the resolver are
+    // both skipped for an ort.
+    expect(deps.candidateLakes).not.toHaveBeenCalled();
+    expect(deps.resolveLakeWithHaiku).not.toHaveBeenCalled();
+    expect(deps.recordClarifyRound).toHaveBeenCalledWith("new-conv-id", {
+      attempts: 1,
+      pendingLakeName: "Stallarholmen",
+    });
+  });
+
+  it("insisting on the SAME ort transitions to unresolved_area as before", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      getConversation: vi.fn().mockResolvedValue(
+        pendingConversation({
+          resolveAttempts: 1,
+          pendingLakeName: "Stallarholmen",
+        }),
+      ),
+      countUserMessages: vi.fn().mockResolvedValue(1),
+      extract: vi.fn().mockResolvedValue(ortExtraction),
+    });
+    const result = await handleAsk(
+      { message: "Stallarholmen sa jag", conversationId: "conv-pending" },
+      deps,
+    );
+    expect(result.type).toBe("stream");
+    expect(deps.transitionConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "unresolved_area" }),
+    );
+    expect(deps.emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "lake_unresolved_area",
+        payload: expect.objectContaining({ reason: "non_lake_water" }),
+      }),
+    );
+  });
+
+  it("ort clarify then a real lake resolves with one credit", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      getConversation: vi.fn().mockResolvedValue(
+        pendingConversation({
+          resolveAttempts: 1,
+          pendingLakeName: "Stallarholmen",
+        }),
+      ),
+      countUserMessages: vi.fn().mockResolvedValue(1),
+      extract: vi.fn().mockResolvedValue({ onTopic: true, lakeName: "Tolken" }),
+    });
+    const result = await handleAsk(
+      { message: "Jag menar Tolken", conversationId: "conv-pending" },
+      deps,
+    );
+    expect(result.type).toBe("stream");
+    expect(deps.spendCredit).toHaveBeenCalledTimes(1);
+    expect(deps.transitionConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "resolved", lakeId: "tolken-1" }),
+    );
   });
 });

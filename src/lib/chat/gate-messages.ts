@@ -72,3 +72,12 @@ export const COST_BUDGET_MESSAGE =
 /** Free credits exhausted. */
 export const OUT_OF_CREDITS_MESSAGE =
   "Dina gratisfrågor är slut för den här gången. Uppgradera så fiskar vi vidare.";
+
+/**
+ * A named ort (town/place) reached the resolver gate. The user most likely
+ * means a lake NEAR that ort, so ask which one — worth a free round before
+ * falling back to area mode. Fires once per ort name (pivot rule).
+ */
+export function ortClarifyMessage(name: string): string {
+  return `${name} låter som en ort snarare än en sjö. Vilken sjö i närheten är det du tänker på?`;
+}

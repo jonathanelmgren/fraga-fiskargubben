@@ -54,6 +54,7 @@ import {
   FAIR_USE_MESSAGE,
   LAKE_UNRESOLVED_MESSAGE,
   OUT_OF_CREDITS_MESSAGE,
+  ortClarifyMessage,
 } from "./gate-messages";
 import { resolveSwedishTime } from "./swedish-time";
 
@@ -722,6 +723,9 @@ async function resolvePendingConversation(ctx: {
         conversation.pendingLakeName.toLowerCase());
   const priorAttempts = isPivot ? 0 : conversation.resolveAttempts;
 
+  const claimTokenPart =
+    newAnonClaimToken !== null ? { claimToken: newAnonClaimToken } : {};
+
   // Non-lake short-circuit: the extractor classified the named water as a
   // river, coast stretch or town. The register holds only lakes, so candidate
   // SQL + the Haiku resolver can never resolve it — worse, trigram could
@@ -733,6 +737,39 @@ async function resolvePendingConversation(ctx: {
     (extraction.waterKind === "älv" ||
       extraction.waterKind === "kust" ||
       extraction.waterKind === "ort");
+
+  // Ort clarify: the user most likely means a lake NEAR the named ort, so one
+  // free round asking which lake beats an instant (credit-charging) area
+  // transition. Only when the ort is a NEW target (isPivot) — insisting on
+  // the same ort falls through to the unresolved_area transition below.
+  if (namedNonLake && extraction.waterKind === "ort" && isPivot) {
+    const ortName = extraction.lakeName as string; // namedNonLake implies defined
+    await deps.recordClarifyRound(conversation.id, {
+      attempts: priorAttempts + 1,
+      pendingLakeName: ortName,
+    });
+    await deps.emit({
+      type: "lake_clarify",
+      conversationId: conversation.id,
+      payload: {
+        attempt: priorAttempts + 1,
+        confidence: 0,
+        lakeName: ortName,
+        clarifyQuestion: ortClarifyMessage(ortName),
+        reason: "ort",
+        prompt: message,
+        candidateCount: 0,
+        candidates: [],
+        hasUserLocation: userLoc !== undefined,
+      },
+    });
+    return {
+      type: "clarify",
+      text: ortClarifyMessage(ortName),
+      conversationId: conversation.id,
+      ...claimTokenPart,
+    };
+  }
 
   const candidates = namedNonLake
     ? []
@@ -757,9 +794,6 @@ async function resolvePendingConversation(ctx: {
       payload: llmUsagePayload("resolve", resolution.usage),
     });
   }
-
-  const claimTokenPart =
-    newAnonClaimToken !== null ? { claimToken: newAnonClaimToken } : {};
 
   // Resolver-input context attached to every non-resolved outcome below —
   // troubleshooting "why didn't this resolve?" needs what Haiku actually SAW
