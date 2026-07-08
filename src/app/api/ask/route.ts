@@ -30,12 +30,7 @@ import { cookies } from "next/headers";
 import { after } from "next/server";
 import { emit } from "@/lib/analytics/events";
 import { extractClientIp, hashSignupIp } from "@/lib/auth/signup-ip";
-import {
-  adviseFirst,
-  adviseFollowup,
-  getLakeLockRedirect,
-  isLakeLockViolation,
-} from "@/lib/chat/advise";
+import { adviseFirst, adviseFollowup } from "@/lib/chat/advise";
 import type {
   AskHandlerDeps,
   AskResult,
@@ -347,8 +342,6 @@ function buildDeps(): AskHandlerDeps {
         turnIndex,
         gender,
       }),
-    isLakeLockViolation,
-    getLakeLockRedirect,
     canSpendCredit,
     spendCredit: (userId) => spendCredit(userId),
     chatTurnAllowed,
@@ -438,6 +431,7 @@ function buildDeps(): AskHandlerDeps {
       lakeId,
       targetTime,
       signalsSnapshot,
+      title,
     }) => {
       await db
         .update(conversations)
@@ -448,6 +442,7 @@ function buildDeps(): AskHandlerDeps {
           signalsSnapshot,
           resolveAttempts: 0,
           pendingLakeName: null,
+          ...(title !== undefined ? { title } : {}),
         })
         .where(eq(conversations.id, id));
     },

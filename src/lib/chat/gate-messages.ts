@@ -81,3 +81,11 @@ export const OUT_OF_CREDITS_MESSAGE =
 export function ortClarifyMessage(name: string): string {
   return `${name} låter som en ort snarare än en sjö. Vilken sjö i närheten är det du tänker på?`;
 }
+
+/**
+ * A lake switch attempt gave up (attempts exhausted or confident
+ * no-such-lake). The conversation keeps its previous context; say so.
+ */
+export function switchGiveUpMessage(currentContext: string): string {
+  return `Den sjön hittar jag tyvärr inte i mina register. Vi kör vidare på ${currentContext} så länge.`;
+}

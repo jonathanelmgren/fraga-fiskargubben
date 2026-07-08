@@ -8,13 +8,7 @@ vi.mock("@/shared/db/client", () => ({ db: {} }));
 import { FISKARGUBBEN_SYSTEM } from "@/lib/chat/persona";
 import { ADVICE_MODEL, FOLLOWUP_MODEL } from "@/lib/claude/models";
 import type { Signals } from "@/lib/signals/types";
-import {
-  adviseFirst,
-  adviseFollowup,
-  getLakeLockRedirect,
-  isLakeLockViolation,
-} from "./advise";
-import type { Extraction } from "./extractor";
+import { adviseFirst, adviseFollowup } from "./advise";
 
 // ---------------------------------------------------------------------------
 // Minimal Signals fixture
@@ -293,51 +287,3 @@ describe("adviseFollowup()", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// isLakeLockViolation (pure helper)
-// ---------------------------------------------------------------------------
-describe("isLakeLockViolation()", () => {
-  const baseExtraction: Extraction = {
-    onTopic: true,
-    lakeName: "Tolken",
-  };
-
-  it("returns false when extraction lake matches conversation lake", () => {
-    expect(isLakeLockViolation(baseExtraction, "Tolken")).toBe(false);
-  });
-
-  it("returns true when extraction lake differs from conversation lake", () => {
-    expect(
-      isLakeLockViolation({ ...baseExtraction, lakeName: "Vättern" }, "Tolken"),
-    ).toBe(true);
-  });
-
-  it("returns false when extraction has no lakeName (no new lake mentioned)", () => {
-    expect(
-      isLakeLockViolation({ ...baseExtraction, lakeName: undefined }, "Tolken"),
-    ).toBe(false);
-  });
-
-  it("case-insensitive comparison — same lake, different case", () => {
-    expect(
-      isLakeLockViolation({ ...baseExtraction, lakeName: "tolken" }, "Tolken"),
-    ).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// getLakeLockRedirect (pure helper)
-// ---------------------------------------------------------------------------
-describe("getLakeLockRedirect()", () => {
-  it("returns in-persona redirect string with lake name interpolated", () => {
-    const result = getLakeLockRedirect("Tolken");
-    expect(result).toBe(
-      "I den här chatten håller vi oss till Tolken, hörru. Starta en ny chatt för ett annat vatten.",
-    );
-  });
-
-  it("uses provided lake name verbatim", () => {
-    const result = getLakeLockRedirect("Vättern");
-    expect(result).toContain("Vättern");
-  });
-});

@@ -31,7 +31,6 @@ type GateType =
   | "topic_refused"
   | "lake_unresolved"
   | "out_of_credits"
-  | "lake_lock"
   // Rebuild: a free clarify round from the lake resolver — rendered as an
   // ordinary assistant bubble; the conversation continues.
   | "clarify"
@@ -59,7 +58,6 @@ export type Badges = {
 const PERSONA_GATES: GateType[] = [
   "topic_refused",
   "lake_unresolved",
-  "lake_lock",
   "clarify",
 ];
 
@@ -74,7 +72,6 @@ const KNOWN_GATE_TYPES: GateType[] = [
   "topic_refused",
   "lake_unresolved",
   "out_of_credits",
-  "lake_lock",
   "clarify",
   "error",
 ];

@@ -17,7 +17,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { FISKARGUBBEN_SYSTEM } from "@/lib/chat/persona";
 import { ADVICE_MODEL, FOLLOWUP_MODEL } from "@/lib/claude/models";
 import type { Signals } from "@/lib/signals/types";
-import type { Extraction, HistoryMessage } from "./extractor";
+import type { HistoryMessage } from "./extractor";
 import { WINDING_DOWN_TURN } from "./quota";
 
 // ---------------------------------------------------------------------------
@@ -153,34 +153,6 @@ export function adviseFollowup({
     system: SYSTEM_BLOCK,
     messages,
   });
-}
-
-// ---------------------------------------------------------------------------
-// Lake-lock helpers (pure)
-// ---------------------------------------------------------------------------
-
-/**
- * Returns true if the extraction names a lake that differs from the
- * conversation's locked lake.
- *
- * v1 scope: only lake name mismatch (no time/date comparison per YAGNI).
- * Case-insensitive comparison for robustness.
- */
-export function isLakeLockViolation(
-  extraction: Extraction,
-  conversationLakeName: string,
-): boolean {
-  if (!extraction.lakeName) return false;
-  return (
-    extraction.lakeName.toLowerCase() !== conversationLakeName.toLowerCase()
-  );
-}
-
-/**
- * In-persona redirect string for lake-lock violations (ADR-0004).
- */
-export function getLakeLockRedirect(lakeName: string): string {
-  return `I den här chatten håller vi oss till ${lakeName}, hörru. Starta en ny chatt för ett annat vatten.`;
 }
 
 // ---------------------------------------------------------------------------

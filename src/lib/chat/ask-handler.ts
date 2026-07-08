@@ -7,10 +7,10 @@
  *
  * Rebuild (2026-07-03 spec): conversations carry a lake-resolution lifecycle:
  *
- *   lake_pending ──(Haiku confident)──────────► resolved
- *        │ ▲                                        │
- *        │ └── clarify round (free, Haiku only)     │
- *        └──(3 strikes or noSuchLake)──► unresolved_area
+ *   lake_pending ──(Haiku confident)──────────► resolved ◄─────┐
+ *        │ ▲                                        │          │
+ *        │ └── clarify round (free, Haiku only)     │   lake switch (free
+ *        └──(3 strikes or noSuchLake)──► unresolved_area ──────┘  re-resolution)
  *
  * Gate ordering:
  *  1. Identity: session OR anon claim token
@@ -23,8 +23,9 @@
  *     - lake_pending → candidate SQL + Haiku resolver. Confident → transition
  *       to resolved; strikes/noSuchLake → transition to unresolved_area;
  *       otherwise a free clarify round.
- *     - resolved → lake-lock check → adviseFollowup with frozen snapshot
- *     - unresolved_area → adviseFollowup with frozen area snapshot (no lock)
+ *     - resolved / unresolved_area → lake switch check (a newly named lake
+ *       re-enters resolution, free) → otherwise adviseFollowup with the
+ *       frozen snapshot
  *
  * THE CREDIT IS SPENT EXACTLY ONCE — at the transition out of lake_pending
  * (whether to resolved or unresolved_area), immediately before the first
@@ -52,9 +53,11 @@ import {
   CHAT_LIMIT_MESSAGE,
   COST_BUDGET_MESSAGE,
   FAIR_USE_MESSAGE,
+  LAKE_CLARIFY_FALLBACK,
   LAKE_UNRESOLVED_MESSAGE,
   OUT_OF_CREDITS_MESSAGE,
   ortClarifyMessage,
+  switchGiveUpMessage,
 } from "./gate-messages";
 import { resolveSwedishTime } from "./swedish-time";
 
@@ -250,9 +253,6 @@ export type AskHandlerDeps = {
     turnIndex: number;
     gender?: string;
   }): AdviceStream;
-  isLakeLockViolation(extraction: Extraction, lakeName: string): boolean;
-  getLakeLockRedirect(lakeName: string): string;
-
   // Quota
   canSpendCredit(user: UserRow, opts?: { isAdmin?: boolean }): boolean;
   /**
@@ -298,6 +298,8 @@ export type AskHandlerDeps = {
     lakeId: string | null;
     targetTime: Date | null;
     signalsSnapshot: Signals;
+    /** Replaces the drawer headline on a lake switch; omitted = keep. */
+    title?: string;
   }): Promise<void>;
   /**
    * Records one clarify round in a single write: resolveAttempts is set to
@@ -328,7 +330,6 @@ export type AskResult =
   | { type: "topic_refused"; text: string }
   | { type: "lake_unresolved"; text: string }
   | { type: "out_of_credits"; text: string }
-  | { type: "lake_lock"; text: string }
   | {
       /**
        * A free clarify round: the resolver was not confident enough and asks
@@ -642,22 +643,21 @@ export async function handleAsk(
     return { type: "lake_unresolved", text: LAKE_UNRESOLVED_MESSAGE };
   }
 
-  // Lake-lock only applies to resolved conversations with a bare name.
-  const lockKey =
-    conversation.status === "resolved"
-      ? (conversation.bareLakeName ?? null)
-      : null;
-  if (lockKey !== null && deps.isLakeLockViolation(extraction, lockKey)) {
-    const redirect = deps.getLakeLockRedirect(lockKey);
-    // lockKey = the lake this conversation is bound to; attemptedLake = what
-    // the user tried to switch to. Together they answer "which lake pairs
-    // trip the lock?" — the signal for whether the lock is too aggressive.
-    await deps.emit({
-      type: "lake_lock",
-      conversationId: conversation.id,
-      payload: { lockKey, attemptedLake: extraction.lakeName ?? null },
+  // Lake switch: a post-transition turn that names a NEW lake (or continues
+  // an in-flight switch clarify with a municipality) re-enters resolution.
+  // The credit was spent at the first transition — switching is free; the
+  // turn caps bound the rounds. Replaces the old lake-lock redirect.
+  const switchTarget = getSwitchTarget(conversation, extraction);
+  if (switchTarget !== null) {
+    return attemptLakeSwitch({
+      conversation,
+      extraction,
+      switchTarget,
+      message,
+      history,
+      gender,
+      deps,
     });
-    return { type: "lake_lock", text: redirect };
   }
 
   const persistedUserCount =
@@ -990,6 +990,217 @@ async function resolvePendingConversation(ctx: {
     text: resolution.clarifyQuestion,
     conversationId: conversation.id,
     ...claimTokenPart,
+  };
+}
+
+/**
+ * Decides whether a post-transition turn is a lake-switch attempt, and for
+ * which name. Returns null for ordinary follow-ups.
+ *
+ * Explicit: the extractor named a lake-ish water (sjö/annat/no kind) that is
+ * not the conversation's current lake — in unresolved_area ANY named lake
+ * counts. Continuation: no lake named, but a switch clarify is in flight and
+ * the user supplied a municipality ("i Örebro"). A reply with neither keeps
+ * the pending target for a later turn and follows up normally.
+ */
+export function getSwitchTarget(
+  conversation: Pick<
+    ConversationRow,
+    "status" | "bareLakeName" | "pendingLakeName"
+  >,
+  extraction: Extraction,
+): string | null {
+  if (extraction.lakeName !== undefined) {
+    const lakeish =
+      extraction.waterKind === undefined ||
+      extraction.waterKind === "sjö" ||
+      extraction.waterKind === "annat";
+    if (!lakeish) return null;
+    if (conversation.status === "unresolved_area") return extraction.lakeName;
+    const current = conversation.bareLakeName ?? null;
+    if (
+      current !== null &&
+      extraction.lakeName.toLowerCase() === current.toLowerCase()
+    ) {
+      return null;
+    }
+    return extraction.lakeName;
+  }
+  if (conversation.pendingLakeName && extraction.municipality) {
+    return conversation.pendingLakeName;
+  }
+  return null;
+}
+
+async function attemptLakeSwitch(ctx: {
+  conversation: ConversationRow;
+  extraction: Extraction;
+  switchTarget: string;
+  message: string;
+  history: HistoryMessage[];
+  gender?: string;
+  deps: AskHandlerDeps;
+}): Promise<AskResult> {
+  const {
+    conversation,
+    extraction,
+    switchTarget,
+    message,
+    history,
+    gender,
+    deps,
+  } = ctx;
+
+  const userLoc: UserLocation | undefined =
+    conversation.userLat !== null && conversation.userLon !== null
+      ? { lat: conversation.userLat, lon: conversation.userLon }
+      : undefined;
+
+  // Pivot rule, same as the pending phase: a new target starts fresh.
+  const isPivot =
+    conversation.pendingLakeName == null ||
+    switchTarget.toLowerCase() !== conversation.pendingLakeName.toLowerCase();
+  const priorAttempts = isPivot ? 0 : conversation.resolveAttempts;
+
+  const candidates = await deps.candidateLakes(switchTarget, userLoc);
+  const resolution = await deps.resolveLakeWithHaiku({
+    message,
+    lakeName: switchTarget,
+    municipality: extraction.municipality,
+    userLoc,
+    candidates,
+    history,
+  });
+
+  if (resolution.usage) {
+    await deps.emit({
+      type: "llm_usage",
+      conversationId: conversation.id,
+      payload: llmUsagePayload("resolve", resolution.usage),
+    });
+  }
+
+  // Same troubleshooting context as the pending phase: what Haiku SAW.
+  const resolutionContext = {
+    prompt: message,
+    candidateCount: candidates.length,
+    candidates: candidates
+      .slice(0, 5)
+      .map((c) => (c.name ? `${c.name} (${c.municipality})` : c.id)),
+    hasUserLocation: userLoc !== undefined,
+  };
+
+  const picked =
+    resolution.lakeId !== null &&
+    resolution.confidence >= RESOLVE_CONFIDENCE_THRESHOLD
+      ? (candidates.find((c) => c.id === resolution.lakeId) ?? null)
+      : null;
+
+  if (picked) {
+    const targetTime = await resolveTargetTime(
+      extraction,
+      conversation.id,
+      deps,
+    );
+    const lakeWithLabel: Lake & { label: string } = {
+      ...picked,
+      label: picked.name
+        ? formatLabel({
+            name: picked.name,
+            municipality: picked.municipality,
+            county: picked.county,
+          })
+        : picked.id,
+    };
+    const signals = await deps.buildSignals({
+      lake: lakeWithLabel,
+      targetTime,
+      now: deps.now,
+    });
+
+    // NO credit charge here — spent once at the first lake_pending exit.
+    // transitionConversation resets resolveAttempts + pendingLakeName.
+    await deps.transitionConversation({
+      id: conversation.id,
+      status: "resolved",
+      lakeId: picked.id,
+      targetTime,
+      signalsSnapshot: signals,
+      ...(extraction.title ? { title: extraction.title } : {}),
+    });
+    await deps.emit({
+      type: "lake_switched",
+      lakeId: picked.id,
+      conversationId: conversation.id,
+      payload: {
+        fromLakeId: conversation.lakeId ?? null,
+        fromStatus: conversation.status,
+        lakeName: switchTarget,
+        confidence: resolution.confidence,
+        attempt: priorAttempts + 1,
+      },
+    });
+
+    const stream = deps.adviseFirst({ signals, message, history, gender });
+    return {
+      type: "stream",
+      stream,
+      conversationId: conversation.id,
+      badges: toBadges(signals, "resolved"),
+    };
+  }
+
+  const attemptsAfterThis = priorAttempts + 1;
+  if (resolution.noSuchLake || attemptsAfterThis >= MAX_RESOLVE_ATTEMPTS) {
+    // Give up on the switch, keep the current context. The target stays
+    // recorded with attempts pinned at max so a re-mention of the same name
+    // goes straight back here (a confident resolution still wins above);
+    // a DIFFERENT name is a pivot and starts fresh.
+    await deps.recordClarifyRound(conversation.id, {
+      attempts: MAX_RESOLVE_ATTEMPTS,
+      pendingLakeName: switchTarget,
+    });
+    await deps.emit({
+      type: "lake_switch_failed",
+      conversationId: conversation.id,
+      payload: {
+        lakeName: switchTarget,
+        reason: resolution.noSuchLake ? "no_such_lake" : "attempts_exhausted",
+        confidence: resolution.confidence,
+        ...resolutionContext,
+      },
+    });
+    const currentContext =
+      conversation.bareLakeName ??
+      conversation.signalsSnapshot?.lake ??
+      "det vi pratade om";
+    return {
+      type: "clarify",
+      text: switchGiveUpMessage(currentContext),
+      conversationId: conversation.id,
+    };
+  }
+
+  await deps.recordClarifyRound(conversation.id, {
+    attempts: attemptsAfterThis,
+    pendingLakeName: switchTarget,
+  });
+  await deps.emit({
+    type: "lake_clarify",
+    conversationId: conversation.id,
+    payload: {
+      attempt: attemptsAfterThis,
+      confidence: resolution.confidence,
+      lakeName: switchTarget,
+      clarifyQuestion: resolution.clarifyQuestion,
+      phase: "switch",
+      ...resolutionContext,
+    },
+  });
+  return {
+    type: "clarify",
+    text: resolution.clarifyQuestion || LAKE_CLARIFY_FALLBACK,
+    conversationId: conversation.id,
   };
 }
 
