@@ -298,7 +298,15 @@ export type AskHandlerDeps = {
     targetTime: Date | null;
     signalsSnapshot: Signals;
   }): Promise<void>;
-  incrementResolveAttempts(id: string): Promise<void>;
+  /**
+   * Records one clarify round in a single write: resolveAttempts is set to
+   * the ABSOLUTE value `attempts` (not incremented — the pivot rule can reset
+   * it) and pendingLakeName to the current resolution target.
+   */
+  recordClarifyRound(
+    id: string,
+    opts: { attempts: number; pendingLakeName: string | null },
+  ): Promise<void>;
 
   // Analytics
   emit(event: AnalyticsEvent): Promise<void>;
@@ -703,6 +711,17 @@ async function resolvePendingConversation(ctx: {
       ? { lat: conversation.userLat, lon: conversation.userLon }
       : undefined;
 
+  // Pivot rule: a clarify round targeting a NEW lake name starts with a fresh
+  // strike count — strikes accumulated on "Puttern" must not count against
+  // "Hjälmaren". pendingLakeName null means "no target yet", so any named
+  // lake is a fresh target (harmless on the first message: attempts are 0).
+  const isPivot =
+    extraction.lakeName !== undefined &&
+    (conversation.pendingLakeName == null ||
+      extraction.lakeName.toLowerCase() !==
+        conversation.pendingLakeName.toLowerCase());
+  const priorAttempts = isPivot ? 0 : conversation.resolveAttempts;
+
   // Non-lake short-circuit: the extractor classified the named water as a
   // river, coast stretch or town. The register holds only lakes, so candidate
   // SQL + the Haiku resolver can never resolve it — worse, trigram could
@@ -806,7 +825,7 @@ async function resolvePendingConversation(ctx: {
       payload: {
         lakeName: extraction.lakeName ?? null,
         confidence: resolution.confidence,
-        attempt: conversation.resolveAttempts + 1,
+        attempt: priorAttempts + 1,
       },
     });
 
@@ -823,7 +842,7 @@ async function resolvePendingConversation(ctx: {
 
   // ── Strikes exhausted or confident no-such-lake → unresolved_area ─────
 
-  const attemptsAfterThis = conversation.resolveAttempts + 1;
+  const attemptsAfterThis = priorAttempts + 1;
   if (resolution.noSuchLake || attemptsAfterThis >= MAX_RESOLVE_ATTEMPTS) {
     const targetTime = await resolveTargetTime(
       extraction,
@@ -915,7 +934,11 @@ async function resolvePendingConversation(ctx: {
 
   // ── Not confident yet → free clarify round ─────────────────────────────
 
-  await deps.incrementResolveAttempts(conversation.id);
+  await deps.recordClarifyRound(conversation.id, {
+    attempts: attemptsAfterThis,
+    pendingLakeName:
+      extraction.lakeName ?? conversation.pendingLakeName ?? null,
+  });
   await deps.emit({
     type: "lake_clarify",
     conversationId: conversation.id,
