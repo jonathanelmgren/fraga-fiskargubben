@@ -4,6 +4,7 @@
  */
 
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { renderToString } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { FeedbackPromptDialog } from "./feedback-prompt-dialog";
@@ -29,6 +30,14 @@ afterEach(() => {
 });
 
 describe("FeedbackPromptDialog", () => {
+  it("renders nothing on the server pass (SSR crash regression, digest eb8d1abf)", () => {
+    // AskShell renders this during SSR when the feedback gate is due, but the
+    // portal target is document.body — which does not exist on the server.
+    // renderToString runs no effects, exactly like the SSR pass: the mount
+    // guard must keep the output empty so createPortal is never reached.
+    expect(renderToString(<FeedbackPromptDialog />)).toBe("");
+  });
+
   it("posts shown exactly once on mount", async () => {
     render(<FeedbackPromptDialog />);
     await waitFor(() => expect(sentActions()).toEqual([{ action: "shown" }]));

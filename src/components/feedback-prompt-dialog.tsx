@@ -28,6 +28,10 @@ function send(
  * closes without clicking Discord or submitting.
  */
 export function FeedbackPromptDialog() {
+  // AskShell renders this during SSR (the gate is server-side), but the
+  // portal target is document.body — render nothing until mounted so the
+  // server pass never touches `document` (ReferenceError, digest eb8d1abf).
+  const [mounted, setMounted] = useState(false);
   const [open, setOpen] = useState(true);
   const [message, setMessage] = useState("");
   const [phase, setPhase] = useState<"form" | "sending" | "thanks">("form");
@@ -40,6 +44,7 @@ export function FeedbackPromptDialog() {
   const discordInvite = process.env.NEXT_PUBLIC_DISCORD_INVITE;
 
   useEffect(() => {
+    setMounted(true);
     if (shownSentRef.current) return; // StrictMode double-invoke guard
     shownSentRef.current = true;
     send("shown").catch(() => {});
@@ -65,7 +70,7 @@ export function FeedbackPromptDialog() {
     return () => window.removeEventListener("keydown", onKey);
   }, [open, close]);
 
-  if (!open) return null;
+  if (!mounted || !open) return null;
 
   const handleDiscordClick = () => {
     actedRef.current = true;
