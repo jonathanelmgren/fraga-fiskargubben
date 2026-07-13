@@ -207,7 +207,15 @@ Svara ENBART med det strukturerade JSON-objektet — ingen annan text.`;
     // M14: an API failure (network/429/5xx/timeout) must NOT be silently
     // rendered as an off-topic refusal. Throw a typed error so the route
     // classifier maps it to 503 instead of a topic-gate refusal.
-    if (err instanceof DOMException && err.name === "TimeoutError") {
+    //
+    // The SDK never lets the AbortSignal.timeout() DOMException through: a
+    // fired caller signal surfaces as APIUserAbortError ("Request was
+    // aborted."). Our timeout signal is the only abort source in this call,
+    // so an SDK abort here IS a timeout.
+    if (
+      err instanceof Anthropic.APIUserAbortError ||
+      (err instanceof DOMException && err.name === "TimeoutError")
+    ) {
       throw new TimeoutError("Extractor request timed out", {
         service: "anthropic-extractor",
         cause: err,

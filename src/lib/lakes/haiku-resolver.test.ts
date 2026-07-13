@@ -2,6 +2,7 @@ import { vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
+import Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it } from "vitest";
 import { ExternalServiceError, TimeoutError } from "@/lib/errors";
 import type { CandidateLake } from "./candidates";
@@ -178,6 +179,23 @@ describe("resolveLakeWithHaiku", () => {
     const parseSpy = vi
       .fn()
       .mockRejectedValue(new DOMException("timeout", "TimeoutError"));
+    await expect(
+      resolveLakeWithHaiku({
+        message: "Åsunden",
+        candidates,
+        // biome-ignore lint/suspicious/noExplicitAny: test fake
+        deps: { client: { messages: { parse: parseSpy } } as any },
+      }),
+    ).rejects.toBeInstanceOf(TimeoutError);
+  });
+
+  it("wraps the SDK's APIUserAbortError (fired timeout signal) as TimeoutError", async () => {
+    // What the real SDK throws when AbortSignal.timeout() fires: it swallows
+    // the DOMException and raises APIUserAbortError ("Request was aborted.").
+    // Digest a1f0f3fc logged this as a generic ExternalServiceError.
+    const parseSpy = vi
+      .fn()
+      .mockRejectedValue(new Anthropic.APIUserAbortError());
     await expect(
       resolveLakeWithHaiku({
         message: "Åsunden",
