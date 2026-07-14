@@ -44,6 +44,14 @@ export const onRequestError: Instrumentation.onRequestError = async (
   // failure (e.g. session backend down) also surfaces on real routes.
   if (context.routePath === "/_not-found") return;
 
+  // Vulnerability scanners POST garbage Next-Router-State-Tree headers to
+  // random paths; Next throws while validating the header (E10 "could not be
+  // parsed" / E142 "too large" / E418 "multiple headers" — see Next's
+  // parse-and-validate-flight-router-state). Malformed client input, not a
+  // server fault: no legitimate client ever sends an invalid router state
+  // header. The nginx access log keeps the trace (IP, path, UA).
+  if (/router state header/i.test((err as Error)?.message ?? "")) return;
+
   // err is typed unknown; at runtime it is an Error, possibly with a React
   // digest when it surfaced during Server Components rendering.
   const e = err as Error & { digest?: string };
