@@ -286,4 +286,3 @@ describe("adviseFollowup()", () => {
     ).toBe(true);
   });
 });
-

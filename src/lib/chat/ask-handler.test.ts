@@ -1041,9 +1041,7 @@ describe("lake switch (post-transition)", () => {
       getSession: loggedIn(),
       getConversation: vi.fn().mockResolvedValue(resolvedConversation()),
       countUserMessages: vi.fn().mockResolvedValue(2),
-      extract: vi
-        .fn()
-        .mockResolvedValue({ onTopic: true, lakeName: "tolken" }),
+      extract: vi.fn().mockResolvedValue({ onTopic: true, lakeName: "tolken" }),
     });
     const result = await handleAsk(
       { message: "Tolken imorgon då?", conversationId: "conv-1" },
@@ -1101,7 +1099,10 @@ describe("lake switch (post-transition)", () => {
     const deps = makeDeps({
       getSession: loggedIn(),
       getConversation: vi.fn().mockResolvedValue(
-        resolvedConversation({ pendingLakeName: "Hjälmaren", resolveAttempts: 1 }),
+        resolvedConversation({
+          pendingLakeName: "Hjälmaren",
+          resolveAttempts: 1,
+        }),
       ),
       countUserMessages: vi.fn().mockResolvedValue(3),
       extract: vi
@@ -1132,7 +1133,10 @@ describe("lake switch (post-transition)", () => {
     const deps = makeDeps({
       getSession: loggedIn(),
       getConversation: vi.fn().mockResolvedValue(
-        resolvedConversation({ pendingLakeName: "Hjälmaren", resolveAttempts: 1 }),
+        resolvedConversation({
+          pendingLakeName: "Hjälmaren",
+          resolveAttempts: 1,
+        }),
       ),
       countUserMessages: vi.fn().mockResolvedValue(3),
       extract: vi.fn().mockResolvedValue({ onTopic: true }),
@@ -1150,7 +1154,10 @@ describe("lake switch (post-transition)", () => {
     const deps = makeDeps({
       getSession: loggedIn(),
       getConversation: vi.fn().mockResolvedValue(
-        resolvedConversation({ pendingLakeName: "Hjälmaren", resolveAttempts: 2 }),
+        resolvedConversation({
+          pendingLakeName: "Hjälmaren",
+          resolveAttempts: 2,
+        }),
       ),
       countUserMessages: vi.fn().mockResolvedValue(4),
       extract: vi
@@ -1225,7 +1232,10 @@ describe("lake switch (post-transition)", () => {
         .fn()
         .mockResolvedValue(confidentResolution("hjalmaren-1")),
     });
-    await handleAsk({ message: "Gös i Hjälmaren?", conversationId: "conv-1" }, deps);
+    await handleAsk(
+      { message: "Gös i Hjälmaren?", conversationId: "conv-1" },
+      deps,
+    );
     expect(deps.transitionConversation).toHaveBeenCalledWith(
       expect.objectContaining({ title: "Gös i Hjälmaren" }),
     );
