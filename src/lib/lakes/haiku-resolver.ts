@@ -181,7 +181,14 @@ export async function resolveLakeWithHaiku(params: {
       { signal: AbortSignal.timeout(RESOLVER_TIMEOUT_MS) },
     );
   } catch (err) {
-    if (err instanceof DOMException && err.name === "TimeoutError") {
+    // The SDK never lets the AbortSignal.timeout() DOMException through: a
+    // fired caller signal surfaces as APIUserAbortError ("Request was
+    // aborted."). Our timeout signal is the only abort source in this call,
+    // so an SDK abort here IS a timeout.
+    if (
+      err instanceof Anthropic.APIUserAbortError ||
+      (err instanceof DOMException && err.name === "TimeoutError")
+    ) {
       throw new TimeoutError("Lake resolver request timed out", {
         service: "anthropic-resolver",
         cause: err,

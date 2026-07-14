@@ -1,3 +1,4 @@
+import Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it, vi } from "vitest";
 import { EXTRACTOR_MODEL } from "@/lib/claude/models";
 import { ExternalServiceError, TimeoutError } from "@/lib/errors";
@@ -216,6 +217,21 @@ describe("extract()", () => {
     const timeout = new DOMException("timed out", "TimeoutError");
     const client = {
       messages: { parse: vi.fn().mockRejectedValue(timeout) },
+    };
+
+    await expect(
+      // biome-ignore lint/suspicious/noExplicitAny: test fake
+      extract("fiska i Tolken", [], { client: client as any }),
+    ).rejects.toBeInstanceOf(TimeoutError);
+  });
+
+  it("rejects with TimeoutError when the SDK surfaces the timeout as APIUserAbortError", async () => {
+    // What the real SDK throws when AbortSignal.timeout() fires: it swallows
+    // the DOMException and raises APIUserAbortError ("Request was aborted.").
+    // Digests f273f744 / 5c3de43b logged these as generic ExternalServiceError.
+    const aborted = new Anthropic.APIUserAbortError();
+    const client = {
+      messages: { parse: vi.fn().mockRejectedValue(aborted) },
     };
 
     await expect(
