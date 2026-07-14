@@ -42,3 +42,12 @@ surprising than auto-refetching (which would spend a Credit on what felt like a 
 **Why a hard topic lock (fishing only):** the persona refuses non-fishing questions in character,
 enforced first at the Haiku Extractor so off-topic probing can never burn a Credit or reach Sonnet.
 This bounds both cost and scope creep, and keeps the product's voice intact.
+
+## Amendment (2026-07-08)
+
+The lake-lock ("one conversation = one lake") is retired by the lake-switch
+design (`docs/superpowers/specs/2026-07-08-lake-switch-design.md`). The
+conversation remains the billable unit: the credit is still spent exactly once,
+at the first transition out of `lake_pending`. Later turns that name a new lake
+re-enter resolution for free; cost stays bounded by the chat-turn caps
+(wind-down at 15, freeze at ~20).

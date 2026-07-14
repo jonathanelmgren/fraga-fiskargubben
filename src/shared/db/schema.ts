@@ -340,6 +340,15 @@ export const conversations = pgTable("conversation", {
   /** Failed Haiku clarify rounds so far; at MAX_RESOLVE_ATTEMPTS → unresolved_area. */
   resolveAttempts: integer("resolve_attempts").default(0).notNull(),
   /**
+   * The lake name currently being resolved via clarify rounds (the
+   * "resolution target"). In lake_pending it backs the pivot rule: a clarify
+   * round targeting a NEW name resets resolveAttempts. Post-transition it
+   * carries an in-flight lake switch across a clarify round ("Hjälmaren" →
+   * "vilken kommun?" → "i Örebro"). Null when no clarify is in flight and on
+   * legacy rows. Spec: 2026-07-08-lake-switch-design.md.
+   */
+  pendingLakeName: text("pending_lake_name"),
+  /**
    * Browser geolocation captured at the first prompt (WGS84), when the user
    * granted it. Used as a resolution bias and as the unresolved-area coords
    * fallback. A place named in the prompt always beats these.

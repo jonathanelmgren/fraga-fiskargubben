@@ -1,0 +1,1 @@
+ALTER TABLE "conversation" ADD COLUMN "pending_lake_name" text;

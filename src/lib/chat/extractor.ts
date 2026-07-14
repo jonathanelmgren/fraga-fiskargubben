@@ -106,9 +106,10 @@ const ExtractionOutputSchema = z.object({
       'Kort svensk rubrik för samtalet, 2-5 ord, t.ex. "Abborre i Vättern" eller "Makrill i skärgården". Inga citattecken, ingen punkt.',
     ),
   // M10: `contextChanged` was a REQUIRED schema field (forcing the model to
-  // compute it) but the handler never read it — the lake-lock decision uses
-  // isLakeLockViolation on lakeName.  Dropped to stop forcing a dead model
-  // field and to remove drift between the Extractor contract and the wiring.
+  // compute it) but the handler never read it — the lake switch path in
+  // handleAsk (ask-handler.ts) decides whether a named lake re-enters resolution.
+  // Dropped to stop forcing a dead model field and to remove drift between the
+  // Extractor contract and the wiring.
 });
 
 // ---------------------------------------------------------------------------
@@ -135,9 +136,10 @@ function defaultClient(): Pick<Anthropic, "messages"> {
  *
  * @param message  The raw user message (Swedish free text).
  * @param history  Prior conversation turns, included as context so the model
- *                 resolves references against the conversation. (Lake-lock is
- *                 decided downstream by isLakeLockViolation on lakeName — the
- *                 old contextChanged field was removed in M10.)
+ *                 resolves references against the conversation. (The lake switch
+ *                 path in handleAsk (ask-handler.ts) decides whether a named lake
+ *                 re-enters resolution; the old contextChanged field was removed
+ *                 in M10.)
  * @param deps     Optional deps for testing (inject a fake client).
  */
 export async function extract(

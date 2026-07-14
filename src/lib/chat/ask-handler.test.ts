@@ -23,6 +23,10 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 vi.mock("@/shared/db/client", () => ({ db: {} }));
 
+import {
+  ortClarifyMessage,
+  switchGiveUpMessage,
+} from "@/lib/chat/gate-messages";
 import { CHAT_LIMIT_MESSAGE } from "@/lib/chat/quota";
 import type { CandidateLake } from "@/lib/lakes/candidates";
 import type { Signals } from "@/lib/signals/types";
@@ -76,6 +80,14 @@ const TOLKEN: CandidateLake = {
   areaHa: 1200,
 };
 
+const HJALMAREN = {
+  ...TOLKEN,
+  id: "hjalmaren-1",
+  name: "Hjälmaren",
+  municipality: "Örebro",
+  county: "Örebro",
+};
+
 const ASUNDEN: CandidateLake = {
   id: "asunden-1",
   name: "Åsunden",
@@ -101,6 +113,7 @@ function resolvedConversation(
     signalsSnapshot: BASE_SIGNALS,
     lakeId: "tolken-1",
     bareLakeName: "Tolken",
+    pendingLakeName: null,
     ...overrides,
   };
 }
@@ -120,6 +133,7 @@ function pendingConversation(
     signalsSnapshot: null,
     lakeId: null,
     bareLakeName: null,
+    pendingLakeName: null,
     ...overrides,
   };
 }
@@ -170,15 +184,13 @@ function makeDeps(overrides: Partial<AskHandlerDeps> = {}): AskHandlerDeps {
     } satisfies Signals),
     adviseFirst: vi.fn().mockReturnValue(makeStream()),
     adviseFollowup: vi.fn().mockReturnValue(makeStream()),
-    isLakeLockViolation: vi.fn().mockReturnValue(false),
-    getLakeLockRedirect: vi.fn().mockReturnValue("lake-lock redirect"),
     canSpendCredit: vi.fn().mockReturnValue(true),
     spendCredit: vi.fn().mockResolvedValue(true),
     chatTurnAllowed: vi.fn().mockReturnValue(true),
     freezeConversation: vi.fn().mockResolvedValue(undefined),
     createPendingConversation: vi.fn().mockResolvedValue("new-conv-id"),
     transitionConversation: vi.fn().mockResolvedValue(undefined),
-    incrementResolveAttempts: vi.fn().mockResolvedValue(undefined),
+    recordClarifyRound: vi.fn().mockResolvedValue(undefined),
     emit: vi.fn().mockResolvedValue(undefined),
     now: new Date("2026-06-29T10:00:00Z"),
     ...overrides,
@@ -560,7 +572,10 @@ describe("clarify rounds", () => {
     const r = asType(result, "clarify");
     expect(r.text).toBe("Vilken kommun ligger sjön i?");
     expect(r.conversationId).toBe("new-conv-id");
-    expect(deps.incrementResolveAttempts).toHaveBeenCalledWith("new-conv-id");
+    expect(deps.recordClarifyRound).toHaveBeenCalledWith("new-conv-id", {
+      attempts: 1,
+      pendingLakeName: "Tolken",
+    });
     expect(deps.spendCredit).not.toHaveBeenCalled();
     expect(deps.adviseFirst).not.toHaveBeenCalled();
     expect(deps.transitionConversation).not.toHaveBeenCalled();
@@ -616,6 +631,63 @@ describe("clarify rounds", () => {
   });
 });
 
+describe("pivot strike-reset (pending phase)", () => {
+  it("resets strikes when the clarify target pivots to a new lake", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      getConversation: vi.fn().mockResolvedValue(
+        pendingConversation({
+          resolveAttempts: 2,
+          pendingLakeName: "Puttern",
+        }),
+      ),
+      countUserMessages: vi.fn().mockResolvedValue(2),
+      extract: vi
+        .fn()
+        .mockResolvedValue({ onTopic: true, lakeName: "Hjälmaren" }),
+      resolveLakeWithHaiku: vi.fn().mockResolvedValue(unsureResolution()),
+    });
+    const result = await handleAsk(
+      { message: "Hjälmaren då?", conversationId: "conv-pending" },
+      deps,
+    );
+    // 2 strikes on Puttern + this unsure round would have exhausted the
+    // attempts — the pivot to Hjälmaren resets them, so this stays a free
+    // clarify round instead of an unresolved_area transition.
+    expect(result.type).toBe("clarify");
+    expect(deps.transitionConversation).not.toHaveBeenCalled();
+    expect(deps.spendCredit).not.toHaveBeenCalled();
+    expect(deps.recordClarifyRound).toHaveBeenCalledWith("conv-pending", {
+      attempts: 1,
+      pendingLakeName: "Hjälmaren",
+    });
+  });
+
+  it("keeps counting strikes when the same lake stays the target", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      getConversation: vi.fn().mockResolvedValue(
+        pendingConversation({
+          resolveAttempts: 2,
+          pendingLakeName: "Tolken",
+        }),
+      ),
+      countUserMessages: vi.fn().mockResolvedValue(2),
+      extract: vi.fn().mockResolvedValue({ onTopic: true, lakeName: "Tolken" }),
+      resolveLakeWithHaiku: vi.fn().mockResolvedValue(unsureResolution()),
+    });
+    const result = await handleAsk(
+      { message: "Tolken sa jag", conversationId: "conv-pending" },
+      deps,
+    );
+    // Third strike on the SAME target → unresolved_area transition as before.
+    expect(result.type).toBe("stream");
+    expect(deps.transitionConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "unresolved_area" }),
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // 7. Unresolved-area transitions
 // ---------------------------------------------------------------------------
@@ -624,9 +696,12 @@ describe("unresolved_area transitions", () => {
   it("third failed attempt → area mode with candidate-centroid coords", async () => {
     const deps = makeDeps({
       getSession: loggedIn(),
-      getConversation: vi
-        .fn()
-        .mockResolvedValue(pendingConversation({ resolveAttempts: 2 })),
+      getConversation: vi.fn().mockResolvedValue(
+        pendingConversation({
+          resolveAttempts: 2,
+          pendingLakeName: "Gösputten",
+        }),
+      ),
       extract: vi.fn().mockResolvedValue({
         onTopic: true,
         lakeName: "Gösputten",
@@ -682,7 +757,7 @@ describe("unresolved_area transitions", () => {
     const result = await handleAsk({ message: "Fiska i Atlantis?" }, deps);
     const r = asType(result, "stream");
     expect(r.badges?.status).toBe("unresolved_area");
-    expect(deps.incrementResolveAttempts).not.toHaveBeenCalled();
+    expect(deps.recordClarifyRound).not.toHaveBeenCalled();
   });
 
   it("named river (waterKind älv) → area mode WITHOUT lake resolution", async () => {
@@ -728,9 +803,21 @@ describe("unresolved_area transitions", () => {
     );
   });
 
-  it("named town/coast (waterKind ort) → area mode, no clarify rounds burned", async () => {
+  it("named town/coast (waterKind ort) already set as pendingLakeName → area mode (non_lake_water)", async () => {
+    // First message with an ort now gets a free clarify round (isPivot=true).
+    // The non_lake_water / area transition fires only when the user INSISTS on
+    // the same ort (isPivot=false — pendingLakeName already matches).
     const deps = makeDeps({
       getSession: loggedIn(),
+      getConversation: vi.fn().mockResolvedValue(
+        pendingConversation({
+          resolveAttempts: 1,
+          pendingLakeName: "Kalmar",
+          userLat: 56.66,
+          userLon: 16.36,
+        }),
+      ),
+      countUserMessages: vi.fn().mockResolvedValue(1),
       extract: vi.fn().mockResolvedValue({
         onTopic: true,
         lakeName: "Kalmar",
@@ -739,8 +826,8 @@ describe("unresolved_area transitions", () => {
     });
     const result = await handleAsk(
       {
-        message: "Hur nappar det i Kalmar?",
-        location: { lat: 56.66, lon: 16.36 },
+        message: "Kalmar sa jag",
+        conversationId: "conv-pending",
       },
       deps,
     );
@@ -748,9 +835,14 @@ describe("unresolved_area transitions", () => {
     const r = asType(result, "stream");
     expect(r.badges?.status).toBe("unresolved_area");
     expect(deps.resolveLakeWithHaiku).not.toHaveBeenCalled();
-    expect(deps.incrementResolveAttempts).not.toHaveBeenCalled();
     expect(deps.buildAreaSignals).toHaveBeenCalledWith(
       expect.objectContaining({ askedWaterKind: "ort" }),
+    );
+    expect(deps.emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "lake_unresolved_area",
+        payload: expect.objectContaining({ reason: "non_lake_water" }),
+      }),
     );
   });
 
@@ -775,6 +867,7 @@ describe("unresolved_area transitions", () => {
       getConversation: vi.fn().mockResolvedValue(
         pendingConversation({
           resolveAttempts: 2,
+          pendingLakeName: "Tolken",
           userLat: 57.79,
           userLon: 13.42,
         }),
@@ -845,64 +938,6 @@ describe("follow-ups", () => {
     expect(args.turnIndex).toBe(4);
   });
 
-  it("resolved: lake-lock violation → redirect", async () => {
-    const deps = makeDeps({
-      getSession: loggedIn(),
-      getConversation: vi.fn().mockResolvedValue(resolvedConversation()),
-      countUserMessages: vi.fn().mockResolvedValue(2),
-      extract: vi
-        .fn()
-        .mockResolvedValue({ onTopic: true, lakeName: "Vättern" }),
-      isLakeLockViolation: vi.fn().mockReturnValue(true),
-      getLakeLockRedirect: vi
-        .fn()
-        .mockReturnValue("Jag känner bara till Tolken"),
-    });
-    const result = await handleAsk(
-      { message: "Vad biter i Vättern?", conversationId: "conv-1" },
-      deps,
-    );
-    const r = asType(result, "lake_lock");
-    expect(r.text).toContain("Tolken");
-    // Lock key is the BARE name.
-    // biome-ignore lint/suspicious/noExplicitAny: vi.Mock internals
-    const [, lockKey] = (deps.isLakeLockViolation as any).mock.calls[0];
-    expect(lockKey).toBe("Tolken");
-    expect(deps.adviseFollowup).not.toHaveBeenCalled();
-  });
-
-  it("unresolved_area: NO lake-lock even when a lake is named", async () => {
-    const areaSnapshot: Signals = {
-      lake: "trakten kring Ulricehamn",
-      lakeId: "area",
-      areaOnly: true,
-      timeLocal: "2026-06-29T10:00:00",
-    };
-    const deps = makeDeps({
-      getSession: loggedIn(),
-      getConversation: vi.fn().mockResolvedValue(
-        resolvedConversation({
-          status: "unresolved_area",
-          lakeId: null,
-          bareLakeName: null,
-          signalsSnapshot: areaSnapshot,
-        }),
-      ),
-      countUserMessages: vi.fn().mockResolvedValue(1),
-      extract: vi
-        .fn()
-        .mockResolvedValue({ onTopic: true, lakeName: "Vättern" }),
-      isLakeLockViolation: vi.fn().mockReturnValue(true),
-    });
-    const result = await handleAsk(
-      { message: "Vättern då?", conversationId: "conv-1" },
-      deps,
-    );
-    expect(result.type).toBe("stream");
-    expect(deps.isLakeLockViolation).not.toHaveBeenCalled();
-    expect(deps.adviseFollowup).toHaveBeenCalledOnce();
-  });
-
   it("missing snapshot on a transitioned conversation → observable anomaly gate", async () => {
     const deps = makeDeps({
       getSession: loggedIn(),
@@ -928,7 +963,287 @@ describe("follow-ups", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 9. IDOR — ownership binding unchanged
+// 9. Lake switch (post-transition)
+// ---------------------------------------------------------------------------
+
+describe("lake switch (post-transition)", () => {
+  it("a named lake in an unresolved_area chat re-resolves and switches to resolved", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      getConversation: vi.fn().mockResolvedValue(
+        resolvedConversation({
+          status: "unresolved_area",
+          lakeId: null,
+          bareLakeName: null,
+        }),
+      ),
+      countUserMessages: vi.fn().mockResolvedValue(2),
+      extract: vi
+        .fn()
+        .mockResolvedValue({ onTopic: true, lakeName: "Hjälmaren" }),
+      candidateLakes: vi.fn().mockResolvedValue([HJALMAREN]),
+      resolveLakeWithHaiku: vi
+        .fn()
+        .mockResolvedValue(confidentResolution("hjalmaren-1")),
+    });
+    const result = await handleAsk(
+      { message: "Hjälmaren?", conversationId: "conv-1" },
+      deps,
+    );
+    expect(result.type).toBe("stream");
+    // The credit was spent at the original transition — switching is free.
+    expect(deps.spendCredit).not.toHaveBeenCalled();
+    expect(deps.adviseFirst).toHaveBeenCalledOnce();
+    expect(deps.adviseFollowup).not.toHaveBeenCalled();
+    expect(deps.transitionConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "resolved", lakeId: "hjalmaren-1" }),
+    );
+    expect(deps.emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "lake_switched",
+        payload: expect.objectContaining({
+          fromStatus: "unresolved_area",
+          lakeName: "Hjälmaren",
+        }),
+      }),
+    );
+  });
+
+  it("naming a different lake in a resolved chat switches instead of locking", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      getConversation: vi.fn().mockResolvedValue(resolvedConversation()),
+      countUserMessages: vi.fn().mockResolvedValue(2),
+      extract: vi
+        .fn()
+        .mockResolvedValue({ onTopic: true, lakeName: "Hjälmaren" }),
+      candidateLakes: vi.fn().mockResolvedValue([HJALMAREN]),
+      resolveLakeWithHaiku: vi
+        .fn()
+        .mockResolvedValue(confidentResolution("hjalmaren-1")),
+    });
+    const result = await handleAsk(
+      { message: "Och Hjälmaren?", conversationId: "conv-1" },
+      deps,
+    );
+    expect(result.type).toBe("stream");
+    expect(deps.spendCredit).not.toHaveBeenCalled();
+    expect(deps.emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "lake_switched",
+        payload: expect.objectContaining({ fromLakeId: "tolken-1" }),
+      }),
+    );
+  });
+
+  it("re-mentioning the SAME lake in a resolved chat is a plain follow-up", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      getConversation: vi.fn().mockResolvedValue(resolvedConversation()),
+      countUserMessages: vi.fn().mockResolvedValue(2),
+      extract: vi.fn().mockResolvedValue({ onTopic: true, lakeName: "tolken" }),
+    });
+    const result = await handleAsk(
+      { message: "Tolken imorgon då?", conversationId: "conv-1" },
+      deps,
+    );
+    expect(result.type).toBe("stream");
+    expect(deps.candidateLakes).not.toHaveBeenCalled();
+    expect(deps.adviseFollowup).toHaveBeenCalledOnce();
+  });
+
+  it("a named kust post-transition is a plain follow-up (no resolver)", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      getConversation: vi.fn().mockResolvedValue(resolvedConversation()),
+      countUserMessages: vi.fn().mockResolvedValue(2),
+      extract: vi.fn().mockResolvedValue({
+        onTopic: true,
+        lakeName: "Västkusten",
+        waterKind: "kust" as const,
+      }),
+    });
+    const result = await handleAsk(
+      { message: "Västkusten då?", conversationId: "conv-1" },
+      deps,
+    );
+    expect(result.type).toBe("stream");
+    expect(deps.candidateLakes).not.toHaveBeenCalled();
+    expect(deps.adviseFollowup).toHaveBeenCalledOnce();
+  });
+
+  it("an unsure switch attempt costs a free clarify round and records the target", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      getConversation: vi.fn().mockResolvedValue(resolvedConversation()),
+      countUserMessages: vi.fn().mockResolvedValue(2),
+      extract: vi
+        .fn()
+        .mockResolvedValue({ onTopic: true, lakeName: "Hjälmaren" }),
+      resolveLakeWithHaiku: vi.fn().mockResolvedValue(unsureResolution()),
+    });
+    const result = await handleAsk(
+      { message: "Hjälmaren?", conversationId: "conv-1" },
+      deps,
+    );
+    expect(result.type).toBe("clarify");
+    expect(deps.recordClarifyRound).toHaveBeenCalledWith("conv-1", {
+      attempts: 1,
+      pendingLakeName: "Hjälmaren",
+    });
+    expect(deps.transitionConversation).not.toHaveBeenCalled();
+    expect(deps.spendCredit).not.toHaveBeenCalled();
+  });
+
+  it("a bare municipality reply continues the in-flight switch", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      getConversation: vi.fn().mockResolvedValue(
+        resolvedConversation({
+          pendingLakeName: "Hjälmaren",
+          resolveAttempts: 1,
+        }),
+      ),
+      countUserMessages: vi.fn().mockResolvedValue(3),
+      extract: vi
+        .fn()
+        .mockResolvedValue({ onTopic: true, municipality: "Örebro" }),
+      candidateLakes: vi.fn().mockResolvedValue([HJALMAREN]),
+      resolveLakeWithHaiku: vi
+        .fn()
+        .mockResolvedValue(confidentResolution("hjalmaren-1")),
+    });
+    const result = await handleAsk(
+      { message: "i Örebro", conversationId: "conv-1" },
+      deps,
+    );
+    expect(result.type).toBe("stream");
+    expect(deps.resolveLakeWithHaiku).toHaveBeenCalledWith(
+      expect.objectContaining({
+        lakeName: "Hjälmaren",
+        municipality: "Örebro",
+      }),
+    );
+    expect(deps.transitionConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "resolved", lakeId: "hjalmaren-1" }),
+    );
+  });
+
+  it("a reply with neither lake nor municipality is a plain follow-up even mid-switch", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      getConversation: vi.fn().mockResolvedValue(
+        resolvedConversation({
+          pendingLakeName: "Hjälmaren",
+          resolveAttempts: 1,
+        }),
+      ),
+      countUserMessages: vi.fn().mockResolvedValue(3),
+      extract: vi.fn().mockResolvedValue({ onTopic: true }),
+    });
+    const result = await handleAsk(
+      { message: "hur var vädret nu igen?", conversationId: "conv-1" },
+      deps,
+    );
+    expect(result.type).toBe("stream");
+    expect(deps.adviseFollowup).toHaveBeenCalledOnce();
+    expect(deps.candidateLakes).not.toHaveBeenCalled();
+  });
+
+  it("exhausted switch attempts give up and keep the current context", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      getConversation: vi.fn().mockResolvedValue(
+        resolvedConversation({
+          pendingLakeName: "Hjälmaren",
+          resolveAttempts: 2,
+        }),
+      ),
+      countUserMessages: vi.fn().mockResolvedValue(4),
+      extract: vi
+        .fn()
+        .mockResolvedValue({ onTopic: true, lakeName: "Hjälmaren" }),
+      resolveLakeWithHaiku: vi.fn().mockResolvedValue(unsureResolution()),
+    });
+    const result = await handleAsk(
+      { message: "Hjälmaren!!", conversationId: "conv-1" },
+      deps,
+    );
+    expect(result.type).toBe("clarify");
+    if (result.type === "clarify") {
+      expect(result.text).toBe(switchGiveUpMessage("Tolken"));
+    }
+    expect(deps.transitionConversation).not.toHaveBeenCalled();
+    expect(deps.emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "lake_switch_failed",
+        payload: expect.objectContaining({ reason: "attempts_exhausted" }),
+      }),
+    );
+    // Attempts pinned at max with the target kept: a re-mention of the same
+    // failed name goes straight back to give-up instead of looping.
+    expect(deps.recordClarifyRound).toHaveBeenCalledWith("conv-1", {
+      attempts: 3,
+      pendingLakeName: "Hjälmaren",
+    });
+  });
+
+  it("a confident no-such-lake verdict gives up immediately", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      getConversation: vi.fn().mockResolvedValue(resolvedConversation()),
+      countUserMessages: vi.fn().mockResolvedValue(2),
+      extract: vi
+        .fn()
+        .mockResolvedValue({ onTopic: true, lakeName: "Atlantis" }),
+      candidateLakes: vi.fn().mockResolvedValue([]),
+      resolveLakeWithHaiku: vi.fn().mockResolvedValue({
+        lakeId: null,
+        confidence: 95,
+        noSuchLake: true,
+        clarifyQuestion: "",
+      }),
+    });
+    const result = await handleAsk(
+      { message: "Atlantis?", conversationId: "conv-1" },
+      deps,
+    );
+    expect(result.type).toBe("clarify");
+    expect(deps.emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "lake_switch_failed",
+        payload: expect.objectContaining({ reason: "no_such_lake" }),
+      }),
+    );
+  });
+
+  it("a confident switch updates the conversation title", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      getConversation: vi.fn().mockResolvedValue(resolvedConversation()),
+      countUserMessages: vi.fn().mockResolvedValue(2),
+      extract: vi.fn().mockResolvedValue({
+        onTopic: true,
+        lakeName: "Hjälmaren",
+        title: "Gös i Hjälmaren",
+      }),
+      candidateLakes: vi.fn().mockResolvedValue([HJALMAREN]),
+      resolveLakeWithHaiku: vi
+        .fn()
+        .mockResolvedValue(confidentResolution("hjalmaren-1")),
+    });
+    await handleAsk(
+      { message: "Gös i Hjälmaren?", conversationId: "conv-1" },
+      deps,
+    );
+    expect(deps.transitionConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Gös i Hjälmaren" }),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 11. IDOR — ownership binding unchanged
 // ---------------------------------------------------------------------------
 
 describe("C1: conversation-ownership enforcement", () => {
@@ -966,7 +1281,7 @@ describe("C1: conversation-ownership enforcement", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 10. Swedish free-text time still resolves at the transition
+// 12. Swedish free-text time still resolves at the transition
 // ---------------------------------------------------------------------------
 
 describe("Swedish free-text extraction.time", () => {
@@ -1011,7 +1326,7 @@ describe("Swedish free-text extraction.time", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 11. Small pure helpers
+// 13. Small pure helpers
 // ---------------------------------------------------------------------------
 
 describe("helpers", () => {
@@ -1038,5 +1353,94 @@ describe("helpers", () => {
       airTempC: 17,
       windMs: 4.2,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 14. Ort clarify round
+// ---------------------------------------------------------------------------
+
+describe("ort clarify round", () => {
+  const ortExtraction = {
+    onTopic: true,
+    lakeName: "Stallarholmen",
+    waterKind: "ort" as const,
+  };
+
+  it("gives a named ort one free clarify round instead of an instant area transition", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      extract: vi.fn().mockResolvedValue(ortExtraction),
+    });
+    const result = await handleAsk(
+      { message: "Kan man fiska vid Stallarholmen?" },
+      deps,
+    );
+    expect(result.type).toBe("clarify");
+    if (result.type === "clarify") {
+      expect(result.text).toBe(ortClarifyMessage("Stallarholmen"));
+    }
+    expect(deps.spendCredit).not.toHaveBeenCalled();
+    expect(deps.transitionConversation).not.toHaveBeenCalled();
+    // The register holds only lakes — candidate SQL and the resolver are
+    // both skipped for an ort.
+    expect(deps.candidateLakes).not.toHaveBeenCalled();
+    expect(deps.resolveLakeWithHaiku).not.toHaveBeenCalled();
+    expect(deps.recordClarifyRound).toHaveBeenCalledWith("new-conv-id", {
+      attempts: 1,
+      pendingLakeName: "Stallarholmen",
+    });
+  });
+
+  it("insisting on the SAME ort transitions to unresolved_area as before", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      getConversation: vi.fn().mockResolvedValue(
+        pendingConversation({
+          resolveAttempts: 1,
+          pendingLakeName: "Stallarholmen",
+        }),
+      ),
+      countUserMessages: vi.fn().mockResolvedValue(1),
+      extract: vi.fn().mockResolvedValue(ortExtraction),
+    });
+    const result = await handleAsk(
+      { message: "Stallarholmen sa jag", conversationId: "conv-pending" },
+      deps,
+    );
+    expect(result.type).toBe("stream");
+    expect(deps.transitionConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "unresolved_area" }),
+    );
+    expect(deps.emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "lake_unresolved_area",
+        payload: expect.objectContaining({ reason: "non_lake_water" }),
+      }),
+    );
+    expect(deps.recordClarifyRound).not.toHaveBeenCalled();
+  });
+
+  it("ort clarify then a real lake resolves with one credit", async () => {
+    const deps = makeDeps({
+      getSession: loggedIn(),
+      getConversation: vi.fn().mockResolvedValue(
+        pendingConversation({
+          resolveAttempts: 1,
+          pendingLakeName: "Stallarholmen",
+        }),
+      ),
+      countUserMessages: vi.fn().mockResolvedValue(1),
+      extract: vi.fn().mockResolvedValue({ onTopic: true, lakeName: "Tolken" }),
+    });
+    const result = await handleAsk(
+      { message: "Jag menar Tolken", conversationId: "conv-pending" },
+      deps,
+    );
+    expect(result.type).toBe("stream");
+    expect(deps.spendCredit).toHaveBeenCalledTimes(1);
+    expect(deps.transitionConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "resolved", lakeId: "tolken-1" }),
+    );
   });
 });

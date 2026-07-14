@@ -28,7 +28,8 @@ export type AnalyticsEventType =
   // H7: previously-invisible gate paths — the anon→register funnel,
   // lake-lock redirects, and credit exhaustion all emit now.
   // register_gate payload { reason: anon_claim_used | anon_ip_limit };
-  // lake_lock payload { lockKey, attemptedLake };
+  // lake_lock payload { lockKey, attemptedLake }. RETIRED (2026-07-08, lake-switch spec),
+  // kept only for historical analytics rows.
   // out_of_credits payload { userId, reason: pre_check | spend_race }.
   | "register_gate"
   | "lake_lock"
@@ -49,6 +50,13 @@ export type AnalyticsEventType =
   // Rebuild: resolution gave up (attempts exhausted or confident no-such-lake);
   // the conversation continues in area mode on SMHI signals only.
   | "lake_unresolved_area"
+  // Lake switch (spec 2026-07-08): a post-transition turn re-resolved to a
+  // new lake. payload { fromLakeId, fromStatus, lakeName, confidence, attempt }.
+  | "lake_switched"
+  // A switch attempt gave up (attempts exhausted or confident no-such-lake);
+  // the conversation keeps its previous context. payload { lakeName, reason,
+  // confidence } + resolver context (prompt, candidates).
+  | "lake_switch_failed"
   // Rebuild: a registration was rejected by the signup IP guard.
   | "signup_ip_blocked"
   // Paid fair-use cap hit (PAID_FAIR_USE_CONVERSATION_LIMIT) — payload
