@@ -176,9 +176,12 @@ describe("resolveLakeWithHaiku", () => {
   });
 
   it("wraps a timeout as TimeoutError", async () => {
+    // What the real SDK throws when its per-attempt timeout fires and all
+    // retries are exhausted (timeout/maxRetries live in request options now,
+    // not an AbortSignal — digest 247782e6 was a single-attempt 8s timeout).
     const parseSpy = vi
       .fn()
-      .mockRejectedValue(new DOMException("timeout", "TimeoutError"));
+      .mockRejectedValue(new Anthropic.APIConnectionTimeoutError());
     await expect(
       resolveLakeWithHaiku({
         message: "Åsunden",
@@ -189,21 +192,25 @@ describe("resolveLakeWithHaiku", () => {
     ).rejects.toBeInstanceOf(TimeoutError);
   });
 
-  it("wraps the SDK's APIUserAbortError (fired timeout signal) as TimeoutError", async () => {
-    // What the real SDK throws when AbortSignal.timeout() fires: it swallows
-    // the DOMException and raises APIUserAbortError ("Request was aborted.").
-    // Digest a1f0f3fc logged this as a generic ExternalServiceError.
-    const parseSpy = vi
-      .fn()
-      .mockRejectedValue(new Anthropic.APIUserAbortError());
-    await expect(
-      resolveLakeWithHaiku({
-        message: "Åsunden",
-        candidates,
-        // biome-ignore lint/suspicious/noExplicitAny: test fake
-        deps: { client: { messages: { parse: parseSpy } } as any },
-      }),
-    ).rejects.toBeInstanceOf(TimeoutError);
+  it("passes timeout and maxRetries request options to the SDK", async () => {
+    const client = buildMockClient({
+      lakeId: "lake-asunden-boras",
+      confidence: 90,
+      noSuchLake: false,
+      clarifyQuestion: "Vilken sjö?",
+    });
+    await resolveLakeWithHaiku({
+      message: "Åsunden",
+      candidates,
+      // biome-ignore lint/suspicious/noExplicitAny: test fake
+      deps: { client: client as any },
+    });
+    const options = client._parseSpy.mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
+    expect(options.timeout).toBeGreaterThanOrEqual(8000);
+    expect(options.maxRetries).toBeGreaterThanOrEqual(1);
   });
 
   it("wraps an API failure as ExternalServiceError with upstream status", async () => {

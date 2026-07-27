@@ -214,7 +214,10 @@ describe("extract()", () => {
   });
 
   it("rejects with TimeoutError when the request times out", async () => {
-    const timeout = new DOMException("timed out", "TimeoutError");
+    // What the real SDK throws when its per-attempt timeout fires and all
+    // retries are exhausted (timeout/maxRetries live in request options now,
+    // not an AbortSignal — digests d9edf40d et al. were single-attempt 8s).
+    const timeout = new Anthropic.APIConnectionTimeoutError();
     const client = {
       messages: { parse: vi.fn().mockRejectedValue(timeout) },
     };
@@ -225,18 +228,17 @@ describe("extract()", () => {
     ).rejects.toBeInstanceOf(TimeoutError);
   });
 
-  it("rejects with TimeoutError when the SDK surfaces the timeout as APIUserAbortError", async () => {
-    // What the real SDK throws when AbortSignal.timeout() fires: it swallows
-    // the DOMException and raises APIUserAbortError ("Request was aborted.").
-    // Digests f273f744 / 5c3de43b logged these as generic ExternalServiceError.
-    const aborted = new Anthropic.APIUserAbortError();
-    const client = {
-      messages: { parse: vi.fn().mockRejectedValue(aborted) },
-    };
+  it("passes timeout and maxRetries request options to the SDK", async () => {
+    const parseSpy = vi.fn().mockResolvedValue({
+      parsed_output: onTopicOutput(),
+    });
+    const client = { messages: { parse: parseSpy } };
 
-    await expect(
-      // biome-ignore lint/suspicious/noExplicitAny: test fake
-      extract("fiska i Tolken", [], { client: client as any }),
-    ).rejects.toBeInstanceOf(TimeoutError);
+    // biome-ignore lint/suspicious/noExplicitAny: test fake
+    await extract("fiska i Tolken", [], { client: client as any });
+
+    const options = parseSpy.mock.calls[0][1] as Record<string, unknown>;
+    expect(options.timeout).toBeGreaterThanOrEqual(8000);
+    expect(options.maxRetries).toBeGreaterThanOrEqual(1);
   });
 });
