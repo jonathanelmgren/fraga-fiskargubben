@@ -25,9 +25,14 @@ import { CANNED_REFUSAL } from "./gate-messages";
 
 /**
  * M13: bound the extractor round-trip so a hung connection can't block the
- * whole first turn. Matches the SMHI fetch timeout in forecast.ts/metobs.ts.
+ * whole first turn. The timeout is per attempt; the SDK retries timed-out,
+ * connection-failed and 429/5xx requests with backoff up to MAX_RETRIES,
+ * throwing APIConnectionTimeoutError only once every attempt has timed out.
+ * 8s per attempt proved too tight in production (weekly pipeline_error
+ * alerts), hence 15s.
  */
-const EXTRACTOR_TIMEOUT_MS = 8000;
+const EXTRACTOR_TIMEOUT_MS = 15000;
+const EXTRACTOR_MAX_RETRIES = 2;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -201,21 +206,17 @@ Svara ENBART med det strukturerade JSON-objektet — ingen annan text.`;
           format: zodOutputFormat(ExtractionOutputSchema),
         },
       },
-      { signal: AbortSignal.timeout(EXTRACTOR_TIMEOUT_MS) },
+      { timeout: EXTRACTOR_TIMEOUT_MS, maxRetries: EXTRACTOR_MAX_RETRIES },
     );
   } catch (err) {
     // M14: an API failure (network/429/5xx/timeout) must NOT be silently
     // rendered as an off-topic refusal. Throw a typed error so the route
     // classifier maps it to 503 instead of a topic-gate refusal.
     //
-    // The SDK never lets the AbortSignal.timeout() DOMException through: a
-    // fired caller signal surfaces as APIUserAbortError ("Request was
-    // aborted."). Our timeout signal is the only abort source in this call,
-    // so an SDK abort here IS a timeout.
-    if (
-      err instanceof Anthropic.APIUserAbortError ||
-      (err instanceof DOMException && err.name === "TimeoutError")
-    ) {
+    // The SDK's own per-attempt timeout surfaces as APIConnectionTimeoutError
+    // once retries are exhausted — unlike a caller AbortSignal it is retried
+    // internally, which is why the timeout lives in request options.
+    if (err instanceof Anthropic.APIConnectionTimeoutError) {
       throw new TimeoutError("Extractor request timed out", {
         service: "anthropic-extractor",
         cause: err,

@@ -35,8 +35,13 @@ export const RESOLVE_CONFIDENCE_THRESHOLD = 70;
 /** Clarify rounds before we give up and continue in area-only mode. */
 export const MAX_RESOLVE_ATTEMPTS = 3;
 
-/** Same bound as the extractor — a hung resolver must not block the turn. */
-const RESOLVER_TIMEOUT_MS = 8000;
+/**
+ * Same bound as the extractor — a hung resolver must not block the turn.
+ * Per attempt; the SDK retries timeouts/connection errors/429/5xx with
+ * backoff up to MAX_RETRIES before APIConnectionTimeoutError surfaces.
+ */
+const RESOLVER_TIMEOUT_MS = 15000;
+const RESOLVER_MAX_RETRIES = 2;
 
 export type HaikuResolution = {
   /** Chosen candidate id, or null when no candidate fits. */
@@ -178,17 +183,13 @@ export async function resolveLakeWithHaiku(params: {
           format: zodOutputFormat(ResolutionOutputSchema),
         },
       },
-      { signal: AbortSignal.timeout(RESOLVER_TIMEOUT_MS) },
+      { timeout: RESOLVER_TIMEOUT_MS, maxRetries: RESOLVER_MAX_RETRIES },
     );
   } catch (err) {
-    // The SDK never lets the AbortSignal.timeout() DOMException through: a
-    // fired caller signal surfaces as APIUserAbortError ("Request was
-    // aborted."). Our timeout signal is the only abort source in this call,
-    // so an SDK abort here IS a timeout.
-    if (
-      err instanceof Anthropic.APIUserAbortError ||
-      (err instanceof DOMException && err.name === "TimeoutError")
-    ) {
+    // The SDK's own per-attempt timeout surfaces as APIConnectionTimeoutError
+    // once retries are exhausted — unlike a caller AbortSignal it is retried
+    // internally, which is why the timeout lives in request options.
+    if (err instanceof Anthropic.APIConnectionTimeoutError) {
       throw new TimeoutError("Lake resolver request timed out", {
         service: "anthropic-resolver",
         cause: err,
