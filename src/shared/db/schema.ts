@@ -160,7 +160,6 @@ export const lakes = pgTable("lakes", {
    * body. The MVM/NORS environmental datasets join on this — they carry EU_CD,
    * not the lake id. NULL for lakes outside the VISS register (the majority once
    * the Lantmäteriet universe lands). During the VISS-only era, eu_cd === id.
-   * See docs/plans/2026-07-02-lantmateriet-full-lake-coverage.md.
    */
   euCd: text("eu_cd"),
   /**

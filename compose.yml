@@ -2,7 +2,6 @@
 #
 # PostGIS is required by the Lantmäteriet lake ETL (ogr2ogr loads the Topografi
 # GeoPackage into a PostGIS staging table; centroid + reproject in SQL).
-# See docs/plans/2026-07-02-lantmateriet-full-lake-coverage.md.
 #
 # Runs on host port 5433 (not the default 5432) to avoid clashing with other
 # local Postgres instances. Point DATABASE_URL at localhost:5433.

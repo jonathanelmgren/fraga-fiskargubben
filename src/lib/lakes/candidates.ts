@@ -1,6 +1,5 @@
 /**
- * candidateLakes — the SQL half of the two-stage lake resolution (rebuild spec
- * docs/superpowers/specs/2026-07-03-chat-first-rebuild-design.md).
+ * candidateLakes — the SQL half of the two-stage lake resolution.
  *
  * Stage 1 (this module): a broad, ranked candidate search. Unlike the old
  * resolveLake (exact/prefix only), this deliberately includes fuzzy trigram

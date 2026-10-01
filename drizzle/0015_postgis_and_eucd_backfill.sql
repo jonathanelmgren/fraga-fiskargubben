@@ -4,7 +4,7 @@
 --
 -- PostGIS is needed by the Lantmäteriet full-lake-coverage ETL (ogr2ogr loads
 -- the Topografi GeoPackage into a PostGIS staging table; centroid + reproject in
--- SQL). See docs/plans/2026-07-02-lantmateriet-full-lake-coverage.md.
+-- SQL).
 --
 -- Requires a PostGIS-enabled Postgres image (e.g. postgis/postgis:18-3.6). On a
 -- plain postgres image `CREATE EXTENSION postgis` fails — swap the image first.
