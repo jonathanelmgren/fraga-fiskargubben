@@ -5,7 +5,7 @@
  *
  * Replaces VISS (~7 250 WFD-classified lakes) as the lake universe with the full
  * named Swedish lake set from Lantmäteriet Topografi vektor (~tens of thousands
- * of named lakes). See docs/plans/2026-07-02-lantmateriet-full-lake-coverage.md.
+ * of named lakes).
  *
  * Pipeline:
  *   1. Ensure the delivery files are on disk (mark_sverige.zip = lake polygons in

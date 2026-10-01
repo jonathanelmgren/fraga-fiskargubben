@@ -9,7 +9,6 @@
  * show time (not page-serve time) keeps the funnel honest and prevents repeat
  * shows across tabs. Feedback text goes to the analytics event payload and to
  * the signups Discord webhook; there is no feedback table.
- * Spec: docs/superpowers/specs/2026-07-06-feedback-prompt-design.md
  */
 
 import "server-only";

@@ -46,7 +46,7 @@ This bounds both cost and scope creep, and keeps the product's voice intact.
 ## Amendment (2026-07-08)
 
 The lake-lock ("one conversation = one lake") is retired by the lake-switch
-design (`docs/superpowers/specs/2026-07-08-lake-switch-design.md`). The
+design. The
 conversation remains the billable unit: the credit is still spent exactly once,
 at the first transition out of `lake_pending`. Later turns that name a new lake
 re-enter resolution for free; cost stays bounded by the chat-turn caps
