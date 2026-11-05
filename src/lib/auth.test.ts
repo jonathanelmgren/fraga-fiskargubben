@@ -40,6 +40,11 @@ vi.mock("@/lib/chat/anon", () => ({
   claimConversation: vi.fn().mockResolvedValue({ claimed: true }),
 }));
 
+// Mock the ping so its gating can be asserted.
+vi.mock("@/lib/notify/discord", () => ({
+  notifyDiscord: vi.fn().mockResolvedValue(undefined),
+}));
+
 // Mock the mail sender so the verification wire can be asserted.
 vi.mock("@/lib/email", () => ({
   sendVerificationEmail: vi.fn().mockResolvedValue(undefined),
@@ -68,6 +73,7 @@ import { claimConversation } from "@/lib/chat/anon";
 // sign→verify roundtrip through the auth hook.
 import { signClaimToken } from "@/lib/chat/claim-cookie";
 import { sendVerificationEmail } from "@/lib/email";
+import { notifyDiscord } from "@/lib/notify/discord";
 
 // Import auth AFTER all mocks are in place
 import { auth } from "./auth";
@@ -80,6 +86,44 @@ const afterHook = opts?.databaseHooks?.user?.create?.after as
       context: { getCookie: (k: string) => string | null } | null,
     ) => Promise<void>)
   | undefined;
+
+describe("signup ping — databaseHooks.user.create.after", () => {
+  const user = {
+    id: "user-1",
+    name: "Anna",
+    email: "anna@example.com",
+    emailVerified: false,
+  };
+  const contextAt = (path: string) => ({ path, getCookie: () => null });
+  // The hook is typed for the claim tests above; these also pass the ping fields.
+  const fireAfterHook = afterHook as (
+    u: typeof user,
+    c: ReturnType<typeof contextAt>,
+  ) => Promise<void>;
+
+  it("stays silent for an unverified email+password signup", async () => {
+    vi.mocked(notifyDiscord).mockClear();
+    await fireAfterHook(user, contextAt("/sign-up/email"));
+    expect(notifyDiscord).not.toHaveBeenCalled();
+  });
+
+  it("pings for an OAuth signup whose provider verified the email", async () => {
+    vi.mocked(notifyDiscord).mockClear();
+    await fireAfterHook(
+      { ...user, emailVerified: true },
+      contextAt("/callback/:id"),
+    );
+    expect(notifyDiscord).toHaveBeenCalledTimes(1);
+  });
+
+  it("pings for an OAuth signup whose provider reports no verified email", async () => {
+    // Personal Microsoft accounts often omit email_verified, and they sign in
+    // regardless, so waiting for verification would lose the ping.
+    vi.mocked(notifyDiscord).mockClear();
+    await fireAfterHook(user, contextAt("/callback/:id"));
+    expect(notifyDiscord).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("C2: auth databaseHooks.user.create.after — claim wire", () => {
   it("the auth config has databaseHooks.user.create.after defined", () => {

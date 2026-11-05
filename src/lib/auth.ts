@@ -3,15 +3,19 @@ import "server-only";
 import { stripe } from "@better-auth/stripe";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { APIError } from "better-auth/api";
+import { APIError, createAuthMiddleware } from "better-auth/api";
 import { nextCookies } from "better-auth/next-js";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import Stripe from "stripe";
 import { emit } from "@/lib/analytics/events";
 import {
   checkSignupAllowed,
   SIGNUP_IP_LIMIT_MESSAGE,
 } from "@/lib/auth/signup-ip";
+import {
+  passesSignupBotCheck,
+  SIGNUP_BOT_CHECK_MESSAGE,
+} from "@/lib/auth/signup-token";
 import { cancelStripeOnAccountDelete } from "@/lib/billing/cancel-on-delete";
 import { claimConversation } from "@/lib/chat/anon";
 import { verifyClaimToken } from "@/lib/chat/claim-cookie";
@@ -33,6 +37,20 @@ import { env } from "@/shared/env";
 
 /** Cookie name must stay in sync with CLAIM_TOKEN_COOKIE in app/api/ask/route.ts. */
 const CLAIM_TOKEN_COOKIE = "fiska_claim";
+
+/** Better Auth's route for password signups, as reported on its contexts. */
+const SIGN_UP_EMAIL_PATH = "/sign-up/email";
+
+/** Better Auth's providerId for an account that signs in with a password. */
+const CREDENTIAL_PROVIDER_ID = "credential";
+
+/** Ops ping — fire-and-forget, never blocks registration. */
+function pingNewUser(user: { name: string; email: string }) {
+  void notifyDiscord(
+    "signups",
+    `🎣 Ny användare: ${user.name} (${user.email})`,
+  );
+}
 
 /**
  * Stripe subscription billing (@better-auth/stripe).
@@ -75,8 +93,9 @@ export const auth = betterAuth({
   }),
   emailAndPassword: {
     enabled: true,
-    // Open registration: anyone can sign up. Abuse is bounded by the signup
-    // IP guard in the user.create.before hook.
+    // Open registration: anyone can sign up through the form. The bot check in
+    // hooks.before stops scripted POSTs; the signup IP guard in the
+    // user.create.before hook bounds the rest.
     disableSignUp: false,
     minPasswordLength: 8,
     // Unverified accounts cannot sign in (403 EMAIL_NOT_VERIFIED); the mail
@@ -127,6 +146,29 @@ export const auth = betterAuth({
     // Clicking the link both verifies and signs in, landing on callbackURL.
     autoSignInAfterVerification: true,
     expiresIn: 3600, // 1 hour
+    // A password signup only counts as a new user once its address is proven,
+    // so anyone can POST an address without reaching the signups channel.
+    // OAuth users were pinged at creation; a provider that reports no verified
+    // email (personal Microsoft accounts) also gets this mail, hence the check.
+    afterEmailVerification: async (user) => {
+      // Never throws: the address is already verified, and a failure here must
+      // not fail the link the user just clicked.
+      try {
+        const [credential] = await db
+          .select({ id: accounts.id })
+          .from(accounts)
+          .where(
+            and(
+              eq(accounts.userId, user.id),
+              eq(accounts.providerId, CREDENTIAL_PROVIDER_ID),
+            ),
+          )
+          .limit(1);
+        if (credential) pingNewUser(user);
+      } catch (err) {
+        logError("auth.signup-ping", err, { userId: user.id });
+      }
+    },
   },
   user: {
     // signupIpHash is stamped by the before-create hook (never client input).
@@ -226,6 +268,18 @@ export const auth = betterAuth({
       : []),
     nextCookies(),
   ],
+  // Bot check on password signups only. OAuth is exempt: creating an account
+  // there already takes a real Google or Microsoft identity. This runs before
+  // the signup handler, so a rejected request creates no row and sends no mail,
+  // including the duplicate-address notice that the user.create hooks never see.
+  hooks: {
+    before: createAuthMiddleware(async (ctx) => {
+      if (ctx.path !== SIGN_UP_EMAIL_PATH || !ctx.request) return;
+      if (passesSignupBotCheck(ctx.request.headers)) return;
+      await emit({ type: "signup_bot_blocked" }).catch(() => {});
+      throw new APIError("FORBIDDEN", { message: SIGNUP_BOT_CHECK_MESSAGE });
+    }),
+  },
   // C2: claim the anon conversation on registration so the credit carry-over
   // (ADR-0001/ADR-0004) is applied for every registration path (email+password,
   // Google SSO, Microsoft SSO).
@@ -264,11 +318,10 @@ export const auth = betterAuth({
           };
         },
         async after(user, context) {
-          // Ops ping — fire-and-forget, never blocks registration.
-          void notifyDiscord(
-            "signups",
-            `🎣 Ny användare: ${user.name} (${user.email})`,
-          );
+          // Password signups are pinged by afterEmailVerification instead.
+          if (user.emailVerified || context?.path !== SIGN_UP_EMAIL_PATH) {
+            pingNewUser(user);
+          }
 
           // context is null when the user is created outside of a request
           // (e.g. tests, seed scripts) — skip the claim in that case.
