@@ -16,6 +16,7 @@ import {
   extractClientIp,
   hashSignupIp,
   SIGNUP_IP_WINDOW_MS,
+  withClientIpOnly,
 } from "./signup-ip";
 
 describe("hashSignupIp", () => {
@@ -34,10 +35,24 @@ describe("hashSignupIp", () => {
 });
 
 describe("extractClientIp", () => {
-  it("takes the first hop of x-forwarded-for", () => {
+  it("takes the last hop of x-forwarded-for, the one nginx appended", () => {
     const h = new Headers({
-      "x-forwarded-for": "203.0.113.7, 10.0.0.1, 172.16.0.1",
+      "x-forwarded-for": "198.51.100.99, 203.0.113.7",
     });
+    expect(extractClientIp(h)).toBe("203.0.113.7");
+  });
+
+  it("is not fooled by a client rotating a forged x-forwarded-for prefix", () => {
+    const ips = ["198.51.100.1", "198.51.100.2"].map((forged) =>
+      extractClientIp(
+        new Headers({ "x-forwarded-for": `${forged}, 203.0.113.7` }),
+      ),
+    );
+    expect(ips).toEqual(["203.0.113.7", "203.0.113.7"]);
+  });
+
+  it("ignores empty x-forwarded-for hops", () => {
+    const h = new Headers({ "x-forwarded-for": "203.0.113.7, " });
     expect(extractClientIp(h)).toBe("203.0.113.7");
   });
 
@@ -63,6 +78,42 @@ function fakeDb(n: number) {
     // biome-ignore lint/suspicious/noExplicitAny: test fake
   } as any;
 }
+
+describe("withClientIpOnly", () => {
+  it("reduces x-forwarded-for to the real client and keeps the body", async () => {
+    const request = new Request("http://localhost/api/auth/sign-up/email", {
+      method: "POST",
+      headers: { "x-forwarded-for": "198.51.100.1, 203.0.113.7" },
+      body: "payload",
+    });
+
+    // Next passes route handlers a Proxy around the Request.
+    const proxied = new Proxy(request, {
+      get(target, key) {
+        const value = Reflect.get(target, key);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+    const result = withClientIpOnly(proxied);
+
+    expect(result.method).toBe("POST");
+    expect(result.headers.get("x-forwarded-for")).toBe("203.0.113.7");
+    expect(await result.text()).toBe("payload");
+  });
+
+  it("returns the request unchanged when no IP can be determined", () => {
+    const request = new Request("http://localhost/api/auth/ok");
+    expect(withClientIpOnly(request)).toBe(request);
+  });
+
+  it("returns the request unchanged when the header is already one hop", () => {
+    const request = new Request("http://localhost/api/auth/ok", {
+      headers: { "x-forwarded-for": "203.0.113.7" },
+    });
+    expect(withClientIpOnly(request)).toBe(request);
+  });
+});
 
 const NOW = new Date("2026-07-03T10:00:00Z");
 

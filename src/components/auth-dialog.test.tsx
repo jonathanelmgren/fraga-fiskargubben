@@ -31,6 +31,21 @@ vi.mock("@/lib/auth-client", () => ({
   authClient: { requestPasswordReset: vi.fn() },
 }));
 
+vi.mock("@/lib/auth/signup-token-client", () => ({
+  fetchSignupToken: vi
+    .fn()
+    .mockResolvedValue({ token: "form-token", fetchedAt: 0 }),
+  readySignupToken: vi.fn().mockResolvedValue("form-token"),
+}));
+
+import {
+  fetchSignupToken,
+  readySignupToken,
+} from "@/lib/auth/signup-token-client";
+import {
+  SIGNUP_HONEYPOT_HEADER,
+  SIGNUP_TOKEN_HEADER,
+} from "@/lib/auth/signup-token-shared";
 import { authClient, signIn, signUp } from "@/lib/auth-client";
 import { AuthDialog } from "./auth-dialog";
 
@@ -57,6 +72,67 @@ function fillAndSubmit(mode: "login" | "signup") {
     }),
   );
 }
+
+describe("AuthDialog — signup bot check", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(signUp.email).mockResolvedValue({
+      data: {},
+      error: null,
+    } as never);
+    vi.mocked(fetchSignupToken).mockResolvedValue({
+      token: "form-token",
+      fetchedAt: 0,
+    });
+    vi.mocked(readySignupToken).mockResolvedValue("form-token");
+  });
+
+  const sentHeaders = () =>
+    vi.mocked(signUp.email).mock.calls[0]?.[0]?.fetchOptions?.headers;
+
+  it("fetches a token when the signup form opens, not for login", async () => {
+    const { rerender } = render(
+      <AuthDialog open onClose={() => {}} initialMode="login" />,
+    );
+    expect(fetchSignupToken).not.toHaveBeenCalled();
+
+    rerender(
+      <AuthDialog open={false} onClose={() => {}} initialMode="signup" />,
+    );
+    rerender(<AuthDialog open onClose={() => {}} initialMode="signup" />);
+    await waitFor(() => expect(fetchSignupToken).toHaveBeenCalledTimes(1));
+  });
+
+  it("sends the token and no honeypot header for a normal signup", async () => {
+    render(<AuthDialog open onClose={() => {}} initialMode="signup" />);
+    fillAndSubmit("signup");
+
+    await waitFor(() => expect(signUp.email).toHaveBeenCalled());
+    expect(sentHeaders()).toEqual({ [SIGNUP_TOKEN_HEADER]: "form-token" });
+  });
+
+  it("flags a filled honeypot, then clears it so a retry can pass", async () => {
+    vi.mocked(signUp.email).mockResolvedValueOnce({
+      data: null,
+      error: { message: "nope" },
+    } as never);
+    render(<AuthDialog open onClose={() => {}} initialMode="signup" />);
+    const honeypot = document.querySelector(
+      'input[name="referral_code"]',
+    ) as HTMLInputElement;
+    fireEvent.change(honeypot, { target: { value: "bot" } });
+    fillAndSubmit("signup");
+
+    await waitFor(() => expect(signUp.email).toHaveBeenCalled());
+    expect(sentHeaders()).toMatchObject({ [SIGNUP_HONEYPOT_HEADER]: "1" });
+    await waitFor(() => expect(honeypot.value).toBe(""));
+  });
+
+  it("does not expose the honeypot on the login form", () => {
+    render(<AuthDialog open onClose={() => {}} initialMode="login" />);
+    expect(document.querySelector('input[name="referral_code"]')).toBeNull();
+  });
+});
 
 describe("AuthDialog — email verification", () => {
   beforeEach(() => {

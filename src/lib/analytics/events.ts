@@ -59,6 +59,9 @@ export type AnalyticsEventType =
   | "lake_switch_failed"
   // Rebuild: a registration was rejected by the signup IP guard.
   | "signup_ip_blocked"
+  // A password signup failed the bot check (no valid form token, or the
+  // honeypot was filled in), so nothing was created or mailed.
+  | "signup_bot_blocked"
   // Paid fair-use cap hit (PAID_FAIR_USE_CONVERSATION_LIMIT) — payload
   // { userId, recent } so repeat offenders are queryable.
   | "fair_use_limit"

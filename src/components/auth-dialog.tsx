@@ -1,10 +1,19 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { GoogleButton, MicrosoftButton } from "@/app/social-buttons";
 import { track } from "@/lib/analytics";
+import {
+  fetchSignupToken,
+  readySignupToken,
+  type SignupTokenGrant,
+} from "@/lib/auth/signup-token-client";
+import {
+  SIGNUP_HONEYPOT_HEADER,
+  SIGNUP_TOKEN_HEADER,
+} from "@/lib/auth/signup-token-shared";
 import { authClient, signIn, signUp } from "@/lib/auth-client";
 
 type Mode = "login" | "signup" | "forgot";
@@ -36,6 +45,8 @@ export function AuthDialog({
   const [pending, setPending] = useState(false);
   const [verifySent, setVerifySent] = useState(false);
   const [resetSent, setResetSent] = useState(false);
+  const [honeypot, setHoneypot] = useState("");
+  const signupToken = useRef<SignupTokenGrant | null>(null);
 
   // Reset transient state whenever the dialog opens.
   useEffect(() => {
@@ -48,6 +59,15 @@ export function AuthDialog({
       setResetSent(false);
     }
   }, [open, initialMode]);
+
+  // Start the token's clock when the signup form appears, so submitting right
+  // after filling it in normally needs no wait.
+  useEffect(() => {
+    if (!open || mode !== "signup") return;
+    void fetchSignupToken().then((grant) => {
+      signupToken.current = grant;
+    });
+  }, [open, mode]);
 
   const close = useCallback(() => {
     if (!pending) onClose();
@@ -94,9 +114,19 @@ export function AuthDialog({
             // Landing page after the verification link is clicked
             // (autoSignInAfterVerification signs the user in there).
             callbackURL: "/",
+            fetchOptions: {
+              headers: {
+                [SIGNUP_TOKEN_HEADER]:
+                  (await readySignupToken(signupToken.current)) ?? "",
+                ...(honeypot ? { [SIGNUP_HONEYPOT_HEADER]: "1" } : {}),
+              },
+            },
           });
     setPending(false);
     if (error) {
+      // A password manager may have filled the hidden field: clear it so a
+      // real user gets through on the next click. Bots do not read the error.
+      setHoneypot("");
       // requireEmailVerification: unverified login is rejected with 403
       // EMAIL_NOT_VERIFIED and (sendOnSignIn) a fresh mail is on its way.
       if (error.code === "EMAIL_NOT_VERIFIED") {
@@ -254,6 +284,28 @@ export function AuthDialog({
             )}
 
             <form onSubmit={onSubmit} className="flex flex-col gap-4">
+              {mode === "signup" && (
+                // Honeypot: off-screen and unreachable for people, while
+                // form-filling bots complete it. Rejected by the server.
+                <div
+                  aria-hidden="true"
+                  className="absolute -left-[9999px] h-0 w-0 overflow-hidden"
+                >
+                  <label>
+                    Värvningskod
+                    <input
+                      type="text"
+                      name="referral_code"
+                      tabIndex={-1}
+                      autoComplete="off"
+                      data-1p-ignore
+                      data-lpignore="true"
+                      value={honeypot}
+                      onChange={(e) => setHoneypot(e.target.value)}
+                    />
+                  </label>
+                </div>
+              )}
               {mode === "signup" && (
                 <label className="flex flex-col gap-1.5 text-sm font-medium">
                   Namn

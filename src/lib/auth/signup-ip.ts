@@ -46,17 +46,48 @@ export function hashSignupIp(ip: string): string {
 }
 
 /**
- * Best-effort client IP from proxy headers: first hop of x-forwarded-for,
- * then x-real-ip. Returns null when no plausible IP is present.
+ * Client IP from proxy headers: last hop of x-forwarded-for, then x-real-ip.
+ * Returns null when no plausible IP is present.
+ *
+ * nginx is the only proxy in front of the app and appends the address it saw,
+ * so the last hop is the real client. Everything before it is whatever the
+ * client chose to send, which is why the first hop must never be trusted.
  */
 export function extractClientIp(headers: Headers): string | null {
   const forwarded = headers.get("x-forwarded-for");
   if (forwarded) {
-    const first = forwarded.split(",")[0]?.trim();
-    if (first) return first;
+    const last = forwarded
+      .split(",")
+      .map((hop) => hop.trim())
+      .filter(Boolean)
+      .at(-1);
+    if (last) return last;
   }
   const real = headers.get("x-real-ip")?.trim();
   return real || null;
+}
+
+/**
+ * Reduce x-forwarded-for to the real client before Better Auth reads it. Better
+ * Auth treats a multi-value header as "no IP", which skips its rate limiter, so
+ * a forged extra hop would otherwise switch rate limiting off.
+ */
+export function withClientIpOnly(request: Request): Request {
+  const ip = extractClientIp(request.headers);
+  const forwarded = request.headers.get("x-forwarded-for");
+  if (!ip || !forwarded || forwarded === ip) return request;
+
+  const headers = new Headers(request.headers);
+  headers.set("x-forwarded-for", ip);
+  // Built from parts: Next hands route handlers a Proxy, and `new Request(proxy)`
+  // throws on the private fields it cannot reach through it.
+  return new Request(request.url, {
+    method: request.method,
+    headers,
+    body: request.body,
+    signal: request.signal,
+    duplex: "half",
+  } as RequestInit);
 }
 
 export interface SignupIpDeps {
